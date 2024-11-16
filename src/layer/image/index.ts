@@ -104,6 +104,9 @@ import {
 } from "#src/widget/shader_controls.js";
 import { Tab } from "#src/widget/tab_view.js";
 
+// eslint-disable-next-line no-restricted-imports
+import { luts } from "../../luts/luts.js";
+
 const OPACITY_JSON_KEY = "opacity";
 const BLEND_JSON_KEY = "blend";
 const SHADER_JSON_KEY = "shader";
@@ -573,6 +576,14 @@ class RenderingOptionsTab extends Tab {
         ),
       ).element,
     );
+
+    const lutSelector=document.createElement("div");
+    lutSelector.innerHTML = `
+      <select onchange="window.lutName=this.options[this.selectedIndex].text">
+        ${Object.keys(luts).map((lut) => `<option>${lut}</option>`).join('')}
+      </select>
+    `;
+    element.appendChild(lutSelector);
   }
 }
 

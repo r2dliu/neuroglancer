@@ -73,6 +73,9 @@ import type { LayerControlTool } from "#src/widget/layer_control.js";
 import type { LegendShaderOptions } from "#src/widget/shader_controls.js";
 import { Tab } from "#src/widget/tab_view.js";
 
+// eslint-disable-next-line no-restricted-imports
+import { luts } from "../luts/luts.js";
+
 const inputEventMap = EventActionMap.fromObject({
   "shift?+mousedown0": { action: "set" },
   "shift?+alt+mousedown0": { action: "adjust-window-via-drag" },
@@ -500,6 +503,7 @@ class ColorLegendPanel extends IndirectRenderedPanel {
           builder.addOutputBuffer("vec4", "v4f_fragData0", 0);
           builder.addAttribute("vec2", "aVertexPosition");
           builder.addUniform("float", "uLegendOffset");
+          builder.addUniform("vec4", "lut", 256);
           builder.addVarying("float", "vLinearPosition");
           builder.setVertexMain(`
 gl_Position = vec4(aVertexPosition, 0.0, 1.0);
@@ -565,6 +569,10 @@ ${shaderDataType} getInterpolatedDataValue(int dummyChannel) {
       shader.uniform("uLegendOffset"),
       Number.isFinite(legendOffset) ? legendOffset : 0,
     );
+
+    const lutName=(globalThis as any).lutName===undefined ? "Tricolor 1" : (globalThis as any).lutName;
+    gl.uniform4fv(shader.uniform("lut"), new Float32Array((luts as any)[lutName]));
+
     gl.blendFunc(
       WebGL2RenderingContext.SRC_ALPHA,
       WebGL2RenderingContext.ONE_MINUS_SRC_ALPHA,

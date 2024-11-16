@@ -40,6 +40,9 @@ import {
   setControlsInShader,
 } from "#src/webgl/shader_ui_controls.js";
 
+// eslint-disable-next-line no-restricted-imports
+import {luts} from "../../luts/luts.js";
+
 const DEFAULT_FRAGMENT_MAIN = `#uicontrol invlerp normalized
 void main() {
   emitGrayscale(normalized());
@@ -129,6 +132,7 @@ export class ImageRenderLayer extends SliceViewVolumeRenderLayer<ShaderControlsB
       throw new Error("Invalid UI control specification");
     }
     builder.addUniform("highp float", "uOpacity");
+    builder.addUniform("vec4", "lut", 256);
     defineImageLayerShader(builder, shaderBuilderState);
   }
 
@@ -139,6 +143,10 @@ export class ImageRenderLayer extends SliceViewVolumeRenderLayer<ShaderControlsB
   ) {
     const { gl } = this;
     gl.uniform1f(shader.uniform("uOpacity"), this.opacity.value);
+
+    // Check if called too frequently
+    const lutName=(window as any).lutName===undefined ? "Tricolor 1" : (window as any).lutName;
+    gl.uniform4fv(shader.uniform("lut"), new Float32Array((luts as any)[lutName]));
     setControlsInShader(
       gl,
       shader,
