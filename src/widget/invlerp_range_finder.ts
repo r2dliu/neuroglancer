@@ -171,19 +171,15 @@ export class AutoRangeFinder extends RefCounted {
     let foundRange = false;
     if (dataType !== DataType.FLOAT32) {
       foundRange = autoRangeData.previouslyComputedRanges.some((prevRange) =>
-<<<<<<< HEAD
         dataTypeIntervalEqual(prevRange, newRange),
-=======
-        dataTypeIntervalEqual(dataType, prevRange, newRange),
->>>>>>> 0aacf094 (Ichnaea working code on top of v2.40.1)
       );
     } else {
       foundRange = autoRangeData.previouslyComputedRanges.some(
         (prevRange) =>
           Math.abs((prevRange[0] as number) - (newRange[0] as number)) <
-            FLOAT_EQUAL_TOLERANCE &&
+          FLOAT_EQUAL_TOLERANCE &&
           Math.abs((prevRange[1] as number) - (newRange[1] as number)) <
-            FLOAT_EQUAL_TOLERANCE,
+          FLOAT_EQUAL_TOLERANCE,
       );
     }
     const rangeBoundsEqual = dataTypeCompare(newRange[0], newRange[1]) === 0;

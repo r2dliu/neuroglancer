@@ -48,13 +48,9 @@ import {
 } from "#src/util/lerp.js";
 import { MouseEventBinder } from "#src/util/mouse_bindings.js";
 import { startRelativeMouseDrag } from "#src/util/mouse_drag.js";
-<<<<<<< HEAD
-=======
-import { Uint64 } from "#src/util/uint64.js";
->>>>>>> 0aacf094 (Ichnaea working code on top of v2.40.1)
 import { getWheelZoomAmount } from "#src/util/wheel_zoom.js";
 import type { WatchableVisibilityPriority } from "#src/visibility_priority/frontend.js";
-import { GLBuffer, getMemoizedBuffer } from "#src/webgl/buffer.js";
+import { getMemoizedBuffer, GLBuffer } from "#src/webgl/buffer.js";
 import type { GL } from "#src/webgl/context.js";
 import type { HistogramSpecifications } from "#src/webgl/empirical_cdf.js";
 import {
@@ -75,11 +71,11 @@ import { getShaderType } from "#src/webgl/shader_lib.js";
 import { setRawTextureParameters } from "#src/webgl/texture.js";
 import { ColorWidget } from "#src/widget/color.js";
 import {
+  createCDFLineShader,
   getUpdatedRangeAndWindowParameters,
+  NUM_CDF_LINES,
   updateInputBoundValue,
   updateInputBoundWidth,
-  createCDFLineShader,
-  NUM_CDF_LINES,
 } from "#src/widget/invlerp.js";
 import { AutoRangeFinder } from "#src/widget/invlerp_range_finder.js";
 import type {
@@ -160,7 +156,7 @@ export class ControlPoint {
   constructor(
     public inputValue: number | bigint,
     public outputColor: vec4 = kZeroVec4,
-  ) {}
+  ) { }
 
   /** Convert the input value to a normalized value between 0 and 1 */
   normalizedInput(range: DataTypeInterval): number {
@@ -461,9 +457,9 @@ export class TransferFunction extends RefCounted {
       range !== null
         ? range
         : ([
-            computeLerp(window, this.dataType, 0.3),
-            computeLerp(window, this.dataType, 0.7),
-          ] as DataTypeInterval);
+          computeLerp(window, this.dataType, 0.3),
+          computeLerp(window, this.dataType, 0.7),
+        ] as DataTypeInterval);
     // If the range ends up being equal, instead just use the window
     if (controlPointRange[0] === controlPointRange[1]) {
       controlPointRange[0] = window[0];
@@ -698,41 +694,9 @@ class TransferFunctionPanel extends IndirectRenderedPanel {
   get drawOrder() {
     return 1;
   }
-<<<<<<< HEAD
   transferFunction: TransferFunction;
   controller: TransferFunctionController;
   private dataValuesBuffer;
-=======
-  transferFunction = this.registerDisposer(
-    new TransferFunction(
-      this.parent.dataType,
-      this.parent.trackable,
-      TRANSFER_FUNCTION_PANEL_SIZE,
-    ),
-  );
-  controller = this.registerDisposer(
-    new TransferFunctionController(
-      this.element,
-      this.parent.dataType,
-      this.transferFunction,
-      () => this.parent.trackable.value,
-      (value: TransferFunctionParameters) => {
-        this.parent.trackable.value = value;
-      },
-    ),
-  );
-  private dataValuesBuffer = this.registerDisposer(
-    getMemoizedBuffer(this.gl, WebGL2RenderingContext.ARRAY_BUFFER, () => {
-      const array = new Uint8Array(NUM_CDF_LINES * VERTICES_PER_LINE);
-      for (let i = 0; i < NUM_CDF_LINES; ++i) {
-        for (let j = 0; j < VERTICES_PER_LINE; ++j) {
-          array[i * VERTICES_PER_LINE + j] = i;
-        }
-      }
-      return array;
-    }),
-  ).value;
->>>>>>> 0aacf094 (Ichnaea working code on top of v2.40.1)
 
   constructor(public parent: TransferFunctionWidget) {
     super(parent.display, document.createElement("div"), parent.visibility);
@@ -1267,7 +1231,7 @@ out_color = tempColor * alpha;
       drawLines(
         gl,
         this.linePositionArray.length /
-          (VERTICES_PER_LINE * POSITION_VALUES_PER_LINE),
+        (VERTICES_PER_LINE * POSITION_VALUES_PER_LINE),
         1,
       );
       gl.disableVertexAttribArray(aLineStartEnd);
@@ -1573,16 +1537,7 @@ class TransferFunctionController extends RefCounted {
     function calculateControlPointGrabDistance() {
       let windowSize = 0.0;
       if (dataType == DataType.UINT64) {
-<<<<<<< HEAD
         windowSize = Number((window[1] as bigint) - (window[0] as bigint));
-=======
-        const tempUint = new Uint64();
-        windowSize = Uint64.subtract(
-          tempUint,
-          window[1] as Uint64,
-          window[0] as Uint64,
-        ).toNumber();
->>>>>>> 0aacf094 (Ichnaea working code on top of v2.40.1)
       } else if (dataType == DataType.FLOAT32) {
         // Floating point data can have very small windows with many points
         windowSize = 1.0 / CONTROL_POINT_X_GRAB_DISTANCE;
@@ -1647,13 +1602,7 @@ class TransferFunctionController extends RefCounted {
  * Widget for the transfer function. Creates the UI elements required for the transfer function.
  */
 class TransferFunctionWidget extends Tab {
-<<<<<<< HEAD
   private transferFunctionPanel;
-=======
-  private transferFunctionPanel = this.registerDisposer(
-    new TransferFunctionPanel(this),
-  );
->>>>>>> 0aacf094 (Ichnaea working code on top of v2.40.1)
   autoRangeFinder: AutoRangeFinder;
   window = this.createWindowBoundInputs();
 
@@ -1679,12 +1628,9 @@ class TransferFunctionWidget extends Tab {
     public histogramIndex: number,
   ) {
     super(visibility);
-<<<<<<< HEAD
     this.transferFunctionPanel = this.registerDisposer(
       new TransferFunctionPanel(this),
     );
-=======
->>>>>>> 0aacf094 (Ichnaea working code on top of v2.40.1)
     this.registerDisposer(
       histogramSpecifications.visibility.add(this.visibility),
     );
@@ -1704,15 +1650,7 @@ class TransferFunctionWidget extends Tab {
     // If no points and no window, set the default control points for the transfer function
     const currentWindow = this.trackable.value.window;
     const defaultWindow = defaultDataTypeRange[this.dataType];
-<<<<<<< HEAD
     const windowUnset = dataTypeIntervalEqual(currentWindow, defaultWindow);
-=======
-    const windowUnset = dataTypeIntervalEqual(
-      this.dataType,
-      currentWindow,
-      defaultWindow,
-    );
->>>>>>> 0aacf094 (Ichnaea working code on top of v2.40.1)
     if (this.trackable.value.sortedControlPoints.length === 0 && windowUnset) {
       this.autoRangeFinder.autoComputeRange(0, 1);
     }
@@ -1800,9 +1738,8 @@ class TransferFunctionWidget extends Tab {
       e.type = "text";
       e.spellcheck = false;
       e.autocomplete = "off";
-      e.title = `${
-        endpoint === 0 ? "Lower" : "Upper"
-      } window for transfer function`;
+      e.title = `${endpoint === 0 ? "Lower" : "Upper"
+        } window for transfer function`;
       return e;
     }
 

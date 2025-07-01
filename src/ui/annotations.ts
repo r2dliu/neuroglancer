@@ -17,12 +17,7 @@
 /**
  * @file User interface for display and editing annotations.
  */
-<<<<<<< HEAD
 
-import svg_help from "ikonate/icons/help.svg?raw";
-import "#src/ui/annotations.css";
-=======
->>>>>>> 0aacf094 (Ichnaea working code on top of v2.40.1)
 import {
   AnnotationDisplayState,
   AnnotationLayerState,
@@ -76,6 +71,7 @@ import {
   WatchableValue,
 } from "#src/trackable_value.js";
 import "#src/ui/annotations.css";
+import svg_help from "ikonate/icons/help.svg?raw";
 
 import { getDefaultAnnotationListBindings } from "#src/ui/default_input_event_bindings.js";
 import { LegacyTool, registerLegacyTool } from "#src/ui/tool.js";
@@ -474,7 +470,6 @@ export class AnnotationLayerView extends Tab {
       },
     });
     mutableControls.appendChild(ellipsoidButton);
-<<<<<<< HEAD
     const helpIcon = makeIcon({
       title:
         "The left icons allow you to select the type of the anotation. Color and other display settings are available in the 'Rendering' tab.",
@@ -483,8 +478,6 @@ export class AnnotationLayerView extends Tab {
     });
     helpIcon.style.marginLeft = "auto";
     mutableControls.appendChild(helpIcon);
-=======
->>>>>>> 0aacf094 (Ichnaea working code on top of v2.40.1)
 
     toolbox.appendChild(mutableControls);
     this.element.appendChild(toolbox);
@@ -1962,32 +1955,6 @@ export function UserLayerWithAnnotationsMixin<
                         sourceReadonly
                           ? undefined
                           : (newIds) => {
-<<<<<<< HEAD
-                              const annotation = reference.value;
-                              if (annotation == null) {
-                                return;
-                              }
-                              let { relatedSegments } = annotation;
-                              if (relatedSegments === undefined) {
-                                relatedSegments =
-                                  annotationLayer.source.relationships.map(
-                                    () => new BigUint64Array(0),
-                                  );
-                              } else {
-                                relatedSegments = relatedSegments.slice();
-                              }
-                              relatedSegments[relationshipIndex] = newIds;
-                              const newAnnotation = {
-                                ...annotation,
-                                relatedSegments,
-                              };
-                              annotationLayer.source.update(
-                                reference,
-                                newAnnotation,
-                              );
-                              annotationLayer.source.commit(reference);
-                            },
-=======
                             const annotation = reference.value;
                             if (annotation == null) {
                               return;
@@ -1996,7 +1963,7 @@ export function UserLayerWithAnnotationsMixin<
                             if (relatedSegments === undefined) {
                               relatedSegments =
                                 annotationLayer.source.relationships.map(
-                                  () => [],
+                                  () => new BigUint64Array(0),
                                 );
                             } else {
                               relatedSegments = relatedSegments.slice();
@@ -2012,7 +1979,6 @@ export function UserLayerWithAnnotationsMixin<
                             );
                             annotationLayer.source.commit(reference);
                           },
->>>>>>> 0aacf094 (Ichnaea working code on top of v2.40.1)
                       ),
                     ).element,
                   );

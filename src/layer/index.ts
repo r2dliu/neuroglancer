@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-import { debounce, throttle } from "lodash-es";
 import type { AnnotationLayerState } from "#src/annotation/annotation_layer_state.js";
 import type { AnnotationType } from "#src/annotation/index.js";
 import type { ChunkManager } from "#src/chunk_manager/frontend.js";
@@ -113,6 +112,7 @@ import type { DependentViewContext } from "#src/widget/dependent_view_widget.js"
 import type { Tab } from "#src/widget/tab_view.js";
 import { TabSpecification } from "#src/widget/tab_view.js";
 import type { RPC } from "#src/worker_rpc.js";
+import { debounce, throttle } from "lodash-es";
 
 const TOOL_JSON_KEY = "tool";
 const TOOL_BINDINGS_JSON_KEY = "toolBindings";
@@ -1248,13 +1248,7 @@ const DATA_SELECTION_STATE_DEFAULT_PANEL_LOCATION_VISIBLE = {
 
 export class TrackableDataSelectionState
   extends RefCounted
-<<<<<<< HEAD
-  implements TrackableValueInterface<PersistentViewerSelectionState | undefined>
-{
-=======
-  implements
-  TrackableValueInterface<PersistentViewerSelectionState | undefined> {
->>>>>>> 0aacf094 (Ichnaea working code on top of v2.40.1)
+  implements TrackableValueInterface<PersistentViewerSelectionState | undefined> {
   changed = new NullarySignal();
   history: PersistentViewerSelectionState[] = [];
   historyIndex = 0;
