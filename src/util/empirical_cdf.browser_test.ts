@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-import { describe, it, expect } from "vitest";
 import { DataType } from "#src/util/data_type.js";
 import { computePercentilesFromEmpiricalHistogram } from "#src/util/empirical_cdf.js";
 import type { DataTypeInterval } from "#src/util/lerp.js";
@@ -23,6 +22,7 @@ import {
   dataTypeIntervalEqual,
   defaultDataTypeRange,
 } from "#src/util/lerp.js";
+import { describe, expect, it } from "vitest";
 
 // The first and last bin are for values below the lower bound/above the upper
 // To simulate output from the GLSL shader function on CPU
