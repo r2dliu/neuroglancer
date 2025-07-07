@@ -68,10 +68,6 @@ import type { TrackableVolumeRenderingModeValue } from "#src/volume_rendering/tr
 import {
   isProjectionMode,
   trackableShaderModeValue,
-<<<<<<< HEAD
-=======
-  VolumeRenderingModes,
->>>>>>> 0aacf094 (Ichnaea working code on top of v2.40.1)
 } from "#src/volume_rendering/trackable_volume_rendering_mode.js";
 import {
   drawBoxes,
@@ -195,7 +191,7 @@ export function getVolumeRenderingDepthSamplesBoundsLogScale(): [
 ] {
   const logScaleMax = Math.round(
     VOLUME_RENDERING_DEPTH_SAMPLES_LOG_SCALE_ORIGIN +
-      numRenderScaleHistogramBins * renderScaleHistogramBinSize,
+    numRenderScaleHistogramBins * renderScaleHistogramBinSize,
   );
   return [VOLUME_RENDERING_DEPTH_SAMPLES_LOG_SCALE_ORIGIN, logScaleMax];
 }
@@ -221,10 +217,7 @@ export class VolumeRenderingRenderLayer extends PerspectiveViewRenderLayer {
   chunkResolutionHistogram: RenderScaleHistogram;
   mode: TrackableVolumeRenderingModeValue;
   backend: ChunkRenderLayerFrontend;
-<<<<<<< HEAD
   highestResolutionLoadedVoxelSize: Float32Array | undefined;
-=======
->>>>>>> 0aacf094 (Ichnaea working code on top of v2.40.1)
   private modeOverride: TrackableVolumeRenderingModeValue;
   private vertexIdHelper: VertexIdHelper;
   private dataHistogramSpecifications: HistogramSpecifications;
@@ -555,8 +548,8 @@ void main() {
           addControlsToBuilder(shaderBuilderState, builder);
           builder.addFragmentCode(
             "\n#define main userMain\n" +
-              shaderCodeWithLineDirective(shaderBuilderState.parseResult.code) +
-              "\n#undef main\n",
+            shaderCodeWithLineDirective(shaderBuilderState.parseResult.code) +
+            "\n#undef main\n",
           );
         },
       },
@@ -1364,7 +1357,7 @@ outputValue = vec4(1.0, 1.0, 1.0, 1.0);
       this.localPosition.value,
       this.depthSamplesTarget.value,
       allSources[0],
-      () => {},
+      () => { },
       (tsource) => {
         const chunk = tsource.source.chunks.get(
           tsource.curPositionInChunks.join(),

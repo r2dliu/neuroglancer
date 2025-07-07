@@ -18,12 +18,7 @@
  * @file Tab for showing layer data sources and coordinate transforms.
  */
 
-<<<<<<< HEAD
-import "#src/ui/layer_data_sources_tab.css";
 import { LocalDataSource } from "#src/datasource/local.js";
-=======
-import { LocalDataSource } from "#src/datasource/index.js";
->>>>>>> 0aacf094 (Ichnaea working code on top of v2.40.1)
 import type { UserLayer, UserLayerConstructor } from "#src/layer/index.js";
 import {
   changeLayerName,
