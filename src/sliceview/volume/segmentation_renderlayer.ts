@@ -53,7 +53,6 @@ import {
 import type { Uint64Map } from "#src/uint64_map.js";
 import type { DisjointUint64Sets } from "#src/util/disjoint_sets.js";
 import * as matrix from "#src/util/matrix.js";
-import { Uint64 } from "#src/util/uint64.js";
 import type { ShaderBuilder, ShaderProgram } from "#src/webgl/shader.js";
 
 export class EquivalencesHashMap {
@@ -101,7 +100,7 @@ const SHOW_ALL_SEGMENTS_FLAG = 2;
 export class BrushHashTable extends HashMapUint64 {
   public modified_points: Record<string, number> = {} // key is z,y,x
 
-  private getBrushKey(z: number, y: number, x: number): Uint64 {
+  private getBrushKey(z: number, y: number, x: number): bigint {
     const x1 = x >>> 0;
     const y1 = y >>> 0;
     const z1 = z >>> 0;
@@ -109,18 +108,13 @@ export class BrushHashTable extends HashMapUint64 {
     const h1 = (((x1 * 73) * 1271) ^ ((y1 * 513) * 1345) ^ ((z1 * 421) * 675)) >>> 0;
     const h2 = (((x1 * 127) * 337) ^ ((y1 * 111) * 887) ^ ((z1 * 269) * 325)) >>> 0;
 
-    const key = new Uint64();
-    key.low = h1;
-    key.high = h2;
-    return key;
+    return BigInt(h1) + (BigInt(h2) << 32n);
   }
 
   addBrushPoint(z: number, y: number, x: number, value: number) {
     const key = this.getBrushKey(z, y, x);
     this.delete(key);
-    const brushValue = new Uint64();
-    brushValue.low = value;
-    brushValue.high = 0;
+    const brushValue = BigInt(value);
     this.modified_points[`${z},${y},${x}`] = value
     this.set(key, brushValue);
   }
@@ -132,9 +126,9 @@ export class BrushHashTable extends HashMapUint64 {
 
   getBrushValue(z: number, y: number, x: number): number | undefined {
     const key = this.getBrushKey(z, y, x);
-    const value = new Uint64();
-    if (this.get(key, value)) {
-      return value.low;
+    const value = this.get(key);
+    if (value !== undefined) {
+      return Number(value);
     }
     return undefined;
   }

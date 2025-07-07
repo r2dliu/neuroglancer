@@ -68,6 +68,7 @@ import type { TrackableVolumeRenderingModeValue } from "#src/volume_rendering/tr
 import {
   isProjectionMode,
   trackableShaderModeValue,
+  VolumeRenderingModes,
 } from "#src/volume_rendering/trackable_volume_rendering_mode.js";
 import {
   drawBoxes,

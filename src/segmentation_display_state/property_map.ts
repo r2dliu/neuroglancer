@@ -231,7 +231,7 @@ export class PreprocessedSegmentPropertyMap {
     return label;
   }
 
-  addSegment(id: Uint64, properties: Record<string, any> = {}): number {
+  addSegment(id: bigint, properties: Record<string, any> = {}): number {
     const { segmentPropertyMap } = this;
     const { inlineProperties } = segmentPropertyMap;
 
@@ -246,12 +246,11 @@ export class PreprocessedSegmentPropertyMap {
       return existingIndex;
     }
 
-    const numSegments = inlineProperties.ids.length / 2;
+    const numSegments = inlineProperties.ids.length;
 
-    const newIds = new Uint32Array(inlineProperties.ids.length + 2);
+    const newIds = new BigUint64Array(inlineProperties.ids.length + 1);
     newIds.set(inlineProperties.ids);
-    newIds[inlineProperties.ids.length] = id.low;
-    newIds[inlineProperties.ids.length + 1] = id.high;
+    newIds[inlineProperties.ids.length] = id;
 
     inlineProperties.ids = newIds;
 
@@ -286,8 +285,7 @@ export class PreprocessedSegmentPropertyMap {
         const numProperty = property as InlineSegmentNumericalProperty;
         const newValue = properties[property.id] as number | undefined;
 
-        const Constructor = numProperty.values
-          .constructor as TypedArrayConstructor;
+        const Constructor = numProperty.values.constructor as any;
         const newValues = new Constructor(numProperty.values.length + 1);
         newValues.set(numProperty.values);
 
@@ -302,7 +300,7 @@ export class PreprocessedSegmentPropertyMap {
     return numSegments;
   }
 
-  updateSegmentProperty(id: Uint64, propertyId: string, value: any): boolean {
+  updateSegmentProperty(id: bigint, propertyId: string, value: any): boolean {
     const index = this.getSegmentInlineIndex(id);
     if (index === -1) {
       return false; // Segment not found
@@ -1215,7 +1213,7 @@ function updatePropertyHistogram(
         ++histogram[
           (Math.min(numBins - 1, Math.max(-1, (value - min) * multiplier)) +
             1) >>>
-            0
+          0
         ];
       }
     }
@@ -1233,7 +1231,7 @@ function updatePropertyHistogram(
           ++histogram[
             (Math.min(numBins - 1, Math.max(-1, (value - min) * multiplier)) +
               1) >>>
-              0
+            0
           ];
         }
       }
