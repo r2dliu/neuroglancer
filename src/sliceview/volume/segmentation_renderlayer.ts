@@ -312,8 +312,8 @@ export class SegmentationRenderLayer extends SliceViewVolumeRenderLayer<ShaderPa
         // Transform from layer space to base resolution chunk space
         vec4 basePos = uBaseLayerToChunkTransform * layerPos;
         
-        // Convert to integer coordinates in base resolution space. 0.5 offset accounts for voxel center
-        ivec3 ipos = ivec3(floor(basePos.xyz - 0.5));
+        // Convert to integer coordinates in base resolution space
+        ivec3 ipos = ivec3(floor(basePos.xyz));
 
         uint x1 = uint(ipos.x);
         uint y1 = uint(ipos.y);
