@@ -14,14 +14,13 @@
  * limitations under the License.
  */
 
-import "#src/noselect.css";
-import "#src/ui/layer_bar.css";
-import svg_plus from "ikonate/icons/plus.svg?raw";
 import type { ManagedUserLayer } from "#src/layer/index.js";
 import { addNewLayer, deleteLayer, makeLayer } from "#src/layer/index.js";
 import type { LayerGroupViewer } from "#src/layer_group_viewer.js";
 import { NavigationLinkType } from "#src/navigation_state.js";
+import "#src/noselect.css";
 import type { WatchableValueInterface } from "#src/trackable_value.js";
+import "#src/ui/layer_bar.css";
 import type { DropLayers } from "#src/ui/layer_drag_and_drop.js";
 import {
   registerLayerBarDragLeaveHandler,
@@ -36,6 +35,7 @@ import { makeCloseButton } from "#src/widget/close_button.js";
 import { makeDeleteButton } from "#src/widget/delete_button.js";
 import { makeIcon } from "#src/widget/icon.js";
 import { PositionWidget } from "#src/widget/position_widget.js";
+import svg_plus from "ikonate/icons/plus.svg?raw";
 
 class LayerWidget extends RefCounted {
   element = document.createElement("div");

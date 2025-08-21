@@ -31,6 +31,7 @@ import type {
   KvStoreBasedDataSourceProvider,
 } from "#src/datasource/index.js";
 import { getKvStorePathCompletions } from "#src/datasource/kvstore_completions.js";
+import { LocalDataSource } from "#src/datasource/local.js";
 import { VolumeChunkSourceParameters } from "#src/datasource/zarr/base.js";
 import "#src/datasource/zarr/codec/bytes/resolve.js";
 import "#src/datasource/zarr/codec/crc32c/resolve.js";
@@ -89,7 +90,7 @@ import { ProgressSpan } from "#src/util/progress_listener.js";
 class ZarrVolumeChunkSource extends WithParameters(
   WithSharedKvStoreContext(VolumeChunkSource),
   VolumeChunkSourceParameters,
-) {}
+) { }
 
 export class MultiscaleVolumeChunkSource extends GenericMultiscaleVolumeChunkSource {
   volumeType: VolumeType;
@@ -332,9 +333,8 @@ async function resolveOmeMultiscale(
         `Expected zarr array at ${JSON.stringify(
           scale.url,
         )} to have data type ` +
-          `${DataType[dataType]}, but received: ${
-            DataType[zarrMetadata.dataType]
-          }`,
+        `${DataType[dataType]}, but received: ${DataType[zarrMetadata.dataType]
+        }`,
       );
     }
   }
@@ -471,7 +471,7 @@ function resolveUrl(options: GetKvStoreBasedDataSourceOptions) {
 }
 
 export class ZarrDataSource implements KvStoreBasedDataSourceProvider {
-  constructor(public zarrVersion: 2 | 3 | undefined = undefined) {}
+  constructor(public zarrVersion: 2 | 3 | undefined = undefined) { }
   get scheme() {
     return `zarr${this.zarrVersion ?? ""}`;
   }
@@ -561,6 +561,12 @@ export class ZarrDataSource implements KvStoreBasedDataSourceProvider {
                   volume.modelSpace.bounds,
                 ),
               },
+            },
+            {
+              id: "brush_strokes",
+              default: true,
+              url: undefined,
+              subsource: { local: LocalDataSource.brushStrokes },
             },
           ],
         };
