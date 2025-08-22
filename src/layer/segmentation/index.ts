@@ -907,6 +907,10 @@ export class SegmentationUserLayer extends Base {
           );
         } else {
           loadedSubsource.activate(() => {
+            // Add test brush strokes for debugging
+            console.log("🎨 Adding test brush strokes for debugging");
+            this.addTestBrushStrokes();
+
             // Create brush stroke render layers
             const brushStrokeLayer = new BrushStrokeLayer(
               this.manager.chunkManager,

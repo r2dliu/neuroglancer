@@ -38,11 +38,13 @@ import type { RenderScaleHistogram } from "#src/render_scale_statistics.js";
 import type {
     VisibilityTrackedRenderLayer,
 } from "#src/renderlayer.js";
+import { defineBoundingBoxCrossSectionShader } from "#src/sliceview/bounding_box_shader_helper.js";
 import type {
     SliceViewPanelRenderContext,
 } from "#src/sliceview/renderlayer.js";
 import { SliceViewPanelRenderLayer } from "#src/sliceview/renderlayer.js";
-import { WatchableValue, constantWatchableValue } from "#src/trackable_value.js";
+import { CHUNK_POSITION_EPSILON } from "#src/sliceview/volume/renderlayer.js";
+import { constantWatchableValue } from "#src/trackable_value.js";
 import type { Owned } from "#src/util/disposable.js";
 import { RefCounted } from "#src/util/disposable.js";
 import type { ValueOrError } from "#src/util/error.js";
@@ -53,6 +55,7 @@ import { NullarySignal } from "#src/util/signal.js";
 import type { ParameterizedContextDependentShaderGetter } from "#src/webgl/dynamic_shader.js";
 import { parameterizedEmitterDependentShaderGetter } from "#src/webgl/dynamic_shader.js";
 import type { ShaderBuilder, ShaderProgram } from "#src/webgl/shader.js";
+import { defineVertexId } from "#src/webgl/vertex_id.js";
 
 
 
@@ -150,31 +153,16 @@ function BrushStrokeRenderLayer<
             public renderScaleHistogram: RenderScaleHistogram,
         ) {
             super();
-            console.log("🎨 BrushStrokeRenderLayer constructor called");
             this.registerDisposer(base.redrawNeeded.add(this.redrawNeeded.dispatch));
 
             // Create shader getter for brush stroke rendering
-            try {
-                this.shaderGetter = parameterizedEmitterDependentShaderGetter(this, this.gl, {
-                    memoizeKey: "brushStroke",
-                    parameters: constantWatchableValue(undefined),
-                    defineShader: (builder: ShaderBuilder) => {
-                        console.log("🎨 defineShader called for brush stroke");
-                        try {
-                            this.defineShader(builder);
-                            console.log("🎨 defineShader completed successfully");
-                        } catch (error) {
-                            console.error("❌ Error in defineShader:", error);
-                            throw error;
-                        }
-                    },
-                });
-                console.log("🎨 Shader getter created successfully");
-            } catch (error) {
-                console.error("❌ Error creating shader getter:", error);
-                throw error;
-            }
-            console.log("🎨 BrushStrokeRenderLayer constructor completed");
+            this.shaderGetter = parameterizedEmitterDependentShaderGetter(this, this.gl, {
+                memoizeKey: "brushStroke",
+                parameters: constantWatchableValue(undefined),
+                defineShader: (builder: ShaderBuilder) => {
+                    this.defineShader(builder);
+                },
+            });
         }
 
         attach(attachment: VisibleLayerInfo<LayerView, AttachmentState>) {
@@ -218,18 +206,10 @@ function BrushStrokeRenderLayer<
             return chunkRenderParameters;
         }
 
-        get chunkTransform() {
-            // For now, return a dummy successful transform to bypass the check
-            // This is a simplified approach for testing
-            return {
-                modelTransform: {
-                    inputSpace: { rank: 3 },
-                    outputSpace: { rank: 3 },
-                    transform: new Float64Array(16), // 4x4 identity matrix
-                },
-                chunkToLayerTransform: new Float32Array(25), // 5x5 identity matrix
-                layerToChunkTransform: new Float32Array(25), // 5x5 identity matrix
-            } as ChunkTransformParameters;
+        get chunkTransform(): ValueOrError<ChunkTransformParameters> {
+            // Return an error to skip chunk-based rendering for now
+            // We'll implement proper coordinate transforms later
+            return { error: "Brush stroke layers don't use chunk-based transforms" };
         }
 
         get gl() {
@@ -237,59 +217,220 @@ function BrushStrokeRenderLayer<
         }
 
         defineShader(builder: ShaderBuilder) {
-            console.log("🎨 defineShader called - setting up simple shader");
-
             builder.addUniform("highp vec4", "uBrushColor");
 
-            // Simple vertex shader that renders a full-screen quad
-            const vertexShader = `
-                vec2 positions[6] = vec2[6](
-                    vec2(-1.0, -1.0),
-                    vec2(1.0, -1.0),
-                    vec2(1.0, 1.0),
-                    vec2(-1.0, -1.0),
-                    vec2(1.0, 1.0),
-                    vec2(-1.0, 1.0)
-                );
-                vec2 pos = positions[gl_VertexID];
-                gl_Position = vec4(pos, 0.0, 1.0);
-            `;
+            // Check if this is a perspective view (3D) or slice view (2D)
+            const isPerspectiveView = this instanceof PerspectiveViewRenderLayer;
 
-            console.log("🎨 Setting vertex shader:", vertexShader);
-            builder.setVertexMain(vertexShader);
+            if (isPerspectiveView) {
+                // 3D view: TODO - implement proper volume rendering
+                this.base.brushHashTableManager.defineShader(builder);
+                defineVertexId(builder);
+                defineBoundingBoxCrossSectionShader(builder);
 
-            // Simple fragment shader that just renders a solid color
-            // Note: emit function is provided by the renderContext.emitter
-            const fragmentShader = `
-                // Just render a solid color to test if the quad is working
-                emit(vec4(1.0, 0.0, 0.0, 0.5), 0u); // Semi-transparent red, no pick ID
-            `;
+                // Add volume rendering uniforms (same as volume layers)
+                builder.addUniform("highp vec3", "uTranslation");
+                builder.addUniform("highp mat4", "uProjectionMatrix");
+                builder.addUniform("highp vec3", "uChunkDataSize");
+                builder.addUniform("highp vec3", "uLowerClipBound");
+                builder.addUniform("highp vec3", "uUpperClipBound");
+                builder.addVarying("highp vec3", "vChunkPosition");
 
-            console.log("🎨 Setting fragment shader:", fragmentShader);
-            builder.setFragmentMain(fragmentShader);
+                const vertexShader = `
+                    vec3 position = getBoundingBoxPlaneIntersectionVertexPosition(
+                        uChunkDataSize, uTranslation, uLowerClipBound, uUpperClipBound, gl_VertexID
+                    );
+                    gl_Position = uProjectionMatrix * vec4(position, 1.0);
+                    gl_Position.z = 0.0;
+                    vChunkPosition = (position - uTranslation) + ${CHUNK_POSITION_EPSILON} * abs(uPlaneNormal);
+                `;
+                builder.setVertexMain(vertexShader);
 
-            console.log("🎨 defineShader completed");
+                const fragmentShader = `
+                    // DEBUG: Always render to test if 3D overlay works
+                    emit(vec4(1.0, 0.0, 0.0, 0.8), 0u);
+                    
+                    /* TODO: Enable hash table lookup once we verify 3D overlay is working
+                    // Sample brush hash table at chunk position (z,y,x order)
+                    vec3 chunkPos = vChunkPosition + uTranslation;
+                    ivec3 ipos = ivec3(floor(chunkPos));
+                    
+                    // Use z,y,x order for hash key (not x,y,z)
+                    uint z1 = uint(ipos.z);
+                    uint y1 = uint(ipos.y);
+                    uint x1 = uint(ipos.x);
+                    
+                    uint h1 = ((x1 * 73u) * 1271u) ^ ((y1 * 513u) * 1345u) ^ ((z1 * 421u) * 675u);
+                    uint h2 = ((x1 * 127u) * 337u) ^ ((y1 * 111u) * 887u) ^ ((z1 * 269u) * 325u);
+                    
+                    uint64_t key;
+                    key.value[0] = h1;
+                    key.value[1] = h2;
+                    
+                    uint64_t brushValue;
+                    if (brushStroke_get(key, brushValue)) {
+                        emit(vec4(1.0, 0.0, 0.0, 0.8), 0u);
+                    } else {
+                        discard;
+                    }
+                    */
+                `;
+                builder.setFragmentMain(fragmentShader);
+            } else {
+                // For 2D slice view: use same approach as your working custom renderer
+                this.base.brushHashTableManager.defineShader(builder);
+                builder.addUniform("highp mat4", "uViewMatrix");
+                builder.addUniform("highp mat4", "uProjectionMatrix");
+                builder.addVarying("highp vec2", "vScreenPosition");
+
+                const vertexShader = `
+                    vec2 positions[6] = vec2[6](
+                        vec2(-1.0, -1.0),
+                        vec2(1.0, -1.0),
+                        vec2(1.0, 1.0),
+                        vec2(-1.0, -1.0),
+                        vec2(1.0, 1.0),
+                        vec2(-1.0, 1.0)
+                    );
+                    vec2 pos = positions[gl_VertexID];
+                    gl_Position = vec4(pos, 0.0, 1.0);
+                    vScreenPosition = pos; // Pass NDC coordinates to fragment shader
+                `;
+                builder.setVertexMain(vertexShader);
+
+                const fragmentShader = `
+                    // Use the same transformation as your working custom renderer, but in reverse
+                    // vScreenPosition is NDC coordinates (-1 to 1)
+                    
+                    // Reverse the transformation: NDC -> clip space -> view space -> world space
+                    // Start with NDC coordinates and assume z=0 for the current slice
+                    vec4 clipPos = vec4(vScreenPosition, 0.0, 1.0);
+                    
+                    // Transform from clip space to view space (inverse projection)
+                    vec4 viewPos = inverse(uProjectionMatrix) * clipPos;
+                    if (viewPos.w != 0.0) {
+                        viewPos /= viewPos.w; // Perspective division
+                    }
+                    
+                    // Transform from view space to world space (inverse view matrix)
+                    vec4 worldPos4 = inverse(uViewMatrix) * viewPos;
+                    vec3 worldPos = worldPos4.xyz;
+                    
+                    // Round to nearest voxel coordinate
+                    ivec3 voxelPos = ivec3(round(worldPos));
+                    
+                    // Extract coordinates for hash function (z, y, x order)
+                    uint z1 = uint(voxelPos.x);  // global z 
+                    uint y1 = uint(voxelPos.y);  // global y  
+                    uint x1 = uint(voxelPos.z);  // global x
+                    
+                    // Hash function matching CPU implementation
+                    uint h1 = ((x1 * 73u) * 1271u) ^ ((y1 * 513u) * 1345u) ^ ((z1 * 421u) * 675u);
+                    uint h2 = ((x1 * 127u) * 337u) ^ ((y1 * 111u) * 887u) ^ ((z1 * 269u) * 325u);
+                    
+                    uint64_t key;
+                    key.value[0] = h1;
+                    key.value[1] = h2;
+                    
+                    uint64_t brushValue;
+                    if (brushStroke_get(key, brushValue)) {
+                        // Found brush stroke - render with brush color
+                        emit(uBrushColor, 0u);
+                    } else {
+                        // No brush stroke - discard fragment
+                        discard;
+                    }
+                `;
+                builder.setFragmentMain(fragmentShader);
+            }
         }
 
         initializeShader(
             shader: ShaderProgram,
-            _renderContext: PerspectiveViewRenderContext | SliceViewPanelRenderContext,
+            renderContext: PerspectiveViewRenderContext | SliceViewPanelRenderContext,
         ) {
             const { gl } = this;
-            const { brushColor } = this.base;
+            const { brushColor, gpuBrushHashTable, brushHashTableManager } = this.base;
 
-            // Set the brush color uniform (though we're not using it in the simple version)
-            gl.uniform4fv(shader.uniform("uBrushColor"), brushColor);
+            // Helper function to safely set uniforms
+            const safeSetUniform = (name: string, setter: () => void) => {
+                try {
+                    const location = shader.uniform(name);
+                    if (location !== null) {
+                        setter();
+                    }
+                } catch {
+                    // Uniform not found in shader, skip silently
+                }
+            };
+
+            // Set the brush color uniform
+            safeSetUniform("uBrushColor", () => {
+                gl.uniform4fv(shader.uniform("uBrushColor"), brushColor);
+            });
+
+            // Initialize brush hash table for both views
+            brushHashTableManager.enable(gl, shader, gpuBrushHashTable);
+
+            if (this instanceof PerspectiveViewRenderLayer) {
+                // 3D perspective view: TODO - implement proper volume rendering uniforms
+                safeSetUniform("uTranslation", () => {
+                    gl.uniform3fv(shader.uniform("uTranslation"), new Float32Array([0, 0, 0]));
+                });
+                safeSetUniform("uChunkDataSize", () => {
+                    gl.uniform3fv(shader.uniform("uChunkDataSize"), new Float32Array([100, 100, 100]));
+                });
+                safeSetUniform("uLowerClipBound", () => {
+                    gl.uniform3fv(shader.uniform("uLowerClipBound"), new Float32Array([-1000, -1000, -1000]));
+                });
+                safeSetUniform("uUpperClipBound", () => {
+                    gl.uniform3fv(shader.uniform("uUpperClipBound"), new Float32Array([1000, 1000, 1000]));
+                });
+                safeSetUniform("uProjectionMatrix", () => {
+                    // Set identity projection matrix for now
+                    const identityMatrix = new Float32Array([
+                        1, 0, 0, 0,
+                        0, 1, 0, 0,
+                        0, 0, 1, 0,
+                        0, 0, 0, 1
+                    ]);
+                    gl.uniformMatrix4fv(shader.uniform("uProjectionMatrix"), false, identityMatrix);
+                });
+            } else {
+                // For 2D slice view: use same matrices as your working custom renderer
+                const sliceViewContext = renderContext as SliceViewPanelRenderContext;
+                const sliceViewProjectionParameters = sliceViewContext.sliceView.projectionParameters.value;
+                const { viewMatrix, projectionMat } = sliceViewProjectionParameters;
+
+                // Set view matrix (transforms world coordinates to view coordinates)
+                safeSetUniform("uViewMatrix", () => {
+                    console.log("🎨 Setting uViewMatrix:", viewMatrix);
+                    gl.uniformMatrix4fv(shader.uniform("uViewMatrix"), false, viewMatrix);
+                });
+
+                // Set projection matrix (transforms view coordinates to clip coordinates)
+                safeSetUniform("uProjectionMatrix", () => {
+                    console.log("🎨 Setting uProjectionMatrix:", projectionMat);
+                    gl.uniformMatrix4fv(shader.uniform("uProjectionMatrix"), false, projectionMat);
+                });
+            }
         }
 
         draw(
             renderContext: PerspectiveViewRenderContext | SliceViewPanelRenderContext,
-            attachment: VisibleLayerInfo<LayerView, AttachmentState>,
+            _attachment: VisibleLayerInfo<LayerView, AttachmentState>,
         ) {
-            console.log("🎨 BrushStrokeRenderLayer draw method called");
-
-            // Skip all the chunk parameter checks for testing
             const { gl } = this;
+            console.log("🎨 BrushStrokeRenderLayer.draw() called");
+            console.log("🎨 Layer enabled:", this.base.enabled);
+            console.log("🎨 Hash table size:", this.base.brushHashTable.size);
+            console.log("🎨 Is perspective view:", this instanceof PerspectiveViewRenderLayer);
+
+            // Check if layer should be rendered
+            if (!this.base.enabled) {
+                console.log("❌ Layer not enabled, skipping draw");
+                return;
+            }
 
             // Get the shader for this render context
             const shader = this.getShader(renderContext);
@@ -297,18 +438,22 @@ function BrushStrokeRenderLayer<
                 console.log("❌ shader is null");
                 return;
             }
-
-            console.log("🎨 About to bind shader and draw");
+            console.log("✅ shader obtained");
 
             // Bind and setup the shader
             shader.bind();
             this.initializeShader(shader, renderContext);
 
-            // Draw a full-screen quad to cover the viewport
-            // This will trigger our fragment shader for each pixel
-            gl.drawArrays(gl.TRIANGLE_FAN, 0, 6);
-
-            console.log("🎨 Draw call completed");
+            // Choose draw call based on view type
+            if (this instanceof PerspectiveViewRenderLayer) {
+                // 3D view: TODO - implement proper volume rendering draw call
+                console.log("🎨 3D view - skipping draw");
+            } else {
+                // 2D view: draw single full-screen quad
+                console.log("🎨 2D view - drawing triangles");
+                gl.drawArrays(gl.TRIANGLES, 0, 6);
+                console.log("✅ 2D draw completed");
+            }
         }
 
         endSlice(
@@ -324,43 +469,8 @@ function BrushStrokeRenderLayer<
         }
 
         private getShader(renderContext: PerspectiveViewRenderContext | SliceViewPanelRenderContext) {
-            console.log("🎨 getShader called");
-            console.log("🎨 renderContext.emitter:", renderContext.emitter);
-
-            // Check for WebGL errors before shader compilation
-            const { gl } = this;
-            const glError = gl.getError();
-            if (glError !== gl.NO_ERROR) {
-                console.error("❌ WebGL error before shader compilation:", glError);
-            }
-
-            try {
-                console.log("🎨 About to call shaderGetter");
-                const result = this.shaderGetter(renderContext.emitter);
-                console.log("🎨 shaderGetter result:", result);
-
-                // Check for WebGL errors after shader compilation
-                const glErrorAfter = gl.getError();
-                if (glErrorAfter !== gl.NO_ERROR) {
-                    console.error("❌ WebGL error after shader compilation:", glErrorAfter);
-                }
-
-                const { shader } = result;
-                console.log("🎨 shader:", shader);
-
-                if (shader === null) {
-                    console.log("🎨 Shader is null - checking for compilation errors");
-                    // The shader system might have error information
-                    if (result.fallback) {
-                        console.log("🎨 Shader compilation fell back to fallback");
-                    }
-                }
-
-                return shader;
-            } catch (error) {
-                console.error("❌ Error in getShader:", error);
-                return null;
-            }
+            const result = this.shaderGetter(renderContext.emitter);
+            return result.shader;
         }
     }
     return C as MixinConstructor<typeof C, TBase>;
