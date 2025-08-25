@@ -141,7 +141,6 @@ export class SegmentationUserLayerGroupState
     super();
     const { specificationChanged } = this;
     this.hideSegmentZero.changed.add(specificationChanged.dispatch);
-    this.allowBrush.changed.add(specificationChanged.dispatch);
     this.segmentQuery.changed.add(specificationChanged.dispatch);
 
     const { selectedSegments } = this;
@@ -206,11 +205,6 @@ export class SegmentationUserLayerGroupState
     );
     verifyOptionalObjectProperty(
       specification,
-      json_keys.ALLOW_BRUSH_JSON_KEY,
-      (value) => this.allowBrush.restoreState(value),
-    );
-    verifyOptionalObjectProperty(
-      specification,
       json_keys.EQUIVALENCES_JSON_KEY,
       (value) => {
         this.localGraph.restoreState(value);
@@ -247,7 +241,6 @@ export class SegmentationUserLayerGroupState
   toJSON() {
     const x: any = {};
     x[json_keys.HIDE_SEGMENT_ZERO_JSON_KEY] = this.hideSegmentZero.toJSON();
-    x[json_keys.ALLOW_BRUSH_JSON_KEY] = this.allowBrush.toJSON();
     const { selectedSegments, visibleSegments } = this;
     if (selectedSegments.size > 0) {
       x[json_keys.SEGMENTS_JSON_KEY] = [...selectedSegments].map((segment) => {
@@ -270,7 +263,6 @@ export class SegmentationUserLayerGroupState
   assignFrom(other: SegmentationUserLayerGroupState) {
     this.maxIdLength.value = other.maxIdLength.value;
     this.hideSegmentZero.value = other.hideSegmentZero.value;
-    this.allowBrush.value = other.allowBrush.value;
     this.selectedSegments.assignFrom(other.selectedSegments);
     this.visibleSegments.assignFrom(other.visibleSegments);
     this.segmentEquivalences.assignFrom(other.segmentEquivalences);
@@ -288,7 +280,6 @@ export class SegmentationUserLayerGroupState
   localSegmentEquivalences = false;
   maxIdLength = new WatchableValue(1);
   hideSegmentZero = new TrackableBoolean(true, true);
-  allowBrush = new TrackableBoolean(true, true);
   segmentQuery = new TrackableValue<string>("", verifyString);
 
   temporaryVisibleSegments: Uint64Set;
@@ -476,12 +467,6 @@ class SegmentationUserLayerDisplayState implements SegmentationDisplayState {
         (group) => group.hideSegmentZero,
       ),
     );
-    this.allowBrush = this.layer.registerDisposer(
-      new IndirectWatchableValue(
-        this.segmentationGroupState,
-        (group) => group.allowBrush,
-      ),
-    );
     this.segmentColorHash = this.layer.registerDisposer(
       new IndirectTrackableValue(
         this.segmentationColorGroupState,
@@ -570,7 +555,6 @@ class SegmentationUserLayerDisplayState implements SegmentationDisplayState {
 
   // Indirect properties
   hideSegmentZero: WatchableValueInterface<boolean>;
-  allowBrush: WatchableValueInterface<boolean>;
   segmentColorHash: TrackableValueInterface<number>;
   segmentStatedColors: WatchableValueInterface<Uint64Map>;
   tempSegmentStatedColors2d: WatchableValueInterface<Uint64Map>;
@@ -595,6 +579,7 @@ export class SegmentationUserLayer extends Base {
   sliceViewRenderScaleTarget = trackableRenderScaleTarget(1);
   codeVisible = new TrackableBoolean(true);
   brushHashTable = new BrushHashTable();
+  brushStrokeLayer: BrushStrokeLayer | null = null; // Reference to brush stroke layer for triggering redraws
 
   graphConnection = new WatchableValue<
     SegmentationGraphSourceConnection | undefined
@@ -917,6 +902,9 @@ export class SegmentationUserLayer extends Base {
               this.brushHashTable,
               new Float32Array([1, 0, 0, 0.8]) // Default red color
             );
+
+            // Store reference for triggering redraws from brush tool
+            this.brushStrokeLayer = brushStrokeLayer;
 
             // Add slice view brush stroke layer
             const sliceViewRenderLayer = new SliceViewBrushStrokeLayer(

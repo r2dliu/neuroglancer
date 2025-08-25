@@ -30,10 +30,6 @@ import type {
     ChunkDisplayTransformParameters,
     ChunkTransformParameters,
 } from "#src/render_coordinate_transform.js";
-import {
-    getChunkDisplayTransformParameters,
-    getLayerDisplayDimensionMapping,
-} from "#src/render_coordinate_transform.js";
 import type { RenderScaleHistogram } from "#src/render_scale_statistics.js";
 import type {
     VisibilityTrackedRenderLayer,
@@ -48,8 +44,6 @@ import { constantWatchableValue } from "#src/trackable_value.js";
 import type { Owned } from "#src/util/disposable.js";
 import { RefCounted } from "#src/util/disposable.js";
 import type { ValueOrError } from "#src/util/error.js";
-import type { MessageList } from "#src/util/message_list.js";
-import { MessageSeverity } from "#src/util/message_list.js";
 import type { AnyConstructor, MixinConstructor } from "#src/util/mixin.js";
 import { NullarySignal } from "#src/util/signal.js";
 import type { ParameterizedContextDependentShaderGetter } from "#src/webgl/dynamic_shader.js";
@@ -69,50 +63,6 @@ interface AttachmentState {
     chunkTransform: ValueOrError<ChunkTransformParameters>;
     displayDimensionRenderInfo: DisplayDimensionRenderInfo;
     chunkRenderParameters: BrushStrokeChunkRenderParameters | undefined;
-}
-
-function getBrushStrokeChunkRenderParameters(
-    chunkTransform: ValueOrError<ChunkTransformParameters>,
-    displayDimensionRenderInfo: DisplayDimensionRenderInfo,
-    messages: MessageList,
-): BrushStrokeChunkRenderParameters | undefined {
-    messages.clearMessages();
-    const returnError = (message: string) => {
-        messages.addMessage({ severity: MessageSeverity.error, message });
-        return undefined;
-    };
-    if (chunkTransform.error !== undefined) {
-        return returnError(chunkTransform.error);
-    }
-    const layerRenderDimensionMapping = getLayerDisplayDimensionMapping(
-        chunkTransform.modelTransform,
-        displayDimensionRenderInfo.displayDimensionIndices,
-    );
-    let chunkDisplayTransform: ChunkDisplayTransformParameters;
-    try {
-        chunkDisplayTransform = getChunkDisplayTransformParameters(
-            chunkTransform,
-            layerRenderDimensionMapping,
-        );
-    } catch (e) {
-        return returnError((e as Error).message);
-    }
-
-    const { chunkTransform: chunkTransformParams } = chunkDisplayTransform;
-    const { unpaddedRank } = chunkTransformParams.modelTransform;
-    const modelClipBounds = new Float32Array(unpaddedRank * 2);
-    modelClipBounds.fill(1, unpaddedRank);
-    const { numChunkDisplayDims, chunkDisplayDimensionIndices } = chunkDisplayTransform;
-    for (let i = 0; i < numChunkDisplayDims; ++i) {
-        const chunkDim = chunkDisplayDimensionIndices[i];
-        modelClipBounds[unpaddedRank + chunkDim] = 0;
-    }
-
-    return {
-        chunkTransform,
-        chunkDisplayTransform,
-        modelClipBounds,
-    };
 }
 
 export class BrushStrokeLayer extends RefCounted {
@@ -135,10 +85,6 @@ export class BrushStrokeLayer extends RefCounted {
 
     get gl() {
         return this.chunkManager.gl;
-    }
-
-    get enabled() {
-        return this.brushHashTable.size > 0;
     }
 }
 
@@ -163,53 +109,6 @@ function BrushStrokeRenderLayer<
                     this.defineShader(builder);
                 },
             });
-        }
-
-        attach(attachment: VisibleLayerInfo<LayerView, AttachmentState>) {
-            super.attach(attachment);
-            const { chunkTransform } = this;
-            const displayDimensionRenderInfo =
-                attachment.view.displayDimensionRenderInfo.value;
-            attachment.state = {
-                chunkTransform,
-                displayDimensionRenderInfo,
-                chunkRenderParameters: getBrushStrokeChunkRenderParameters(
-                    chunkTransform,
-                    displayDimensionRenderInfo,
-                    attachment.messages,
-                ),
-            };
-        }
-
-        updateAttachmentState(
-            attachment: VisibleLayerInfo<LayerView, AttachmentState>,
-        ): BrushStrokeChunkRenderParameters | undefined {
-            const state = attachment.state!;
-            const { chunkTransform } = this;
-            const displayDimensionRenderInfo =
-                attachment.view.displayDimensionRenderInfo.value;
-            if (
-                state !== undefined &&
-                state.chunkTransform === chunkTransform &&
-                state.displayDimensionRenderInfo === displayDimensionRenderInfo
-            ) {
-                return state.chunkRenderParameters;
-            }
-            state.chunkTransform = chunkTransform;
-            state.displayDimensionRenderInfo = displayDimensionRenderInfo;
-            const chunkRenderParameters = (state.chunkRenderParameters =
-                getBrushStrokeChunkRenderParameters(
-                    chunkTransform,
-                    displayDimensionRenderInfo,
-                    attachment.messages,
-                ));
-            return chunkRenderParameters;
-        }
-
-        get chunkTransform(): ValueOrError<ChunkTransformParameters> {
-            // Return an error to skip chunk-based rendering for now
-            // We'll implement proper coordinate transforms later
-            return { error: "Brush stroke layers don't use chunk-based transforms" };
         }
 
         get gl() {
@@ -299,11 +198,7 @@ function BrushStrokeRenderLayer<
                 builder.setVertexMain(vertexShader);
 
                 const fragmentShader = `
-                    // Use the same transformation as your working custom renderer, but in reverse
-                    // vScreenPosition is NDC coordinates (-1 to 1)
-                    
-                    // Reverse the transformation: NDC -> clip space -> view space -> world space
-                    // Start with NDC coordinates and assume z=0 for the current slice
+                    // Coordinate transformation is working correctly, now enable brush lookup
                     vec4 clipPos = vec4(vScreenPosition, 0.0, 1.0);
                     
                     // Transform from clip space to view space (inverse projection)
@@ -320,6 +215,12 @@ function BrushStrokeRenderLayer<
                     ivec3 voxelPos = ivec3(round(worldPos));
                     
                     // Extract coordinates for hash function (z, y, x order)
+                    // Handle negative coordinates properly - only process non-negative coordinates
+                    if (voxelPos.x < 0 || voxelPos.y < 0 || voxelPos.z < 0) {
+                        // Negative coordinates - no brush strokes in negative space
+                        discard;
+                    }
+                    
                     uint z1 = uint(voxelPos.x);  // global z 
                     uint y1 = uint(voxelPos.y);  // global y  
                     uint x1 = uint(voxelPos.z);  // global x
@@ -404,13 +305,11 @@ function BrushStrokeRenderLayer<
 
                 // Set view matrix (transforms world coordinates to view coordinates)
                 safeSetUniform("uViewMatrix", () => {
-                    console.log("🎨 Setting uViewMatrix:", viewMatrix);
                     gl.uniformMatrix4fv(shader.uniform("uViewMatrix"), false, viewMatrix);
                 });
 
                 // Set projection matrix (transforms view coordinates to clip coordinates)
                 safeSetUniform("uProjectionMatrix", () => {
-                    console.log("🎨 Setting uProjectionMatrix:", projectionMat);
                     gl.uniformMatrix4fv(shader.uniform("uProjectionMatrix"), false, projectionMat);
                 });
             }
@@ -421,24 +320,17 @@ function BrushStrokeRenderLayer<
             _attachment: VisibleLayerInfo<LayerView, AttachmentState>,
         ) {
             const { gl } = this;
-            console.log("🎨 BrushStrokeRenderLayer.draw() called");
-            console.log("🎨 Layer enabled:", this.base.enabled);
-            console.log("🎨 Hash table size:", this.base.brushHashTable.size);
-            console.log("🎨 Is perspective view:", this instanceof PerspectiveViewRenderLayer);
 
             // Check if layer should be rendered
-            if (!this.base.enabled) {
-                console.log("❌ Layer not enabled, skipping draw");
+            if (this.base.brushHashTable.size < 0) {
                 return;
             }
 
             // Get the shader for this render context
             const shader = this.getShader(renderContext);
             if (shader === null) {
-                console.log("❌ shader is null");
                 return;
             }
-            console.log("✅ shader obtained");
 
             // Bind and setup the shader
             shader.bind();
@@ -447,25 +339,9 @@ function BrushStrokeRenderLayer<
             // Choose draw call based on view type
             if (this instanceof PerspectiveViewRenderLayer) {
                 // 3D view: TODO - implement proper volume rendering draw call
-                console.log("🎨 3D view - skipping draw");
             } else {
-                // 2D view: draw single full-screen quad
-                console.log("🎨 2D view - drawing triangles");
                 gl.drawArrays(gl.TRIANGLES, 0, 6);
-                console.log("✅ 2D draw completed");
             }
-        }
-
-        endSlice(
-            _shader: ShaderProgram,
-        ) {
-            // Nothing to cleanup for the simple version
-        }
-
-
-
-        isReady() {
-            return true; // Always ready for testing
         }
 
         private getShader(renderContext: PerspectiveViewRenderContext | SliceViewPanelRenderContext) {

@@ -22,7 +22,6 @@ import {
 } from "#src/gpu_hash/shader.js";
 import {
   getChunkPositionFromCombinedGlobalLocalPositions,
-  getChunkTransformParameters,
 } from "#src/render_coordinate_transform.js";
 import {
   SegmentColorShaderManager,
@@ -79,7 +78,6 @@ export interface SliceViewSegmentationDisplayState
   selectedAlpha: WatchableValueInterface<number>;
   notSelectedAlpha: WatchableValueInterface<number>;
   hideSegmentZero: WatchableValueInterface<boolean>;
-  allowBrush: WatchableValueInterface<boolean>;
   ignoreNullVisibleSet: WatchableValueInterface<boolean>;
 }
 
@@ -89,7 +87,6 @@ interface ShaderParameters {
   baseSegmentHighlighting: boolean;
   hasSegmentStatedColors: boolean;
   hideSegmentZero: boolean;
-  allowBrush: boolean;
   hasSegmentDefaultColor: boolean;
   hasHighlightColor: boolean;
 }
@@ -97,48 +94,10 @@ interface ShaderParameters {
 const HAS_SELECTED_SEGMENT_FLAG = 1;
 const SHOW_ALL_SEGMENTS_FLAG = 2;
 
-export class BrushHashTable extends HashMapUint64 {
-  public modified_points: Record<string, number> = {} // key is z,y,x
 
-  private getBrushKey(z: number, y: number, x: number): bigint {
-    const x1 = x >>> 0;
-    const y1 = y >>> 0;
-    const z1 = z >>> 0;
-
-    const h1 = (((x1 * 73) * 1271) ^ ((y1 * 513) * 1345) ^ ((z1 * 421) * 675)) >>> 0;
-    const h2 = (((x1 * 127) * 337) ^ ((y1 * 111) * 887) ^ ((z1 * 269) * 325)) >>> 0;
-
-    return BigInt(h1) + (BigInt(h2) << 32n);
-  }
-
-  addBrushPoint(z: number, y: number, x: number, value: number) {
-    const key = this.getBrushKey(z, y, x);
-    this.delete(key);
-    const brushValue = BigInt(value);
-    this.modified_points[`${z},${y},${x}`] = value
-    this.set(key, brushValue);
-  }
-
-  deleteBrushPoint(z: number, y: number, x: number) {
-    const key = this.getBrushKey(z, y, x);
-    this.delete(key);
-  }
-
-  getBrushValue(z: number, y: number, x: number): number | undefined {
-    const key = this.getBrushKey(z, y, x);
-    const value = this.get(key);
-    if (value !== undefined) {
-      return Number(value);
-    }
-    return undefined;
-  }
-}
 
 export class SegmentationRenderLayer extends SliceViewVolumeRenderLayer<ShaderParameters> {
   public readonly segmentationGroupState: SegmentationGroupState;
-  brushHashTable = new BrushHashTable();
-  private gpuBrushHashTable: GPUHashTable<BrushHashTable>;
-  private brushHashTableManager = new HashMapShaderManager("brush");
   protected segmentColorShaderManager = new SegmentColorShaderManager(
     "segmentColorHash",
   );
@@ -208,7 +167,6 @@ export class SegmentationRenderLayer extends SliceViewVolumeRenderLayer<ShaderPa
           ),
         ),
         hideSegmentZero: displayState.hideSegmentZero,
-        allowBrush: displayState.allowBrush,
         baseSegmentColoring: displayState.baseSegmentColoring,
         baseSegmentHighlighting: displayState.baseSegmentHighlighting,
       })),
@@ -239,9 +197,6 @@ export class SegmentationRenderLayer extends SliceViewVolumeRenderLayer<ShaderPa
     );
     this.gpuTemporaryEquivalencesHashTable = this.registerDisposer(
       GPUHashTable.get(this.gl, this.temporaryEquivalencesHashMap.hashMap),
-    )
-    this.gpuBrushHashTable = this.registerDisposer(
-      GPUHashTable.get(this.gl, this.brushHashTable),
     );
 
     this.registerDisposer(
@@ -273,7 +228,6 @@ export class SegmentationRenderLayer extends SliceViewVolumeRenderLayer<ShaderPa
   }
 
   disposed() {
-    this.gpuBrushHashTable?.dispose();
     this.gpuSegmentStatedColorHashTable?.dispose();
   }
 
@@ -298,43 +252,9 @@ export class SegmentationRenderLayer extends SliceViewVolumeRenderLayer<ShaderPa
     uint64_t getUint64DataValue() {
       uint64_t x = toUint64(getDataValue());
     `;
-    if (parameters.allowBrush) {
-      builder.addUniform("bool", "uBrushEnabled");
-      builder.addUniform("mat4", "uChunkToLayerTransform");
-      builder.addUniform("mat4", "uBaseLayerToChunkTransform");
-      this.brushHashTableManager.defineShader(builder);
 
-      getUint64Code += `
-      if (uBrushEnabled) {
-        vec3 chunkPos = vChunkPosition;
-        // Transform from chunk space to layer space
-        vec4 layerPos = uChunkToLayerTransform * vec4(chunkPos + uTranslation, 1.0);
-        // Transform from layer space to base resolution chunk space
-        vec4 basePos = uBaseLayerToChunkTransform * layerPos;
-        
-        // Convert to integer coordinates in base resolution space
-        ivec3 ipos = ivec3(floor(basePos.xyz));
 
-        uint x1 = uint(ipos.x);
-        uint y1 = uint(ipos.y);
-        uint z1 = uint(ipos.z);
-        
-        // First hash component - avoid large multipliers
-        uint h1 = ((x1 * 73u) * 1271u) ^ ((y1 * 513u) * 1345u) ^ ((z1 * 421u) * 675u);
-        
-        // Second hash component - use different multipliers
-        uint h2 = ((x1 * 127u) * 337u) ^ ((y1 * 111u) * 887u) ^ ((z1 * 269u) * 325u);
-        
-        uint64_t key;
-        key.value[0] = h1;
-        key.value[1] = h2;
-        
-        uint64_t brushValue;
-        if (brush_get(key, brushValue)) {
-          return brushValue;
-        }
-      }`;
-    }
+
     getUint64Code += `
       return x;
     }`;
@@ -554,81 +474,7 @@ uint64_t getMappedObjectId(uint64_t value) {
       gl.uniform4fv(shader.uniform("uHighlightColor"), highlightColor);
     }
 
-    if (parameters.allowBrush) {
-      const transform = this.displayState.transform.value;
 
-      if (transform.error !== undefined) {
-        console.error("Transform error:", transform.error);
-        this.gl.uniform1i(shader.uniform("uBrushEnabled"), 0);
-        return;
-      }
-
-      const baseSources = this.multiscaleSource.getSources({
-        multiscaleToViewTransform: matrix.createIdentity(
-          Float32Array,
-          this.multiscaleSource.rank,
-        ),
-        displayRank: this.multiscaleSource.rank,
-        modelChannelDimensionIndices: [],
-      });
-
-      const baseSource = baseSources[0][0];
-
-      const baseTransform = getChunkTransformParameters(
-        transform,
-        baseSource.chunkToMultiscaleTransform,
-      );
-
-      const layerInfo = _sliceView.visibleLayers.get(this)!;
-      const currentSource = layerInfo.visibleSources[0];
-
-      const shaderChunkToLayer = new Float32Array(16);
-      const shaderLayerToChunk = new Float32Array(16);
-
-      // Copy the relevant 4x4 portion from the 5x5 matrices
-      const stride = 5;
-      for (let row = 0; row < 4; row++) {
-        for (let col = 0; col < 4; col++) {
-          shaderChunkToLayer[col * 4 + row] =
-            currentSource.chunkTransform.chunkToLayerTransform[
-            col * stride + row
-            ];
-          shaderLayerToChunk[col * 4 + row] =
-            baseTransform.layerToChunkTransform[col * stride + row];
-        }
-      }
-
-      gl.uniformMatrix4fv(
-        shader.uniform("uChunkToLayerTransform"),
-        false,
-        shaderChunkToLayer,
-      );
-      gl.uniformMatrix4fv(
-        shader.uniform("uBaseLayerToChunkTransform"),
-        false,
-        shaderLayerToChunk,
-      );
-
-      let { gpuBrushHashTable } = this;
-      if (
-        gpuBrushHashTable === undefined ||
-        gpuBrushHashTable.hashTable !== this.brushHashTable
-      ) {
-        gpuBrushHashTable?.dispose();
-        this.gpuBrushHashTable = gpuBrushHashTable = GPUHashTable.get(
-          this.gl,
-          this.brushHashTable,
-        );
-      }
-      this.brushHashTableManager.enable(
-        this.gl,
-        shader,
-        this.gpuBrushHashTable,
-      );
-      this.gl.uniform1i(shader.uniform("uBrushEnabled"), 1);
-    } else {
-      this.gl.uniform1i(shader.uniform("uBrushEnabled"), 0);
-    }
   }
 
   endSlice(
@@ -645,9 +491,6 @@ uint64_t getMappedObjectId(uint64_t value) {
       this.segmentStatedColorShaderManager.disable(gl, shader);
     }
     super.endSlice(sliceView, shader, parameters);
-    if (parameters.allowBrush) {
-      this.brushHashTableManager.disable(this.gl, shader);
-    }
   }
 
   override getValueAt(globalPosition: Float32Array) {
@@ -663,23 +506,6 @@ uint64_t getMappedObjectId(uint64_t value) {
         )
       ) {
         continue;
-      }
-
-      if (source.groupState?.allowBrush.value) {
-        const intGlobalPosition = globalPosition.map((value) =>
-          Math.round(value),
-        );
-        const z = intGlobalPosition[0];
-        const y = intGlobalPosition[1];
-        const x = intGlobalPosition[2];
-        const brushValue = this.brushHashTable.getBrushValue(z, y, x);
-
-        if (brushValue !== undefined) {
-          if (chunkTransform.channelSpaceShape.length === 0) {
-            return brushValue;
-          }
-          return new Array(chunkTransform.numChannels).fill(brushValue);
-        }
       }
 
       const result = source.getValueAt(tempChunkPosition, chunkTransform);
