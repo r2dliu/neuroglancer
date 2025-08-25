@@ -34,6 +34,8 @@ import type { RenderScaleHistogram } from "#src/render_scale_statistics.js";
 import type {
     VisibilityTrackedRenderLayer,
 } from "#src/renderlayer.js";
+import { SegmentColorShaderManager } from "#src/segment_color.js";
+import type { SegmentationDisplayState } from "#src/segmentation_display_state/frontend.js";
 import { defineBoundingBoxCrossSectionShader } from "#src/sliceview/bounding_box_shader_helper.js";
 import type {
     SliceViewPanelRenderContext,
@@ -68,14 +70,16 @@ interface AttachmentState {
 export class BrushStrokeLayer extends RefCounted {
     public gpuBrushHashTable: GPUHashTable<any>;
     public brushHashTableManager = new HashMapShaderManager("brushStroke");
+    public segmentColorShaderManager = new SegmentColorShaderManager("segmentColorHash");
     redrawNeeded = new NullarySignal();
 
     constructor(
         public chunkManager: ChunkManager,
         public brushHashTable: BrushHashTable,
-        public brushColor: Float32Array = new Float32Array([1, 0, 0, 0.8]), // Default red
+        public displayState: SegmentationDisplayState,
     ) {
         super();
+        console.log('BrushStrokeLayer constructor called, hash table size:', brushHashTable.size);
 
         // Create GPU hash table for brush strokes
         this.gpuBrushHashTable = this.registerDisposer(
@@ -99,6 +103,7 @@ function BrushStrokeRenderLayer<
             public renderScaleHistogram: RenderScaleHistogram,
         ) {
             super();
+            console.log('BrushStrokeRenderLayer constructor called, hash table size:', base.brushHashTable.size);
             this.registerDisposer(base.redrawNeeded.add(this.redrawNeeded.dispatch));
 
             // Create shader getter for brush stroke rendering
@@ -116,7 +121,7 @@ function BrushStrokeRenderLayer<
         }
 
         defineShader(builder: ShaderBuilder) {
-            builder.addUniform("highp vec4", "uBrushColor");
+            console.log('Defining brush stroke shader...');
 
             // Check if this is a perspective view (3D) or slice view (2D)
             const isPerspectiveView = this instanceof PerspectiveViewRenderLayer;
@@ -124,6 +129,7 @@ function BrushStrokeRenderLayer<
             if (isPerspectiveView) {
                 // 3D view: TODO - implement proper volume rendering
                 this.base.brushHashTableManager.defineShader(builder);
+                this.base.segmentColorShaderManager.defineShader(builder);
                 defineVertexId(builder);
                 defineBoundingBoxCrossSectionShader(builder);
 
@@ -146,10 +152,6 @@ function BrushStrokeRenderLayer<
                 builder.setVertexMain(vertexShader);
 
                 const fragmentShader = `
-                    // DEBUG: Always render to test if 3D overlay works
-                    emit(vec4(1.0, 0.0, 0.0, 0.8), 0u);
-                    
-                    /* TODO: Enable hash table lookup once we verify 3D overlay is working
                     // Sample brush hash table at chunk position (z,y,x order)
                     vec3 chunkPos = vChunkPosition + uTranslation;
                     ivec3 ipos = ivec3(floor(chunkPos));
@@ -168,16 +170,18 @@ function BrushStrokeRenderLayer<
                     
                     uint64_t brushValue;
                     if (brushStroke_get(key, brushValue)) {
-                        emit(vec4(1.0, 0.0, 0.0, 0.8), 0u);
+                        // Found brush stroke - use segment color based on the stored value
+                        vec3 segmentColor = segmentColorHash(brushValue);
+                        emit(vec4(segmentColor, 0.8), 0u);
                     } else {
                         discard;
                     }
-                    */
                 `;
                 builder.setFragmentMain(fragmentShader);
             } else {
                 // For 2D slice view: use same approach as your working custom renderer
                 this.base.brushHashTableManager.defineShader(builder);
+                this.base.segmentColorShaderManager.defineShader(builder);
                 builder.addUniform("highp mat4", "uViewMatrix");
                 builder.addUniform("highp mat4", "uProjectionMatrix");
                 builder.addVarying("highp vec2", "vScreenPosition");
@@ -235,8 +239,9 @@ function BrushStrokeRenderLayer<
                     
                     uint64_t brushValue;
                     if (brushStroke_get(key, brushValue)) {
-                        // Found brush stroke - render with brush color
-                        emit(uBrushColor, 0u);
+                        // Found brush stroke - use segment color based on the stored value
+                        vec3 segmentColor = segmentColorHash(brushValue);
+                        emit(vec4(segmentColor, 0.8), 0u);
                     } else {
                         // No brush stroke - discard fragment
                         discard;
@@ -251,52 +256,32 @@ function BrushStrokeRenderLayer<
             renderContext: PerspectiveViewRenderContext | SliceViewPanelRenderContext,
         ) {
             const { gl } = this;
-            const { brushColor, gpuBrushHashTable, brushHashTableManager } = this.base;
-
-            // Helper function to safely set uniforms
-            const safeSetUniform = (name: string, setter: () => void) => {
-                try {
-                    const location = shader.uniform(name);
-                    if (location !== null) {
-                        setter();
-                    }
-                } catch {
-                    // Uniform not found in shader, skip silently
-                }
-            };
-
-            // Set the brush color uniform
-            safeSetUniform("uBrushColor", () => {
-                gl.uniform4fv(shader.uniform("uBrushColor"), brushColor);
-            });
+            const { gpuBrushHashTable, brushHashTableManager, segmentColorShaderManager, displayState } = this.base;
 
             // Initialize brush hash table for both views
             brushHashTableManager.enable(gl, shader, gpuBrushHashTable);
 
+            // Initialize segment color shader
+            const colorGroupState = displayState.segmentationColorGroupState.value;
+            segmentColorShaderManager.enable(gl, shader, colorGroupState.segmentColorHash.value);
+
+
+
             if (this instanceof PerspectiveViewRenderLayer) {
                 // 3D perspective view: TODO - implement proper volume rendering uniforms
-                safeSetUniform("uTranslation", () => {
-                    gl.uniform3fv(shader.uniform("uTranslation"), new Float32Array([0, 0, 0]));
-                });
-                safeSetUniform("uChunkDataSize", () => {
-                    gl.uniform3fv(shader.uniform("uChunkDataSize"), new Float32Array([100, 100, 100]));
-                });
-                safeSetUniform("uLowerClipBound", () => {
-                    gl.uniform3fv(shader.uniform("uLowerClipBound"), new Float32Array([-1000, -1000, -1000]));
-                });
-                safeSetUniform("uUpperClipBound", () => {
-                    gl.uniform3fv(shader.uniform("uUpperClipBound"), new Float32Array([1000, 1000, 1000]));
-                });
-                safeSetUniform("uProjectionMatrix", () => {
-                    // Set identity projection matrix for now
-                    const identityMatrix = new Float32Array([
-                        1, 0, 0, 0,
-                        0, 1, 0, 0,
-                        0, 0, 1, 0,
-                        0, 0, 0, 1
-                    ]);
-                    gl.uniformMatrix4fv(shader.uniform("uProjectionMatrix"), false, identityMatrix);
-                });
+                gl.uniform3fv(shader.uniform("uTranslation"), new Float32Array([0, 0, 0]));
+                gl.uniform3fv(shader.uniform("uChunkDataSize"), new Float32Array([100, 100, 100]));
+                gl.uniform3fv(shader.uniform("uLowerClipBound"), new Float32Array([-1000, -1000, -1000]));
+                gl.uniform3fv(shader.uniform("uUpperClipBound"), new Float32Array([1000, 1000, 1000]));
+
+                // Set identity projection matrix for now
+                const identityMatrix = new Float32Array([
+                    1, 0, 0, 0,
+                    0, 1, 0, 0,
+                    0, 0, 1, 0,
+                    0, 0, 0, 1
+                ]);
+                gl.uniformMatrix4fv(shader.uniform("uProjectionMatrix"), false, identityMatrix);
             } else {
                 // For 2D slice view: use same matrices as your working custom renderer
                 const sliceViewContext = renderContext as SliceViewPanelRenderContext;
@@ -304,14 +289,10 @@ function BrushStrokeRenderLayer<
                 const { viewMatrix, projectionMat } = sliceViewProjectionParameters;
 
                 // Set view matrix (transforms world coordinates to view coordinates)
-                safeSetUniform("uViewMatrix", () => {
-                    gl.uniformMatrix4fv(shader.uniform("uViewMatrix"), false, viewMatrix);
-                });
+                gl.uniformMatrix4fv(shader.uniform("uViewMatrix"), false, viewMatrix);
 
                 // Set projection matrix (transforms view coordinates to clip coordinates)
-                safeSetUniform("uProjectionMatrix", () => {
-                    gl.uniformMatrix4fv(shader.uniform("uProjectionMatrix"), false, projectionMat);
-                });
+                gl.uniformMatrix4fv(shader.uniform("uProjectionMatrix"), false, projectionMat);
             }
         }
 
@@ -320,17 +301,21 @@ function BrushStrokeRenderLayer<
             _attachment: VisibleLayerInfo<LayerView, AttachmentState>,
         ) {
             const { gl } = this;
+            console.log('BrushStroke draw() called, hash table size:', this.base.brushHashTable.size);
 
             // Check if layer should be rendered
-            if (this.base.brushHashTable.size < 0) {
+            if (this.base.brushHashTable.size <= 0) {
+                console.log('No brush strokes to render, size:', this.base.brushHashTable.size);
                 return;
             }
 
             // Get the shader for this render context
             const shader = this.getShader(renderContext);
             if (shader === null) {
+                console.log('BrushStroke shader is null, cannot render');
                 return;
             }
+            console.log('BrushStroke shader found, proceeding with render');
 
             // Bind and setup the shader
             shader.bind();
@@ -346,6 +331,10 @@ function BrushStrokeRenderLayer<
 
         private getShader(renderContext: PerspectiveViewRenderContext | SliceViewPanelRenderContext) {
             const result = this.shaderGetter(renderContext.emitter);
+            console.log('Shader getter result:', result);
+            if (result.shader === null && result.fallback) {
+                console.log('Shader compilation failed, fallback info:', result.fallback);
+            }
             return result.shader;
         }
     }

@@ -589,19 +589,6 @@ export class SegmentationUserLayer extends Base {
     return bindSegmentListWidth(this.displayState, element);
   }
 
-
-
-  // Test method to add some brush strokes for testing
-  addTestBrushStrokes() {
-    console.log("Adding test brush strokes...");
-    for (let i = 0; i < 100; i++) {
-      for (let j = 0; j < 100; j++) {
-        this.brushHashTable.addBrushPoint(50, j, i, 255); // Add red brush strokes in a 10x10 grid
-      }
-    }
-    console.log(`Added ${this.brushHashTable.size} brush strokes`);
-  }
-
   segmentQueryFocusTime = new WatchableValue<number>(Number.NEGATIVE_INFINITY);
 
   selectSegment = (id: bigint, pin: boolean | "toggle") => {
@@ -764,6 +751,7 @@ export class SegmentationUserLayer extends Base {
       if (this.addStaticAnnotations(loadedSubsource)) continue;
       const { volume, mesh, segmentPropertyMap, segmentationGraph, local } =
         loadedSubsource.subsourceEntry.subsource;
+
       if (volume instanceof MultiscaleVolumeChunkSource) {
         switch (volume.dataType) {
           case DataType.FLOAT32:
@@ -885,32 +873,30 @@ export class SegmentationUserLayer extends Base {
           }
         }
       } else if (local === LocalDataSource.brushStrokes) {
-        console.log(local, "found brushstrokes subsource ")
         if (!isGroupRoot) {
           loadedSubsource.deactivate(
             "Not supported on non-root linked segmentation layers",
           );
         } else {
           loadedSubsource.activate(() => {
-            // Add test brush strokes for debugging
-            console.log("🎨 Adding test brush strokes for debugging");
-            this.addTestBrushStrokes();
-
+            console.log('Activating brush stroke subsource, hash table size:', this.brushHashTable.size);
             // Create brush stroke render layers
             const brushStrokeLayer = new BrushStrokeLayer(
               this.manager.chunkManager,
               this.brushHashTable,
-              new Float32Array([1, 0, 0, 0.8]) // Default red color
+              this.displayState // Pass display state for segment color computation
             );
 
             // Store reference for triggering redraws from brush tool
             this.brushStrokeLayer = brushStrokeLayer;
 
             // Add slice view brush stroke layer
+            console.log('Creating SliceViewBrushStrokeLayer');
             const sliceViewRenderLayer = new SliceViewBrushStrokeLayer(
               brushStrokeLayer.addRef(),
               this.sliceViewRenderScaleHistogram,
             );
+            console.log('Adding SliceViewBrushStrokeLayer to loadedSubsource');
             loadedSubsource.addRenderLayer(sliceViewRenderLayer);
 
             // Add perspective view brush stroke layer  
