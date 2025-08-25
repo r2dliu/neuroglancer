@@ -751,7 +751,6 @@ export class SegmentationUserLayer extends Base {
       if (this.addStaticAnnotations(loadedSubsource)) continue;
       const { volume, mesh, segmentPropertyMap, segmentationGraph, local } =
         loadedSubsource.subsourceEntry.subsource;
-
       if (volume instanceof MultiscaleVolumeChunkSource) {
         switch (volume.dataType) {
           case DataType.FLOAT32:
@@ -879,7 +878,6 @@ export class SegmentationUserLayer extends Base {
           );
         } else {
           loadedSubsource.activate(() => {
-            console.log('Activating brush stroke subsource, hash table size:', this.brushHashTable.size);
             // Create brush stroke render layers
             const brushStrokeLayer = new BrushStrokeLayer(
               this.manager.chunkManager,
@@ -891,12 +889,10 @@ export class SegmentationUserLayer extends Base {
             this.brushStrokeLayer = brushStrokeLayer;
 
             // Add slice view brush stroke layer
-            console.log('Creating SliceViewBrushStrokeLayer');
             const sliceViewRenderLayer = new SliceViewBrushStrokeLayer(
               brushStrokeLayer.addRef(),
               this.sliceViewRenderScaleHistogram,
             );
-            console.log('Adding SliceViewBrushStrokeLayer to loadedSubsource');
             loadedSubsource.addRenderLayer(sliceViewRenderLayer);
 
             // Add perspective view brush stroke layer  

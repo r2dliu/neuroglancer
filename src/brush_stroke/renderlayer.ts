@@ -79,8 +79,6 @@ export class BrushStrokeLayer extends RefCounted {
         public displayState: SegmentationDisplayState,
     ) {
         super();
-        console.log('BrushStrokeLayer constructor called, hash table size:', brushHashTable.size);
-
         // Create GPU hash table for brush strokes
         this.gpuBrushHashTable = this.registerDisposer(
             GPUHashTable.get(this.chunkManager.gl, brushHashTable),
@@ -103,10 +101,7 @@ function BrushStrokeRenderLayer<
             public renderScaleHistogram: RenderScaleHistogram,
         ) {
             super();
-            console.log('BrushStrokeRenderLayer constructor called, hash table size:', base.brushHashTable.size);
             this.registerDisposer(base.redrawNeeded.add(this.redrawNeeded.dispatch));
-
-            // Create shader getter for brush stroke rendering
             this.shaderGetter = parameterizedEmitterDependentShaderGetter(this, this.gl, {
                 memoizeKey: "brushStroke",
                 parameters: constantWatchableValue(undefined),
@@ -121,7 +116,12 @@ function BrushStrokeRenderLayer<
         }
 
         defineShader(builder: ShaderBuilder) {
-            console.log('Defining brush stroke shader...');
+            // Add opacity uniforms to match parent segmentation layer
+            builder.addUniform("highp float", "uSelectedAlpha");
+            builder.addUniform("highp float", "uNotSelectedAlpha");
+
+            // Add saturation uniform
+            builder.addUniform("highp float", "uSaturation");
 
             // Check if this is a perspective view (3D) or slice view (2D)
             const isPerspectiveView = this instanceof PerspectiveViewRenderLayer;
@@ -172,7 +172,10 @@ function BrushStrokeRenderLayer<
                     if (brushStroke_get(key, brushValue)) {
                         // Found brush stroke - use segment color based on the stored value
                         vec3 segmentColor = segmentColorHash(brushValue);
-                        emit(vec4(segmentColor, 0.8), 0u);
+                        
+                        // Apply saturation mixing (same as segmentation layer)
+                        vec3 finalColor = mix(vec3(1.0, 1.0, 1.0), segmentColor, uSaturation);
+                        emit(vec4(finalColor, uSelectedAlpha), 0u);
                     } else {
                         discard;
                     }
@@ -241,7 +244,10 @@ function BrushStrokeRenderLayer<
                     if (brushStroke_get(key, brushValue)) {
                         // Found brush stroke - use segment color based on the stored value
                         vec3 segmentColor = segmentColorHash(brushValue);
-                        emit(vec4(segmentColor, 0.8), 0u);
+                        
+                        // Apply saturation mixing (same as segmentation layer)
+                        vec3 finalColor = mix(vec3(1.0, 1.0, 1.0), segmentColor, uSaturation);
+                        emit(vec4(finalColor, uSelectedAlpha), 0u);
                     } else {
                         // No brush stroke - discard fragment
                         discard;
@@ -264,6 +270,17 @@ function BrushStrokeRenderLayer<
             // Initialize segment color shader
             const colorGroupState = displayState.segmentationColorGroupState.value;
             segmentColorShaderManager.enable(gl, shader, colorGroupState.segmentColorHash.value);
+
+            // Set opacity uniforms to match parent segmentation layer
+            const selectedAlpha = (displayState as any).selectedAlpha.value;
+            const notSelectedAlpha = (displayState as any).notSelectedAlpha.value;
+            const saturation = displayState.saturation.value;
+
+            console.log('Brush stroke alpha and saturation values:', { selectedAlpha, notSelectedAlpha, saturation });
+
+            gl.uniform1f(shader.uniform("uSelectedAlpha"), selectedAlpha);
+            gl.uniform1f(shader.uniform("uNotSelectedAlpha"), notSelectedAlpha);
+            gl.uniform1f(shader.uniform("uSaturation"), saturation);
 
 
 
@@ -301,23 +318,16 @@ function BrushStrokeRenderLayer<
             _attachment: VisibleLayerInfo<LayerView, AttachmentState>,
         ) {
             const { gl } = this;
-            console.log('BrushStroke draw() called, hash table size:', this.base.brushHashTable.size);
 
-            // Check if layer should be rendered
             if (this.base.brushHashTable.size <= 0) {
-                console.log('No brush strokes to render, size:', this.base.brushHashTable.size);
                 return;
             }
 
-            // Get the shader for this render context
             const shader = this.getShader(renderContext);
             if (shader === null) {
-                console.log('BrushStroke shader is null, cannot render');
                 return;
             }
-            console.log('BrushStroke shader found, proceeding with render');
 
-            // Bind and setup the shader
             shader.bind();
             this.initializeShader(shader, renderContext);
 
@@ -331,10 +341,6 @@ function BrushStrokeRenderLayer<
 
         private getShader(renderContext: PerspectiveViewRenderContext | SliceViewPanelRenderContext) {
             const result = this.shaderGetter(renderContext.emitter);
-            console.log('Shader getter result:', result);
-            if (result.shader === null && result.fallback) {
-                console.log('Shader compilation failed, fallback info:', result.fallback);
-            }
             return result.shader;
         }
     }
