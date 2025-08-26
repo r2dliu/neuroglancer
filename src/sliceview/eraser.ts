@@ -11,10 +11,20 @@ import { createToolCursor, updateCursorPosition } from "#src/util/cursor.js";
 import { EventActionMap } from "#src/util/event_action_map.js";
 import { mat4, vec3 } from "#src/util/geom.js";
 import { startRelativeMouseDrag } from "#src/util/mouse_drag.js";
+import { Signal } from "#src/util/signal.js";
 import type { Viewer } from "#src/viewer.js";
+
+export interface ErasePoint {
+  z: number;
+  y: number;
+  x: number;
+}
 
 export class EraserTool extends Tool<Viewer> {
   private eraserRadius: number = 1;
+
+  // New signal specifically for erase points data
+  erasePointsChanged = new Signal<(erasePoints: ErasePoint[]) => void>();
 
   constructor(public viewer: Viewer) {
     super(viewer.toolBinder, true);
@@ -110,6 +120,8 @@ export class EraserTool extends Tool<Viewer> {
         vec3.set(yAxis, 0, sign, 0);
       }
 
+      const erasePoints: ErasePoint[] = [];
+
       for (let dx = -this.eraserRadius; dx <= this.eraserRadius; dx++) {
         for (let dy = -this.eraserRadius; dy <= this.eraserRadius; dy++) {
           if (dx * dx + dy * dy <= this.eraserRadius * this.eraserRadius) {
@@ -143,12 +155,16 @@ export class EraserTool extends Tool<Viewer> {
                 newPosition[2],
               );
 
-              segmentationRenderLayer.brushHashTable.deleteBrushPoint(x, y, z);
+              erasePoints.push({ x, y, z });
             }
           }
         }
       }
-      segmentationRenderLayer.redrawNeeded.dispatch();
+
+      // Emit the erase points via signal instead of directly accessing hash table
+      if (erasePoints.length > 0) {
+        this.erasePointsChanged.dispatch(erasePoints);
+      }
     };
 
     activation.bindAction<MouseEvent>(
@@ -221,3 +237,4 @@ export class EraserTool extends Tool<Viewer> {
 export function registerEraserToolForViewer(contextType: typeof Viewer) {
   registerTool(contextType, "eraser", (viewer) => new EraserTool(viewer));
 }
+

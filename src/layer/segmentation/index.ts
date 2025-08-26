@@ -871,6 +871,7 @@ export class SegmentationUserLayer extends Base {
             });
           }
         }
+
       } else if (local === LocalDataSource.brushStrokes) {
         if (!isGroupRoot) {
           loadedSubsource.deactivate(
@@ -894,13 +895,6 @@ export class SegmentationUserLayer extends Base {
               this.sliceViewRenderScaleHistogram,
             );
             loadedSubsource.addRenderLayer(sliceViewRenderLayer);
-
-            // Add perspective view brush stroke layer  
-            // const perspectiveViewRenderLayer = new PerspectiveViewBrushStrokeLayer(
-            //   brushStrokeLayer.addRef(),
-            //   this.sliceViewRenderScaleHistogram,
-            // );
-            // loadedSubsource.addRenderLayer(perspectiveViewRenderLayer);
 
             // Clean up the base layer
             brushStrokeLayer.dispose();
