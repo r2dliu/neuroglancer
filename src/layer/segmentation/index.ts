@@ -16,6 +16,8 @@
 
 import "#src/layer/segmentation/style.css";
 
+import { BrushHashTable } from "#src/brush_stroke/index.js";
+import { BrushStrokeLayer, SliceViewBrushStrokeLayer } from "#src/brush_stroke/renderlayer.js";
 import type { CoordinateTransformSpecification } from "#src/coordinate_transform.js";
 import { emptyValidCoordinateSpace } from "#src/coordinate_transform.js";
 import type { DataSourceSpecification } from "#src/datasource/index.js";
@@ -133,14 +135,12 @@ import { registerLayerShaderControlsTool } from "#src/widget/shader_controls.js"
 
 export class SegmentationUserLayerGroupState
   extends RefCounted
-  implements SegmentationGroupState
-{
+  implements SegmentationGroupState {
   specificationChanged = new Signal();
   constructor(public layer: SegmentationUserLayer) {
     super();
     const { specificationChanged } = this;
     this.hideSegmentZero.changed.add(specificationChanged.dispatch);
-    this.allowBrush.changed.add(specificationChanged.dispatch);
     this.segmentQuery.changed.add(specificationChanged.dispatch);
 
     const { selectedSegments } = this;
@@ -205,11 +205,6 @@ export class SegmentationUserLayerGroupState
     );
     verifyOptionalObjectProperty(
       specification,
-      json_keys.ALLOW_BRUSH_JSON_KEY,
-      (value) => this.allowBrush.restoreState(value),
-    );
-    verifyOptionalObjectProperty(
-      specification,
       json_keys.EQUIVALENCES_JSON_KEY,
       (value) => {
         this.localGraph.restoreState(value);
@@ -246,7 +241,6 @@ export class SegmentationUserLayerGroupState
   toJSON() {
     const x: any = {};
     x[json_keys.HIDE_SEGMENT_ZERO_JSON_KEY] = this.hideSegmentZero.toJSON();
-    x[json_keys.ALLOW_BRUSH_JSON_KEY] = this.allowBrush.toJSON();
     const { selectedSegments, visibleSegments } = this;
     if (selectedSegments.size > 0) {
       x[json_keys.SEGMENTS_JSON_KEY] = [...selectedSegments].map((segment) => {
@@ -269,7 +263,6 @@ export class SegmentationUserLayerGroupState
   assignFrom(other: SegmentationUserLayerGroupState) {
     this.maxIdLength.value = other.maxIdLength.value;
     this.hideSegmentZero.value = other.hideSegmentZero.value;
-    this.allowBrush.value = other.allowBrush.value;
     this.selectedSegments.assignFrom(other.selectedSegments);
     this.visibleSegments.assignFrom(other.visibleSegments);
     this.segmentEquivalences.assignFrom(other.segmentEquivalences);
@@ -287,7 +280,6 @@ export class SegmentationUserLayerGroupState
   localSegmentEquivalences = false;
   maxIdLength = new WatchableValue(1);
   hideSegmentZero = new TrackableBoolean(true, true);
-  allowBrush = new TrackableBoolean(true, true);
   segmentQuery = new TrackableValue<string>("", verifyString);
 
   temporaryVisibleSegments: Uint64Set;
@@ -298,8 +290,7 @@ export class SegmentationUserLayerGroupState
 
 export class SegmentationUserLayerColorGroupState
   extends RefCounted
-  implements SegmentationColorGroupState
-{
+  implements SegmentationColorGroupState {
   specificationChanged = new Signal();
   constructor(public layer: SegmentationUserLayer) {
     super();
@@ -373,13 +364,12 @@ export class SegmentationUserLayerColorGroupState
 }
 
 class LinkedSegmentationGroupState<
-    State extends
-      | SegmentationUserLayerGroupState
-      | SegmentationUserLayerColorGroupState,
-  >
+  State extends
+  | SegmentationUserLayerGroupState
+  | SegmentationUserLayerColorGroupState,
+>
   extends RefCounted
-  implements WatchableValueInterface<State>
-{
+  implements WatchableValueInterface<State> {
   private curRoot: SegmentationUserLayer | undefined;
   private curGroupState: Owned<State> | undefined;
   get changed() {
@@ -477,12 +467,6 @@ class SegmentationUserLayerDisplayState implements SegmentationDisplayState {
         (group) => group.hideSegmentZero,
       ),
     );
-    this.allowBrush = this.layer.registerDisposer(
-      new IndirectWatchableValue(
-        this.segmentationGroupState,
-        (group) => group.allowBrush,
-      ),
-    );
     this.segmentColorHash = this.layer.registerDisposer(
       new IndirectTrackableValue(
         this.segmentationColorGroupState,
@@ -571,7 +555,6 @@ class SegmentationUserLayerDisplayState implements SegmentationDisplayState {
 
   // Indirect properties
   hideSegmentZero: WatchableValueInterface<boolean>;
-  allowBrush: WatchableValueInterface<boolean>;
   segmentColorHash: TrackableValueInterface<number>;
   segmentStatedColors: WatchableValueInterface<Uint64Map>;
   tempSegmentStatedColors2d: WatchableValueInterface<Uint64Map>;
@@ -595,6 +578,8 @@ export class SegmentationUserLayer extends Base {
   sliceViewRenderScaleHistogram = new RenderScaleHistogram();
   sliceViewRenderScaleTarget = trackableRenderScaleTarget(1);
   codeVisible = new TrackableBoolean(true);
+  brushHashTable = new BrushHashTable();
+  brushStrokeLayer: BrushStrokeLayer | null = null; // Reference to brush stroke layer for triggering redraws
 
   graphConnection = new WatchableValue<
     SegmentationGraphSourceConnection | undefined
@@ -825,7 +810,7 @@ export class SegmentationUserLayer extends Base {
             "Not supported on non-root linked segmentation layers",
           );
         } else {
-          loadedSubsource.activate(() => {});
+          loadedSubsource.activate(() => { });
           updatedSegmentPropertyMaps.push(segmentPropertyMap);
         }
       } else if (segmentationGraph !== undefined) {
@@ -886,15 +871,35 @@ export class SegmentationUserLayer extends Base {
             });
           }
         }
-        // } else if (local === LocalDataSource.brush) {
-        //   if (!isGroupRoot) {
-        //     loadedSubsource.deactivate(
-        //       "Not supported on non-root linked segmentation layers",
-        //     );
-        //   } else {
-        //     console.log("selected brush! do something later");
-        //     this.displayState.allowBrush = true
-        //   }
+
+      } else if (local === LocalDataSource.brushStrokes) {
+        if (!isGroupRoot) {
+          loadedSubsource.deactivate(
+            "Not supported on non-root linked segmentation layers",
+          );
+        } else {
+          loadedSubsource.activate(() => {
+            // Create brush stroke render layers
+            const brushStrokeLayer = new BrushStrokeLayer(
+              this.manager.chunkManager,
+              this.brushHashTable,
+              this.displayState // Pass display state for segment color computation
+            );
+
+            // Store reference for triggering redraws from brush tool
+            this.brushStrokeLayer = brushStrokeLayer;
+
+            // Add slice view brush stroke layer
+            const sliceViewRenderLayer = new SliceViewBrushStrokeLayer(
+              brushStrokeLayer.addRef(),
+              this.sliceViewRenderScaleHistogram,
+            );
+            loadedSubsource.addRenderLayer(sliceViewRenderLayer);
+
+            // Clean up the base layer
+            brushStrokeLayer.dispose();
+          });
+        }
       } else {
         loadedSubsource.deactivate("Not compatible with segmentation layer");
       }
@@ -961,7 +966,7 @@ export class SegmentationUserLayer extends Base {
     if (
       layerSpec[json_keys.EQUIVALENCES_JSON_KEY] !== undefined &&
       explicitSpecs.find((spec) => spec.url === localEquivalencesUrl) ===
-        undefined
+      undefined
     ) {
       specs.push({
         url: localEquivalencesUrl,

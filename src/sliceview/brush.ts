@@ -11,11 +11,22 @@ import { createToolCursor, updateCursorPosition } from "#src/util/cursor.js";
 import { EventActionMap } from "#src/util/event_action_map.js";
 import { mat4, vec3 } from "#src/util/geom.js";
 import { startRelativeMouseDrag } from "#src/util/mouse_drag.js";
+import { Signal } from "#src/util/signal.js";
 import type { Viewer } from "#src/viewer.js";
+
+export interface BrushPoint {
+  z: number;
+  y: number;
+  x: number;
+  value: number;
+}
 
 export class BrushTool extends Tool<Viewer> {
   private brushRadius: number = 1;
   private brushValue: number = -1;
+
+  // New signal specifically for brush points data
+  brushPointsChanged = new Signal<(brushPoints: BrushPoint[]) => void>();
 
   constructor(public viewer: Viewer) {
     super(viewer.toolBinder, true);
@@ -117,6 +128,8 @@ export class BrushTool extends Tool<Viewer> {
         vec3.set(yAxis, 0, sign, 0);
       }
 
+      const brushPoints: BrushPoint[] = [];
+
       for (let dx = -this.brushRadius; dx <= this.brushRadius; dx++) {
         for (let dy = -this.brushRadius; dy <= this.brushRadius; dy++) {
           if (dx * dx + dy * dy <= this.brushRadius * this.brushRadius) {
@@ -150,17 +163,17 @@ export class BrushTool extends Tool<Viewer> {
                 newPosition[2],
               );
 
-              segmentationRenderLayer.brushHashTable.addBrushPoint(
-                z,
-                y,
-                x,
-                this.brushValue,
-              );
+              brushPoints.push({ z, y, x, value: this.brushValue });
             }
           }
         }
+
       }
-      segmentationRenderLayer.redrawNeeded.dispatch();
+
+      // Dispatch brush points changed event with the new brush points data
+      if (brushPoints.length > 0) {
+        this.brushPointsChanged.dispatch(brushPoints);
+      }
     };
 
     activation.bindAction<MouseEvent>(

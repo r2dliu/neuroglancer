@@ -242,7 +242,7 @@ export class DataSourceSubsourceView extends RefCounted {
         case LocalDataSource.equivalences:
           sourceTypeStr = "local segmentation graph";
           break;
-        case LocalDataSource.brush:
+        case LocalDataSource.brushStrokes:
           sourceTypeStr = "local brush";
           break;
       }
