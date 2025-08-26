@@ -16,7 +16,7 @@
 
 import type { BrushHashTable } from "#src/brush_stroke/index.js";
 import type { ChunkManager } from "#src/chunk_manager/frontend.js";
-import { GPUHashTable, HashMapShaderManager } from "#src/gpu_hash/shader.js";
+import { GPUHashTable, HashMapShaderManager, HashSetShaderManager } from "#src/gpu_hash/shader.js";
 import type {
     LayerView,
     VisibleLayerInfo,
@@ -71,6 +71,7 @@ export class BrushStrokeLayer extends RefCounted {
     public gpuBrushHashTable: GPUHashTable<any>;
     public brushHashTableManager = new HashMapShaderManager("brushStroke");
     public segmentColorShaderManager = new SegmentColorShaderManager("segmentColorHash");
+    public visibleSegmentsHashManager = new HashSetShaderManager("visibleSegments");
     redrawNeeded = new NullarySignal();
 
     constructor(
@@ -122,6 +123,9 @@ function BrushStrokeRenderLayer<
 
             // Add saturation uniform
             builder.addUniform("highp float", "uSaturation");
+
+            // Add blending mode uniform for seamless integration
+            builder.addUniform("highp float", "uBlendingEnabled");
 
             // Check if this is a perspective view (3D) or slice view (2D)
             const isPerspectiveView = this instanceof PerspectiveViewRenderLayer;
@@ -185,6 +189,26 @@ function BrushStrokeRenderLayer<
                 // For 2D slice view: use same approach as your working custom renderer
                 this.base.brushHashTableManager.defineShader(builder);
                 this.base.segmentColorShaderManager.defineShader(builder);
+
+                // Add visibility checking to match segmentation layer
+                builder.addUniform("highp uint", "uFlags");
+
+                // Add the actual visibility hash table from segmentation layer
+                this.base.visibleSegmentsHashManager.defineShader(builder);
+
+                builder.addFragmentCode(`
+                    bool isSegmentVisible(uint64_t segmentId) {
+                        // Same logic as segmentation layer
+                        const uint SHOW_ALL_SEGMENTS_FLAG = 2u;
+                        if ((uFlags & SHOW_ALL_SEGMENTS_FLAG) != 0u) {
+                            return true; // All segments visible
+                        } else {
+                            // Check if segment is in visible set
+                            return ${this.base.visibleSegmentsHashManager.hasFunctionName}(segmentId);
+                        }
+                    }
+                `);
+
                 builder.addUniform("highp mat4", "uViewMatrix");
                 builder.addUniform("highp mat4", "uProjectionMatrix");
                 builder.addVarying("highp vec2", "vScreenPosition");
@@ -247,7 +271,19 @@ function BrushStrokeRenderLayer<
                         
                         // Apply saturation mixing (same as segmentation layer)
                         vec3 finalColor = mix(vec3(1.0, 1.0, 1.0), segmentColor, uSaturation);
-                        emit(vec4(finalColor, uSelectedAlpha), 0u);
+                        
+                        // Use alpha based on blending context to seamlessly integrate with segmentation
+                        float outputAlpha;
+                        if (uBlendingEnabled > 0.5) {
+                            // Multiple layers - check if segment is visible (same logic as segmentation layer)
+                            bool isVisible = isSegmentVisible(brushValue);
+                            outputAlpha = isVisible ? uSelectedAlpha : uNotSelectedAlpha;
+                        } else {
+                            // Single layer - replace pixels completely
+                            outputAlpha = 1.0;
+                        }
+                        
+                        emit(vec4(finalColor, outputAlpha), 0u);
                     } else {
                         // No brush stroke - discard fragment
                         discard;
@@ -276,30 +312,68 @@ function BrushStrokeRenderLayer<
             const notSelectedAlpha = (displayState as any).notSelectedAlpha.value;
             const saturation = displayState.saturation.value;
 
-            console.log('Brush stroke alpha and saturation values:', { selectedAlpha, notSelectedAlpha, saturation });
+            // Get visibility information from segmentation display state
+            const segmentationGroupState = displayState.segmentationGroupState.value;
+            const visibleSegments = segmentationGroupState.visibleSegments;
 
             gl.uniform1f(shader.uniform("uSelectedAlpha"), selectedAlpha);
             gl.uniform1f(shader.uniform("uNotSelectedAlpha"), notSelectedAlpha);
             gl.uniform1f(shader.uniform("uSaturation"), saturation);
 
+            // Set up visibility checking flags (same as segmentation layer)
+            let flags = 0;
+            if (visibleSegments.hashTable.size === 0) {
+                flags |= 2; // SHOW_ALL_SEGMENTS_FLAG
+            }
+            gl.uniform1ui(shader.uniform("uFlags"), flags);
+
+            console.log('Visibility info:', {
+                visibleSegmentsSize: visibleSegments.hashTable.size,
+                flags,
+                showAll: (flags & 2) !== 0
+            });
+
+            console.log('Brush stroke alphas:', { selectedAlpha, notSelectedAlpha });
+
+            // Set blending mode for seamless integration
+            if (this instanceof PerspectiveViewRenderLayer) {
+                gl.uniform1f(shader.uniform("uBlendingEnabled"), 1.0); // Always blend in 3D
+            } else {
+                const sliceViewContext = renderContext as SliceViewPanelRenderContext;
+                const layerCount = sliceViewContext.sliceView.visibleLayerList.length;
+                // Multiple layers present when there's more than just the segmentation layer
+                const hasMultipleLayers = layerCount > 1;
+                const blendingValue = hasMultipleLayers ? 1.0 : 0.0;
+                gl.uniform1f(shader.uniform("uBlendingEnabled"), blendingValue);
+            }
+
 
 
             if (this instanceof PerspectiveViewRenderLayer) {
-                // 3D perspective view: TODO - implement proper volume rendering uniforms
+                // 3D perspective view: Set up uniforms for volume rendering
+                const perspectiveContext = renderContext as PerspectiveViewRenderContext;
+
+
+
                 gl.uniform3fv(shader.uniform("uTranslation"), new Float32Array([0, 0, 0]));
-                gl.uniform3fv(shader.uniform("uChunkDataSize"), new Float32Array([100, 100, 100]));
+                gl.uniform3fv(shader.uniform("uChunkDataSize"), new Float32Array([512, 512, 512]));
                 gl.uniform3fv(shader.uniform("uLowerClipBound"), new Float32Array([-1000, -1000, -1000]));
                 gl.uniform3fv(shader.uniform("uUpperClipBound"), new Float32Array([1000, 1000, 1000]));
 
-                // Set identity projection matrix for now
-                const identityMatrix = new Float32Array([
-                    1, 0, 0, 0,
-                    0, 1, 0, 0,
-                    0, 0, 1, 0,
-                    0, 0, 0, 1
-                ]);
-                gl.uniformMatrix4fv(shader.uniform("uProjectionMatrix"), false, identityMatrix);
+                // Use the actual projection matrix from the perspective view
+                const { projectionParameters } = perspectiveContext;
+                if (projectionParameters && projectionParameters.viewProjectionMat) {
+                    gl.uniformMatrix4fv(shader.uniform("uProjectionMatrix"), false, projectionParameters.viewProjectionMat);
+                } else {
+                    const identityMatrix = new Float32Array(16);
+                    identityMatrix[0] = identityMatrix[5] = identityMatrix[10] = identityMatrix[15] = 1;
+                    gl.uniformMatrix4fv(shader.uniform("uProjectionMatrix"), false, identityMatrix);
+                }
             } else {
+                const { visibleSegmentsHashManager } = this.base;
+                // Get the GPU hash table from the visible segments hash table
+                const gpuHashTable = GPUHashTable.get(gl, visibleSegments.hashTable);
+                visibleSegmentsHashManager.enable(gl, shader, gpuHashTable);
                 // For 2D slice view: use same matrices as your working custom renderer
                 const sliceViewContext = renderContext as SliceViewPanelRenderContext;
                 const sliceViewProjectionParameters = sliceViewContext.sliceView.projectionParameters.value;
@@ -318,6 +392,7 @@ function BrushStrokeRenderLayer<
             _attachment: VisibleLayerInfo<LayerView, AttachmentState>,
         ) {
             const { gl } = this;
+            const isPerspective = this instanceof PerspectiveViewRenderLayer;
 
             if (this.base.brushHashTable.size <= 0) {
                 return;
@@ -331,11 +406,33 @@ function BrushStrokeRenderLayer<
             shader.bind();
             this.initializeShader(shader, renderContext);
 
+            // Set up seamless blending with segmentation layer
+            if (!isPerspective) {
+                const sliceViewContext = renderContext as SliceViewPanelRenderContext;
+                const layerCount = sliceViewContext.sliceView.visibleLayerList.length;
+                const hasMultipleLayers = layerCount > 1;
+
+                if (hasMultipleLayers) {
+                    // Multiple layers present - blend normally
+                    gl.enable(gl.BLEND);
+                    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+                } else {
+                    // Only segmentation layer - replace underlying pixels to appear seamless
+                    // Disable blending so brush strokes replace segmentation pixels completely
+                    gl.disable(gl.BLEND);
+                }
+            }
+
             // Choose draw call based on view type
-            if (this instanceof PerspectiveViewRenderLayer) {
-                // 3D view: TODO - implement proper volume rendering draw call
+            if (isPerspective) {
+                // 3D view: Draw brush stroke overlays on slice planes
+                this.drawSlicePlaneOverlays(renderContext as PerspectiveViewRenderContext, gl, shader);
             } else {
+                // 2D view: Draw full-screen quad
                 gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+                // Clean up blending state
+                gl.disable(gl.BLEND);
             }
         }
 
@@ -343,9 +440,35 @@ function BrushStrokeRenderLayer<
             const result = this.shaderGetter(renderContext.emitter);
             return result.shader;
         }
+
+        private drawSlicePlaneOverlays(
+            renderContext: PerspectiveViewRenderContext,
+            gl: WebGL2RenderingContext,
+            _shader: ShaderProgram
+        ) {
+            // Only draw if slice views are present
+            if (!renderContext.sliceViewsPresent) {
+                return;
+            }
+
+            if (this.base.brushHashTable.size <= 0) {
+                return;
+            }
+
+            // Enable blending for overlay effect
+            gl.enable(gl.BLEND);
+            gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+            // Draw a test rectangle positioned in 3D space
+            gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+            gl.disable(gl.BLEND);
+        }
     }
     return C as MixinConstructor<typeof C, TBase>;
 }
+
+
 
 export const PerspectiveViewBrushStrokeLayer = BrushStrokeRenderLayer(
     PerspectiveViewRenderLayer,
