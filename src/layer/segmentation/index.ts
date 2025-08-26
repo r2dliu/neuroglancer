@@ -17,7 +17,7 @@
 import "#src/layer/segmentation/style.css";
 
 import { BrushHashTable } from "#src/brush_stroke/index.js";
-import { BrushStrokeLayer, PerspectiveViewBrushStrokeLayer, SliceViewBrushStrokeLayer } from "#src/brush_stroke/renderlayer.js";
+import { BrushStrokeLayer, SliceViewBrushStrokeLayer } from "#src/brush_stroke/renderlayer.js";
 import type { CoordinateTransformSpecification } from "#src/coordinate_transform.js";
 import { emptyValidCoordinateSpace } from "#src/coordinate_transform.js";
 import type { DataSourceSpecification } from "#src/datasource/index.js";
@@ -896,11 +896,11 @@ export class SegmentationUserLayer extends Base {
             loadedSubsource.addRenderLayer(sliceViewRenderLayer);
 
             // Add perspective view brush stroke layer  
-            const perspectiveViewRenderLayer = new PerspectiveViewBrushStrokeLayer(
-              brushStrokeLayer.addRef(),
-              this.sliceViewRenderScaleHistogram,
-            );
-            loadedSubsource.addRenderLayer(perspectiveViewRenderLayer);
+            // const perspectiveViewRenderLayer = new PerspectiveViewBrushStrokeLayer(
+            //   brushStrokeLayer.addRef(),
+            //   this.sliceViewRenderScaleHistogram,
+            // );
+            // loadedSubsource.addRenderLayer(perspectiveViewRenderLayer);
 
             // Clean up the base layer
             brushStrokeLayer.dispose();
