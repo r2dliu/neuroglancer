@@ -12,7 +12,9 @@ import { Signal } from "#src/util/signal.js";
 import type { Viewer } from "#src/viewer.js";
 
 export class BoundingBoxTool extends Tool<Viewer> {
-  bboxChanged = new Signal<(bbox: { start: vec3 | null, end: vec3 | null } | null) => void>();
+  bboxChanged = new Signal<
+    (bbox: { start: vec3 | null; end: vec3 | null } | null) => void
+  >();
 
   constructor(public viewer: Viewer) {
     super(viewer.toolBinder, true);
@@ -38,7 +40,7 @@ export class BoundingBoxTool extends Tool<Viewer> {
         action: "neuroglancer-bbox-end",
         stopPropagation: true,
         preventDefault: true,
-      }
+      },
     });
 
     this.viewer.inputEventBindings.sliceView.addParent(
@@ -62,11 +64,11 @@ export class BoundingBoxTool extends Tool<Viewer> {
       const roundedPosition = vec3.fromValues(
         Math.round(position[0]),
         Math.round(position[1]),
-        Math.round(position[2])
+        Math.round(position[2]),
       );
       this.bboxChanged.dispatch({
         start: startPosition,
-        end: roundedPosition
+        end: roundedPosition,
       });
     };
 
@@ -85,7 +87,7 @@ export class BoundingBoxTool extends Tool<Viewer> {
         const roundedPosition = vec3.fromValues(
           Math.round(position[0]),
           Math.round(position[1]),
-          Math.round(position[2])
+          Math.round(position[2]),
         );
         startRelativeMouseDrag(actionEvent.detail, () => {
           updatePosition(roundedPosition);
@@ -146,5 +148,9 @@ export class BoundingBoxTool extends Tool<Viewer> {
 }
 
 export function registerBoundingBoxToolForViewer(contextType: typeof Viewer) {
-  registerTool(contextType, "boundingBox", (viewer) => new BoundingBoxTool(viewer));
+  registerTool(
+    contextType,
+    "boundingBox",
+    (viewer) => new BoundingBoxTool(viewer),
+  );
 }

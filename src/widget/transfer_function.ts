@@ -156,7 +156,7 @@ export class ControlPoint {
   constructor(
     public inputValue: number | bigint,
     public outputColor: vec4 = kZeroVec4,
-  ) { }
+  ) {}
 
   /** Convert the input value to a normalized value between 0 and 1 */
   normalizedInput(range: DataTypeInterval): number {
@@ -457,9 +457,9 @@ export class TransferFunction extends RefCounted {
       range !== null
         ? range
         : ([
-          computeLerp(window, this.dataType, 0.3),
-          computeLerp(window, this.dataType, 0.7),
-        ] as DataTypeInterval);
+            computeLerp(window, this.dataType, 0.3),
+            computeLerp(window, this.dataType, 0.7),
+          ] as DataTypeInterval);
     // If the range ends up being equal, instead just use the window
     if (controlPointRange[0] === controlPointRange[1]) {
       controlPointRange[0] = window[0];
@@ -1231,7 +1231,7 @@ out_color = tempColor * alpha;
       drawLines(
         gl,
         this.linePositionArray.length /
-        (VERTICES_PER_LINE * POSITION_VALUES_PER_LINE),
+          (VERTICES_PER_LINE * POSITION_VALUES_PER_LINE),
         1,
       );
       gl.disableVertexAttribArray(aLineStartEnd);
@@ -1738,8 +1738,9 @@ class TransferFunctionWidget extends Tab {
       e.type = "text";
       e.spellcheck = false;
       e.autocomplete = "off";
-      e.title = `${endpoint === 0 ? "Lower" : "Upper"
-        } window for transfer function`;
+      e.title = `${
+        endpoint === 0 ? "Lower" : "Upper"
+      } window for transfer function`;
       return e;
     }
 

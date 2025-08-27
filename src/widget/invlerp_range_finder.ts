@@ -177,9 +177,9 @@ export class AutoRangeFinder extends RefCounted {
       foundRange = autoRangeData.previouslyComputedRanges.some(
         (prevRange) =>
           Math.abs((prevRange[0] as number) - (newRange[0] as number)) <
-          FLOAT_EQUAL_TOLERANCE &&
+            FLOAT_EQUAL_TOLERANCE &&
           Math.abs((prevRange[1] as number) - (newRange[1] as number)) <
-          FLOAT_EQUAL_TOLERANCE,
+            FLOAT_EQUAL_TOLERANCE,
       );
     }
     const rangeBoundsEqual = dataTypeCompare(newRange[0], newRange[1]) === 0;

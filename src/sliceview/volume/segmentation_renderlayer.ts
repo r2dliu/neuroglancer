@@ -20,9 +20,7 @@ import {
   HashMapShaderManager,
   HashSetShaderManager,
 } from "#src/gpu_hash/shader.js";
-import {
-  getChunkPositionFromCombinedGlobalLocalPositions,
-} from "#src/render_coordinate_transform.js";
+import { getChunkPositionFromCombinedGlobalLocalPositions } from "#src/render_coordinate_transform.js";
 import {
   SegmentColorShaderManager,
   SegmentStatedColorShaderManager,
@@ -57,7 +55,7 @@ import type { ShaderBuilder, ShaderProgram } from "#src/webgl/shader.js";
 export class EquivalencesHashMap {
   generation = Number.NaN;
   hashMap = new HashMapUint64();
-  constructor(public disjointSets: DisjointUint64Sets) { }
+  constructor(public disjointSets: DisjointUint64Sets) {}
   update() {
     const { disjointSets } = this;
     const { generation } = disjointSets;
@@ -74,7 +72,7 @@ export class EquivalencesHashMap {
 
 export interface SliceViewSegmentationDisplayState
   extends SegmentationDisplayState,
-  RenderLayerBaseOptions {
+    RenderLayerBaseOptions {
   selectedAlpha: WatchableValueInterface<number>;
   notSelectedAlpha: WatchableValueInterface<number>;
   hideSegmentZero: WatchableValueInterface<boolean>;
@@ -93,8 +91,6 @@ interface ShaderParameters {
 
 const HAS_SELECTED_SEGMENT_FLAG = 1;
 const SHOW_ALL_SEGMENTS_FLAG = 2;
-
-
 
 export class SegmentationRenderLayer extends SliceViewVolumeRenderLayer<ShaderParameters> {
   public readonly segmentationGroupState: SegmentationGroupState;
@@ -253,8 +249,6 @@ export class SegmentationRenderLayer extends SliceViewVolumeRenderLayer<ShaderPa
       uint64_t x = toUint64(getDataValue());
     `;
 
-
-
     getUint64Code += `
       return x;
     }`;
@@ -285,10 +279,12 @@ uint64_t getMappedObjectId(uint64_t value) {
     let fragmentMain = `
   uint64_t baseValue = getUint64DataValue();
   uint64_t value = getMappedObjectId(baseValue);
-  uint64_t valueForColor = ${parameters.baseSegmentColoring ? "baseValue" : "value"
-      };
-  uint64_t valueForHighlight = ${parameters.baseSegmentHighlighting ? "baseValue" : "value"
-      };
+  uint64_t valueForColor = ${
+    parameters.baseSegmentColoring ? "baseValue" : "value"
+  };
+  uint64_t valueForHighlight = ${
+    parameters.baseSegmentHighlighting ? "baseValue" : "value"
+  };
 
   float alpha = uSelectedAlpha;
   float saturation = uSaturation;
@@ -458,7 +454,7 @@ uint64_t getMappedObjectId(uint64_t value) {
       if (
         gpuSegmentStatedColorHashTable === undefined ||
         gpuSegmentStatedColorHashTable.hashTable !==
-        segmentStatedColors.hashTable
+          segmentStatedColors.hashTable
       ) {
         gpuSegmentStatedColorHashTable?.dispose();
         this.gpuSegmentStatedColorHashTable = gpuSegmentStatedColorHashTable =
@@ -473,8 +469,6 @@ uint64_t getMappedObjectId(uint64_t value) {
     if (highlightColor !== undefined) {
       gl.uniform4fv(shader.uniform("uHighlightColor"), highlightColor);
     }
-
-
   }
 
   endSlice(

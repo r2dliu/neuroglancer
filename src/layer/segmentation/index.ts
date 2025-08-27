@@ -17,7 +17,10 @@
 import "#src/layer/segmentation/style.css";
 
 import { BrushHashTable } from "#src/brush_stroke/index.js";
-import { BrushStrokeLayer, SliceViewBrushStrokeLayer } from "#src/brush_stroke/renderlayer.js";
+import {
+  BrushStrokeLayer,
+  SliceViewBrushStrokeLayer,
+} from "#src/brush_stroke/renderlayer.js";
 import type { CoordinateTransformSpecification } from "#src/coordinate_transform.js";
 import { emptyValidCoordinateSpace } from "#src/coordinate_transform.js";
 import type { DataSourceSpecification } from "#src/datasource/index.js";
@@ -135,7 +138,8 @@ import { registerLayerShaderControlsTool } from "#src/widget/shader_controls.js"
 
 export class SegmentationUserLayerGroupState
   extends RefCounted
-  implements SegmentationGroupState {
+  implements SegmentationGroupState
+{
   specificationChanged = new Signal();
   constructor(public layer: SegmentationUserLayer) {
     super();
@@ -290,7 +294,8 @@ export class SegmentationUserLayerGroupState
 
 export class SegmentationUserLayerColorGroupState
   extends RefCounted
-  implements SegmentationColorGroupState {
+  implements SegmentationColorGroupState
+{
   specificationChanged = new Signal();
   constructor(public layer: SegmentationUserLayer) {
     super();
@@ -364,12 +369,13 @@ export class SegmentationUserLayerColorGroupState
 }
 
 class LinkedSegmentationGroupState<
-  State extends
-  | SegmentationUserLayerGroupState
-  | SegmentationUserLayerColorGroupState,
->
+    State extends
+      | SegmentationUserLayerGroupState
+      | SegmentationUserLayerColorGroupState,
+  >
   extends RefCounted
-  implements WatchableValueInterface<State> {
+  implements WatchableValueInterface<State>
+{
   private curRoot: SegmentationUserLayer | undefined;
   private curGroupState: Owned<State> | undefined;
   get changed() {
@@ -810,7 +816,7 @@ export class SegmentationUserLayer extends Base {
             "Not supported on non-root linked segmentation layers",
           );
         } else {
-          loadedSubsource.activate(() => { });
+          loadedSubsource.activate(() => {});
           updatedSegmentPropertyMaps.push(segmentPropertyMap);
         }
       } else if (segmentationGraph !== undefined) {
@@ -871,7 +877,6 @@ export class SegmentationUserLayer extends Base {
             });
           }
         }
-
       } else if (local === LocalDataSource.brushStrokes) {
         if (!isGroupRoot) {
           loadedSubsource.deactivate(
@@ -883,7 +888,7 @@ export class SegmentationUserLayer extends Base {
             const brushStrokeLayer = new BrushStrokeLayer(
               this.manager.chunkManager,
               this.brushHashTable,
-              this.displayState // Pass display state for segment color computation
+              this.displayState, // Pass display state for segment color computation
             );
 
             // Store reference for triggering redraws from brush tool
@@ -966,7 +971,7 @@ export class SegmentationUserLayer extends Base {
     if (
       layerSpec[json_keys.EQUIVALENCES_JSON_KEY] !== undefined &&
       explicitSpecs.find((spec) => spec.url === localEquivalencesUrl) ===
-      undefined
+        undefined
     ) {
       specs.push({
         url: localEquivalencesUrl,

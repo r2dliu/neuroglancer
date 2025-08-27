@@ -90,7 +90,7 @@ import { ProgressSpan } from "#src/util/progress_listener.js";
 class ZarrVolumeChunkSource extends WithParameters(
   WithSharedKvStoreContext(VolumeChunkSource),
   VolumeChunkSourceParameters,
-) { }
+) {}
 
 export class MultiscaleVolumeChunkSource extends GenericMultiscaleVolumeChunkSource {
   volumeType: VolumeType;
@@ -333,8 +333,9 @@ async function resolveOmeMultiscale(
         `Expected zarr array at ${JSON.stringify(
           scale.url,
         )} to have data type ` +
-        `${DataType[dataType]}, but received: ${DataType[zarrMetadata.dataType]
-        }`,
+          `${DataType[dataType]}, but received: ${
+            DataType[zarrMetadata.dataType]
+          }`,
       );
     }
   }
@@ -471,7 +472,7 @@ function resolveUrl(options: GetKvStoreBasedDataSourceOptions) {
 }
 
 export class ZarrDataSource implements KvStoreBasedDataSourceProvider {
-  constructor(public zarrVersion: 2 | 3 | undefined = undefined) { }
+  constructor(public zarrVersion: 2 | 3 | undefined = undefined) {}
   get scheme() {
     return `zarr${this.zarrVersion ?? ""}`;
   }

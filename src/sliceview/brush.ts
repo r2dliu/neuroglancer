@@ -60,7 +60,7 @@ export class BrushTool extends Tool<Viewer> {
         action: "neuroglancer-brush-release",
         stopPropagation: true,
         preventDefault: true,
-      }
+      },
     });
 
     this.viewer.inputEventBindings.sliceView.addParent(
@@ -74,7 +74,7 @@ export class BrushTool extends Tool<Viewer> {
     });
 
     const paint = () => {
-      if (this.brushValue === -1) return
+      if (this.brushValue === -1) return;
 
       const selectedLayer = this.viewer.selectedLayer?.layer?.layer;
       if (!selectedLayer || !(selectedLayer instanceof SegmentationUserLayer))
@@ -167,7 +167,6 @@ export class BrushTool extends Tool<Viewer> {
             }
           }
         }
-
       }
 
       // Dispatch brush points changed event with the new brush points data

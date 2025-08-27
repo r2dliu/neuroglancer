@@ -54,7 +54,7 @@ export class EraserTool extends Tool<Viewer> {
         action: "neuroglancer-eraser-release",
         stopPropagation: true,
         preventDefault: true,
-      }
+      },
     });
 
     this.viewer.inputEventBindings.sliceView.addParent(
@@ -188,7 +188,6 @@ export class EraserTool extends Tool<Viewer> {
       },
     );
 
-
     const cursor = createToolCursor();
     cursor.style.backgroundColor = "rgba(255, 255, 255, 0.0)";
 
@@ -237,4 +236,3 @@ export class EraserTool extends Tool<Viewer> {
 export function registerEraserToolForViewer(contextType: typeof Viewer) {
   registerTool(contextType, "eraser", (viewer) => new EraserTool(viewer));
 }
-

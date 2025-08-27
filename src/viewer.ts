@@ -220,7 +220,7 @@ function setViewerUiConfiguration(
 
 export interface ViewerOptions
   extends ViewerUIOptions,
-  VisibilityPrioritySpecification {
+    VisibilityPrioritySpecification {
   dataContext: Owned<DataManagementContext>;
   element: HTMLElement;
   credentialsManager: CredentialsManager;
@@ -235,9 +235,9 @@ const defaultViewerOptions =
   "undefined" !== typeof NEUROGLANCER_OVERRIDE_DEFAULT_VIEWER_OPTIONS
     ? NEUROGLANCER_OVERRIDE_DEFAULT_VIEWER_OPTIONS
     : {
-      showLayerDialog: true,
-      resetStateWhenEmpty: true,
-    };
+        showLayerDialog: true,
+        resetStateWhenEmpty: true,
+      };
 
 class TrackableViewerState extends CompoundTrackable {
   constructor(public viewer: Borrowed<Viewer>) {
@@ -1227,5 +1227,5 @@ registerDimensionToolForLayerGroupViewer(LayerGroupViewer);
 registerDimensionToolForUserLayer(UserLayer);
 registerBrushToolForViewer(Viewer);
 registerEraserToolForViewer(Viewer);
-registerBoundingBoxToolForViewer(Viewer)
-registerPointToolForViewer(Viewer)
+registerBoundingBoxToolForViewer(Viewer);
+registerPointToolForViewer(Viewer);

@@ -604,7 +604,7 @@ export class UserLayer extends RefCounted {
   }
 
   // Derived classes should override.
-  handleAction(_action: string, _context: LayerActionContext): void { }
+  handleAction(_action: string, _context: LayerActionContext): void {}
 
   selectedValueToJson(value: any) {
     return value;
@@ -1248,7 +1248,8 @@ const DATA_SELECTION_STATE_DEFAULT_PANEL_LOCATION_VISIBLE = {
 
 export class TrackableDataSelectionState
   extends RefCounted
-  implements TrackableValueInterface<PersistentViewerSelectionState | undefined> {
+  implements TrackableValueInterface<PersistentViewerSelectionState | undefined>
+{
   changed = new NullarySignal();
   history: PersistentViewerSelectionState[] = [];
   historyIndex = 0;
@@ -1522,7 +1523,7 @@ export class VisibleRenderLayerTracker<
 
   constructor(
     public layerManager: LayerManager,
-    public renderLayerType: { new(...args: any[]): RenderLayerType },
+    public renderLayerType: { new (...args: any[]): RenderLayerType },
     public view: View,
     public roles: WatchableSet<RenderLayerRole>,
     private layerAdded: (
@@ -1591,7 +1592,7 @@ export function makeRenderedPanelVisibleLayerTracker<
   RenderLayerType extends VisibilityTrackedRenderLayer<View>,
 >(
   layerManager: LayerManager,
-  renderLayerType: { new(...args: any[]): RenderLayerType },
+  renderLayerType: { new (...args: any[]): RenderLayerType },
   roles: WatchableSet<RenderLayerRole>,
   panel: View,
   layerAdded?: (layer: RenderLayerType, info: VisibleLayerInfo<View>) => void,
