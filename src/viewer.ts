@@ -68,7 +68,6 @@ import {
   TrackableRelativeDisplayScales,
   WatchableDisplayDimensionRenderInfo,
 } from "#src/navigation_state.js";
-import "#src/noselect.css";
 import { overlaysOpen } from "#src/overlay.js";
 import { ScreenshotHandler } from "#src/python_integration/screenshots.js";
 import { allRenderLayerRoles, RenderLayerRole } from "#src/renderlayer.js";
@@ -87,7 +86,6 @@ import {
   observeWatchable,
   TrackableValue,
 } from "#src/trackable_value.js";
-import "#src/ui/layer_data_sources_tab.js";
 import {
   LayerArchiveCountWidget,
   LayerListPanel,
@@ -135,7 +133,6 @@ import {
   CompoundTrackable,
   optionallyRestoreFromJsonMember,
 } from "#src/util/trackable.js";
-import "#src/viewer.css";
 import type {
   ViewerState,
   VisibilityPrioritySpecification,

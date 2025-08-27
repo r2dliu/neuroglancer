@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import { debounce, throttle } from "lodash-es";
 import type { AnnotationLayerState } from "#src/annotation/annotation_layer_state.js";
 import type { AnnotationType } from "#src/annotation/index.js";
 import type { ChunkManager } from "#src/chunk_manager/frontend.js";
@@ -112,7 +113,6 @@ import type { DependentViewContext } from "#src/widget/dependent_view_widget.js"
 import type { Tab } from "#src/widget/tab_view.js";
 import { TabSpecification } from "#src/widget/tab_view.js";
 import type { RPC } from "#src/worker_rpc.js";
-import { debounce, throttle } from "lodash-es";
 
 const TOOL_JSON_KEY = "tool";
 const TOOL_BINDINGS_JSON_KEY = "toolBindings";

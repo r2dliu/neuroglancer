@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import svg_plus from "ikonate/icons/plus.svg?raw";
 import type { ManagedUserLayer } from "#src/layer/index.js";
 import { addNewLayer, deleteLayer, makeLayer } from "#src/layer/index.js";
 import type { LayerGroupViewer } from "#src/layer_group_viewer.js";
@@ -35,7 +36,6 @@ import { makeCloseButton } from "#src/widget/close_button.js";
 import { makeDeleteButton } from "#src/widget/delete_button.js";
 import { makeIcon } from "#src/widget/icon.js";
 import { PositionWidget } from "#src/widget/position_widget.js";
-import svg_plus from "ikonate/icons/plus.svg?raw";
 
 class LayerWidget extends RefCounted {
   element = document.createElement("div");

@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import { describe, expect, it } from "vitest";
 import { DataType } from "#src/util/data_type.js";
 import { vec3, vec4 } from "#src/util/geom.js";
 import { defaultDataTypeRange } from "#src/util/lerp.js";
@@ -28,7 +29,6 @@ import {
   ControlPoint,
   SortedControlPoints,
 } from "#src/widget/transfer_function.js";
-import { describe, expect, it } from "vitest";
 
 describe("stripComments", () => {
   it("handles code without comments", () => {

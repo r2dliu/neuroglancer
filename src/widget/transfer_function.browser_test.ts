@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import { describe, expect, it } from "vitest";
 import { TrackableValue } from "#src/trackable_value.js";
 import { DataType } from "#src/util/data_type.js";
 import { vec3, vec4 } from "#src/util/geom.js";
@@ -22,7 +23,6 @@ import {
   dataTypeIntervalEqual,
   defaultDataTypeRange,
 } from "#src/util/lerp.js";
-import { describe, expect, it } from "vitest";
 
 import { getShaderType } from "#src/webgl/shader_lib.js";
 import { fragmentShaderTest } from "#src/webgl/shader_testing.js";

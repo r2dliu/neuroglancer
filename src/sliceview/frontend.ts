@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import { debounce } from "lodash-es";
 import { ChunkState } from "#src/chunk_manager/base.js";
 import type {
   ChunkManager,
@@ -87,7 +88,6 @@ import type { ShaderBuilder, ShaderModule } from "#src/webgl/shader.js";
 import { getSquareCornersBuffer } from "#src/webgl/square_corners_buffer.js";
 import type { RPC } from "#src/worker_rpc.js";
 import { registerSharedObjectOwner } from "#src/worker_rpc.js";
-import { debounce } from "lodash-es";
 
 export type GenericChunkKey = string;
 

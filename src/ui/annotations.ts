@@ -18,6 +18,7 @@
  * @file User interface for display and editing annotations.
  */
 
+import svg_help from "ikonate/icons/help.svg?raw";
 import {
   AnnotationDisplayState,
   AnnotationLayerState,
@@ -71,7 +72,6 @@ import {
   WatchableValue,
 } from "#src/trackable_value.js";
 import "#src/ui/annotations.css";
-import svg_help from "ikonate/icons/help.svg?raw";
 
 import { getDefaultAnnotationListBindings } from "#src/ui/default_input_event_bindings.js";
 import { LegacyTool, registerLegacyTool } from "#src/ui/tool.js";
