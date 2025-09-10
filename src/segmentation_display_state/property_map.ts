@@ -132,6 +132,12 @@ function makeIndicesArray(size: number, maxValue: number): IndicesArray {
 function makeUint64PermutationHashMap(values: BigUint64Array): IndicesArray {
   // Use twice the next power of 2 as the size.  This ensures a load factor <= 0.5.
   const numEntries = values.length;
+
+  if (numEntries === 0) {
+    // Return a minimal hash table with size 2 for empty arrays
+    return makeIndicesArray(2, 1);
+  }
+
   const hashCodeBits = Math.ceil(Math.log2(numEntries)) + 1;
   const size = 2 ** hashCodeBits;
   const table = makeIndicesArray(size, numEntries + 1);
