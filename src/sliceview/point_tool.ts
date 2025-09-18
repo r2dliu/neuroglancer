@@ -75,11 +75,6 @@ export class PointTool extends Tool<Viewer> {
         );
         if (!position) return;
 
-        console.log(
-          "Setting point position at",
-          roundedPosition,
-          this.pointType,
-        );
         // Dispatch with the point data
         this.pointSignal.dispatch({
           position: roundedPosition,
