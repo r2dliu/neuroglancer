@@ -30,7 +30,6 @@ export class PointTool extends Tool<Viewer> {
   }
 
   activate(activation: ToolActivation<this>) {
-    console.log("activate point tool");
     const { content } = makeToolActivationStatusMessage(activation);
     content.classList.add("neuroglancer-point-tool");
 
@@ -125,7 +124,6 @@ export class PointTool extends Tool<Viewer> {
 
   setPointType(pointType: PointType) {
     this.pointType.value = pointType;
-    console.log("Switched point type to", pointType);
   }
 
   get description() {
