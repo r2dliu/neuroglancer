@@ -44,7 +44,8 @@ import { defaultStringCompare } from "#src/util/string.js";
 export type InlineSegmentProperty =
   | InlineSegmentStringProperty
   | InlineSegmentTagsProperty
-  | InlineSegmentNumericalProperty;
+  | InlineSegmentNumericalProperty
+  | InlineSegmentColorProperty;
 
 export interface InlineSegmentStringProperty {
   id: string;
@@ -71,6 +72,12 @@ export interface InlineSegmentNumericalProperty {
   description: string | undefined;
   values: TypedNumberArray<ArrayBuffer>;
   bounds: DataTypeInterval;
+}
+
+export interface InlineSegmentColorProperty {
+  id: string;
+  type: "color";
+  values: (string | null)[];
 }
 
 export interface InlineSegmentPropertyMap {
@@ -252,6 +259,9 @@ export class PreprocessedSegmentPropertyMap {
       return existingIndex;
     }
 
+    // Ensure color property exists for migration
+    this.ensureColorProperty();
+
     const numSegments = inlineProperties.ids.length;
 
     const newIds = new BigUint64Array(inlineProperties.ids.length + 1);
@@ -298,6 +308,10 @@ export class PreprocessedSegmentPropertyMap {
         newValues[numProperty.values.length] =
           newValue !== undefined ? newValue : NaN;
         numProperty.values = newValues;
+      } else if (property.type === "color") {
+        const colorProperty = property as InlineSegmentColorProperty;
+        const newColor = (properties[property.id] as string | undefined) || null;
+        colorProperty.values = [...colorProperty.values, newColor];
       }
     }
 
@@ -353,10 +367,36 @@ export class PreprocessedSegmentPropertyMap {
       const numProperty = property as InlineSegmentNumericalProperty;
       numProperty.values[index] = Number(value);
       return true;
+    } else if (property.type === "color") {
+      const colorProperty = property as InlineSegmentColorProperty;
+      colorProperty.values[index] = value as string | null;
+      return true;
     }
 
     return false;
   }
+
+  ensureColorProperty(): void {
+    const { inlineProperties } = this.segmentPropertyMap;
+    if (!inlineProperties) return;
+
+    // Check if color property already exists
+    const existingColorProperty = inlineProperties.properties.find(
+      (p) => p.id === "color" && p.type === "color"
+    );
+
+    if (!existingColorProperty) {
+      // Create color property with null values for all existing segments
+      const colorProperty: InlineSegmentColorProperty = {
+        id: "color",
+        type: "color",
+        values: new Array(inlineProperties.ids.length).fill(null),
+      };
+
+      inlineProperties.properties.push(colorProperty);
+    }
+  }
+
 }
 
 function remapArray<T>(
@@ -1219,7 +1259,7 @@ function updatePropertyHistogram(
         ++histogram[
           (Math.min(numBins - 1, Math.max(-1, (value - min) * multiplier)) +
             1) >>>
-            0
+          0
         ];
       }
     }
@@ -1237,7 +1277,7 @@ function updatePropertyHistogram(
           ++histogram[
             (Math.min(numBins - 1, Math.max(-1, (value - min) * multiplier)) +
               1) >>>
-              0
+            0
           ];
         }
       }

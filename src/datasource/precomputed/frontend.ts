@@ -103,6 +103,7 @@ import {
   parseArray,
   parseFixedLengthArray,
   parseQueryStringParameters,
+  parseUint64,
   unparseQueryStringParameters,
   verifyEnumString,
   verifyFiniteFloat,
@@ -110,13 +111,12 @@ import {
   verifyInt,
   verifyObject,
   verifyObjectProperty,
+  verifyOptionalBoolean,
   verifyOptionalObjectProperty,
   verifyOptionalString,
   verifyPositiveInt,
   verifyString,
   verifyStringArray,
-  verifyOptionalBoolean,
-  parseUint64,
 } from "#src/util/json.js";
 import * as matrix from "#src/util/matrix.js";
 import type { ProgressOptions } from "#src/util/progress_listener.js";
@@ -125,17 +125,17 @@ import { ProgressSpan } from "#src/util/progress_listener.js";
 export class PrecomputedVolumeChunkSource extends WithParameters(
   WithSharedKvStoreContext(VolumeChunkSource),
   VolumeChunkSourceParameters,
-) {}
+) { }
 
 class PrecomputedMeshSource extends WithParameters(
   WithSharedKvStoreContext(MeshSource),
   MeshSourceParameters,
-) {}
+) { }
 
 class PrecomputedMultiscaleMeshSource extends WithParameters(
   WithSharedKvStoreContext(MultiscaleMeshSource),
   MultiscaleMeshSourceParameters,
-) {}
+) { }
 
 class PrecomputedSkeletonSource extends WithParameters(
   WithSharedKvStoreContext(SkeletonSource),
@@ -395,7 +395,7 @@ const MultiscaleAnnotationSourceBase = WithParameters(
 class PrecomputedAnnotationSpatialIndexSource extends WithParameters(
   WithSharedKvStoreContext(AnnotationGeometryChunkSource),
   AnnotationSpatialIndexSourceParameters,
-) {}
+) { }
 
 interface PrecomputedAnnotationSourceOptions {
   metadata: AnnotationMetadata;
@@ -1158,7 +1158,8 @@ function parseInlinePropertyMap(data: unknown): InlineSegmentPropertyMap {
           type !== "description" &&
           type !== "string" &&
           type !== "tags" &&
-          type !== "number"
+          type !== "number" &&
+          type !== "color"
         ) {
           throw new Error(`Invalid property type: ${JSON.stringify(type)}`);
         }
@@ -1219,7 +1220,7 @@ function parseInlinePropertyMap(data: unknown): InlineSegmentPropertyMap {
             }
             return (
               DATA_TYPE_ARRAY_CONSTRUCTOR[
-                dataType
+              dataType
               ] as TypedNumberArrayConstructor
             ).from(valuesObj);
           },
@@ -1232,6 +1233,29 @@ function parseInlinePropertyMap(data: unknown): InlineSegmentPropertyMap {
           if (v > max) max = v;
         }
         return { id, description, type, dataType, values, bounds: [min, max] };
+      }
+      if (type === "color") {
+        const values = verifyObjectProperty(
+          propertyObj,
+          "values",
+          (valuesObj) => {
+            if (!Array.isArray(valuesObj) || valuesObj.length !== numIds) {
+              throw new Error(
+                `Expected ${numIds} values, but received: ${valuesObj.length}`,
+              );
+            }
+            return valuesObj.map((value) => {
+              if (value === null || value === "") {
+                return null;
+              }
+              if (typeof value === "string" && /^#[0-9A-Fa-f]{6}$/.test(value)) {
+                return value;
+              }
+              throw new Error(`Invalid color value: ${JSON.stringify(value)}`);
+            });
+          },
+        );
+        return { id, type, values };
       }
       const values = verifyObjectProperty(
         propertyObj,

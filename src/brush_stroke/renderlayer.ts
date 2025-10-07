@@ -31,6 +31,7 @@ import type {
 import type { RenderScaleHistogram } from "#src/render_scale_statistics.js";
 import type { VisibilityTrackedRenderLayer } from "#src/renderlayer.js";
 import { SegmentColorShaderManager } from "#src/segment_color.js";
+import { SegmentStatedColorShaderManager } from "#src/segment_stated_color.js";
 import type { SegmentationDisplayState } from "#src/segmentation_display_state/frontend.js";
 
 import type { SliceViewPanelRenderContext } from "#src/sliceview/renderlayer.js";
@@ -60,9 +61,13 @@ interface AttachmentState {
 
 export class BrushStrokeLayer extends RefCounted {
   public gpuBrushHashTable: GPUHashTable<any>;
+  public gpuSegmentStatedColorHashTable: GPUHashTable<any> | undefined;
   public brushHashTableManager = new HashMapShaderManager("brushStroke");
   public segmentColorShaderManager = new SegmentColorShaderManager(
     "segmentColorHash",
+  );
+  public segmentStatedColorShaderManager = new SegmentStatedColorShaderManager(
+    "segmentStatedColor",
   );
   public visibleSegmentsHashManager = new HashSetShaderManager(
     "visibleSegments",
@@ -132,6 +137,9 @@ function BrushStrokeRenderLayer<
       // 2D slice view implementation
       this.base.brushHashTableManager.defineShader(builder);
       this.base.segmentColorShaderManager.defineShader(builder);
+
+      // Add segment stated color support for override colors
+      this.base.segmentStatedColorShaderManager.defineShader(builder);
 
       // Add visibility checking to match segmentation layer
       builder.addUniform("highp uint", "uFlags");
@@ -209,8 +217,16 @@ function BrushStrokeRenderLayer<
                     
                     uint64_t brushValue;
                     if (brushStroke_get(key, brushValue)) {
-                        // Found brush stroke - use segment color based on the stored value
-                        vec3 segmentColor = segmentColorHash(brushValue);
+                        // Found brush stroke - use proper color resolution (check override colors first)
+                        vec4 rgba;
+                        vec3 segmentColor;
+                        if (${this.base.segmentStatedColorShaderManager.getFunctionName}(brushValue, rgba)) {
+                            // Use override color from segment properties
+                            segmentColor = rgba.rgb;
+                        } else {
+                            // Fall back to computed color
+                            segmentColor = segmentColorHash(brushValue);
+                        }
                         
                         // Apply saturation mixing (same as segmentation layer)
                         vec3 baseColor = mix(vec3(1.0, 1.0, 1.0), segmentColor, uSaturation);
@@ -265,6 +281,28 @@ function BrushStrokeRenderLayer<
         shader,
         colorGroupState.segmentColorHash.value,
       );
+
+      // Initialize segment stated color shader for override colors
+      const segmentStatedColors = displayState.useTempSegmentStatedColors2d.value
+        ? displayState.tempSegmentStatedColors2d.value
+        : displayState.segmentStatedColors.value;
+
+      if (segmentStatedColors.size > 0) {
+        let gpuSegmentStatedColorHashTable = this.base.gpuSegmentStatedColorHashTable;
+        if (
+          gpuSegmentStatedColorHashTable === undefined ||
+          gpuSegmentStatedColorHashTable.hashTable !== segmentStatedColors.hashTable
+        ) {
+          gpuSegmentStatedColorHashTable?.dispose();
+          this.base.gpuSegmentStatedColorHashTable = gpuSegmentStatedColorHashTable =
+            GPUHashTable.get(gl, segmentStatedColors.hashTable);
+        }
+        this.base.segmentStatedColorShaderManager.enable(
+          gl,
+          shader,
+          gpuSegmentStatedColorHashTable,
+        );
+      }
 
       // Set opacity uniforms to match parent segmentation layer
       const selectedAlpha = (displayState as any).selectedAlpha.value;

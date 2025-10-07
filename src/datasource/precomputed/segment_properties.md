@@ -22,9 +22,9 @@ members:
     - `"id"`: Required. String identifier to display in the UI. (Not displayed if the `"type"` is
       `"label"` or `"description"`.)
     - `"type"`: Required. Must be one of `"label"`, `"description"`, `"string"`, `"tags"`,
-      `"number"`. At most one property may have type `"label"` (which is displayed in the UI next
-      to the segment ID), at most one property may have type `"description"`, and at most one
-      property may have type `"tags"`.
+      `"number"`, `"color"`. At most one property may have type `"label"` (which is displayed in the UI next
+      to the segment ID), at most one property may have type `"description"`, at most one
+      property may have type `"tags"`, and at most one property may have type `"color"`.
     - `"description"`: Optional. String description of the property to display in the UI. Must not
       be present if `"type"` is equal to `"tags"`.
     - `"tags`": Must be present if `"type"` is equal to `"tags"`, otherwise must not be present. An
@@ -40,4 +40,5 @@ members:
       element must be a string. If `"type"` is equal to `"number"`, each element must be a number
       that will be converted to the specified `"data_type"`. If `"type"` is equal to `"tags"`, each
       _element_ must be an array of integers (in increasing order), where each number specifies an
-      index into the `"tags"` array.
+      index into the `"tags"` array. If `"type"` is equal to `"color"`, each element must be a hex
+      color string (e.g., "#FF0000") or `null` if no override color is specified.
