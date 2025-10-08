@@ -320,6 +320,59 @@ export class PreprocessedSegmentPropertyMap {
     return numSegments;
   }
 
+  deleteSegment(id: bigint): boolean {
+    const { segmentPropertyMap } = this;
+    const { inlineProperties } = segmentPropertyMap;
+
+    if (!inlineProperties) {
+      return false;
+    }
+
+    const index = this.getSegmentInlineIndex(id);
+    if (index === -1) {
+      return false;
+    }
+
+    const newIds = new BigUint64Array(inlineProperties.ids.length - 1);
+    let newIndex = 0;
+    for (let i = 0; i < inlineProperties.ids.length; i++) {
+      if (i !== index) {
+        newIds[newIndex] = inlineProperties.ids[i];
+        newIndex++;
+      }
+    }
+    inlineProperties.ids = newIds;
+
+    for (const property of inlineProperties.properties) {
+      if (property.type === "string" || property.type === "label" || property.type === "description") {
+        const stringProperty = property as InlineSegmentStringProperty;
+        stringProperty.values.splice(index, 1);
+      } else if (property.type === "tags") {
+        const tagsProperty = property as InlineSegmentTagsProperty;
+        tagsProperty.values.splice(index, 1);
+      } else if (property.type === "number") {
+        const numProperty = property as InlineSegmentNumericalProperty;
+        const Constructor = numProperty.values.constructor as any;
+        const newValues = new Constructor(numProperty.values.length - 1);
+        let newIndex = 0;
+        for (let i = 0; i < numProperty.values.length; i++) {
+          if (i !== index) {
+            newValues[newIndex] = numProperty.values[i];
+            newIndex++;
+          }
+        }
+        numProperty.values = newValues;
+      } else if (property.type === "color") {
+        const colorProperty = property as InlineSegmentColorProperty;
+        colorProperty.values.splice(index, 1);
+      }
+    }
+
+    this.inlineIdToIndex = undefined;
+
+    return true;
+  }
+
   updateSegmentProperty(id: bigint, propertyId: string, value: any): boolean {
     const index = this.getSegmentInlineIndex(id);
     if (index === -1) {

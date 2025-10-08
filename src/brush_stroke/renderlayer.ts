@@ -30,8 +30,7 @@ import type {
 } from "#src/render_coordinate_transform.js";
 import type { RenderScaleHistogram } from "#src/render_scale_statistics.js";
 import type { VisibilityTrackedRenderLayer } from "#src/renderlayer.js";
-import { SegmentColorShaderManager } from "#src/segment_color.js";
-import { SegmentStatedColorShaderManager } from "#src/segment_stated_color.js";
+import { SegmentColorShaderManager, SegmentStatedColorShaderManager } from "#src/segment_color.js";
 import type { SegmentationDisplayState } from "#src/segmentation_display_state/frontend.js";
 
 import type { SliceViewPanelRenderContext } from "#src/sliceview/renderlayer.js";
