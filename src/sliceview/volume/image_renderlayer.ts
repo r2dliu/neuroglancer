@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import { luts } from "#src/luts/luts.js";
 import type { SliceView } from "#src/sliceview/frontend.js";
 import type { MultiscaleVolumeChunkSource } from "#src/sliceview/volume/frontend.js";
 import type { RenderLayerBaseOptions } from "#src/sliceview/volume/renderlayer.js";
@@ -39,9 +40,6 @@ import {
   parseShaderUiControls,
   setControlsInShader,
 } from "#src/webgl/shader_ui_controls.js";
-
-// eslint-disable-next-line no-restricted-imports
-import {luts} from "../../luts/luts.js";
 
 const DEFAULT_FRAGMENT_MAIN = `#uicontrol invlerp normalized
 void main() {

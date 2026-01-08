@@ -34,6 +34,7 @@ import {
   UserLayer,
 } from "#src/layer/index.js";
 import type { LoadedDataSubsource } from "#src/layer/layer_data_source.js";
+import { luts } from "#src/luts/luts.js";
 import { Overlay } from "#src/overlay.js";
 import { getChannelSpace } from "#src/render_coordinate_transform.js";
 import {
@@ -103,9 +104,6 @@ import {
   ShaderControls,
 } from "#src/widget/shader_controls.js";
 import { Tab } from "#src/widget/tab_view.js";
-
-// eslint-disable-next-line no-restricted-imports
-import { luts } from "../../luts/luts.js";
 
 const OPACITY_JSON_KEY = "opacity";
 const BLEND_JSON_KEY = "blend";

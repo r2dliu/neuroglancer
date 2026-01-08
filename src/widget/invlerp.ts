@@ -20,6 +20,7 @@ import svg_arrowLeft from "ikonate/icons/arrow-left.svg?raw";
 import svg_arrowRight from "ikonate/icons/arrow-right.svg?raw";
 import type { DisplayContext } from "#src/display_context.js";
 import { IndirectRenderedPanel } from "#src/display_context.js";
+import { luts } from "#src/luts/luts.js";
 import type { WatchableValueInterface } from "#src/trackable_value.js";
 import type { ToolActivation } from "#src/ui/tool.js";
 import { animationFrameDebounce } from "#src/util/animation_frame_debounce.js";
@@ -72,9 +73,6 @@ import { AutoRangeFinder } from "#src/widget/invlerp_range_finder.js";
 import type { LayerControlTool } from "#src/widget/layer_control.js";
 import type { LegendShaderOptions } from "#src/widget/shader_controls.js";
 import { Tab } from "#src/widget/tab_view.js";
-
-// eslint-disable-next-line no-restricted-imports
-import { luts } from "../luts/luts.js";
 
 const inputEventMap = EventActionMap.fromObject({
   "shift?+mousedown0": { action: "set" },
