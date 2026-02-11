@@ -130,9 +130,35 @@ export class BrushTool extends Tool<Viewer> {
 
       const brushPoints: BrushPoint[] = [];
 
-      for (let dx = -this.brushRadius; dx <= this.brushRadius; dx++) {
-        for (let dy = -this.brushRadius; dy <= this.brushRadius; dy++) {
-          if (dx * dx + dy * dy <= this.brushRadius * this.brushRadius) {
+      // Use canonicalVoxelFactors to match the cursor circle on screen.
+      // The cursor radius is brushRadius/zoom in screen pixels, and zoom
+      // is in canonical voxel units. canonicalVoxelFactors converts actual
+      // voxel steps to canonical voxel distances per display dimension.
+      const renderInfo = pose.displayDimensionRenderInfo.value;
+      const { canonicalVoxelFactors, displayDimensionIndices } = renderInfo;
+
+      // Find which display dimension each in-plane axis maps to
+      let xDisplayDim = 0, yDisplayDim = 0;
+      for (let i = 0; i < 3; i++) {
+        const globalDim = displayDimensionIndices[i];
+        if (globalDim === -1) continue;
+        if (xAxis[globalDim] !== 0) xDisplayDim = i;
+        if (yAxis[globalDim] !== 0) yDisplayDim = i;
+      }
+      const xFactor = canonicalVoxelFactors[xDisplayDim];
+      const yFactor = canonicalVoxelFactors[yDisplayDim];
+
+      // Range in actual voxels needed to cover brushRadius canonical voxels
+      const xRange = Math.ceil(this.brushRadius / xFactor);
+      const yRange = Math.ceil(this.brushRadius / yFactor);
+      const radiusSq = this.brushRadius * this.brushRadius;
+
+      for (let dx = -xRange; dx <= xRange; dx++) {
+        for (let dy = -yRange; dy <= yRange; dy++) {
+          // Convert voxel steps to canonical voxel distances
+          const cx = dx * xFactor;
+          const cy = dy * yFactor;
+          if (cx * cx + cy * cy <= radiusSq) {
             const newPosition = vec3.fromValues(
               position[0],
               position[1],
