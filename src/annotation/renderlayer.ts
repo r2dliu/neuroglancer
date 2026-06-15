@@ -679,8 +679,9 @@ function AnnotationRenderLayer<
             const index = idMap.get(hoverValue.id);
             if (index !== undefined) {
               selectedIndex = index * handler.pickIdsPerInstance;
-              // If we wanted to include the partIndex, we would add:
-              // selectedIndex += hoverValue.partIndex;
+              // Highlight the specific hovered sub-part (gizmo handle, corner,
+              // edge, endpoint, ...) rather than the whole annotation.
+              selectedIndex += hoverValue.partIndex;
             }
           }
           count = Math.round(count * drawFraction);

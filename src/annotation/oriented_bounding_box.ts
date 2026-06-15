@@ -34,11 +34,11 @@ import {
   AnnotationRenderHelper,
   registerAnnotationTypeRenderHandler,
 } from "#src/annotation/type_handler.js";
-import type { SliceViewPanelRenderContext } from "#src/sliceview/renderlayer.js";
 import {
   boundingBoxCrossSectionVertexIndices,
   vertexBasePositions,
 } from "#src/sliceview/bounding_box_shader_helper.js";
+import type { SliceViewPanelRenderContext } from "#src/sliceview/renderlayer.js";
 import { tile2dArray } from "#src/util/array.js";
 import {
   mat3,
@@ -87,6 +87,18 @@ export {
   TRANSLATE_AXIS_PICK_OFFSET,
   CENTER_BALL_PICK_OFFSET,
 };
+
+// Gizmo handle geometry constants.
+// Circle handles drawn per box: 6 face-extrude caps + 1 center ball + 3 tripod
+// axis tips = 10 circles.
+const N_HANDLE_CIRCLES = 10;
+const FACE_CAP_DIAMETER = 11; // pixels
+const CENTER_BALL_DIAMETER = 13;
+const TRIPOD_TIP_DIAMETER = 9;
+// Line handles per box: 3 tripod shafts + 3 rotation rings (segmented loops).
+const RING_SEGMENTS = 48;
+const N_HANDLE_LINES = 3 + 3 * RING_SEGMENTS;
+const HANDLE_LINE_RING_BASE = 3; // tripod shafts are line indices [0,3)
 
 // The 12 edges of the unit cube [0,1]^3. Each row is:
 //   cornerA (xyz in {0,1}), cornerB (xyz in {0,1}), edge pick index.
@@ -163,19 +175,24 @@ abstract class RenderHelper extends AnnotationRenderHelper {
       1,
     );
     builder.addVertexCode(glsl_quatToMat3);
-    // Shared helper: produce the rotated subspace position for a corner whose
-    // offset components are each in {0, 1}.
+    // Shared accessors for the box frame in the 3D display subspace.
     builder.addVertexCode(`
-vec3 orientedCornerPosition(vec3 cornerOffset) {
+vec3 obbSubCenter() {
   float center[${rank}] = getBounds0();
+  return projectModelVectorToSubspace(center);
+}
+vec3 obbHalfExtents() {
   float extents[${rank}] = getBounds1();
-  vec3 subCenter = projectModelVectorToSubspace(center);
-  vec3 subExtents = projectModelVectorToSubspace(extents);
-  vec3 halfExtents = abs(subExtents) * 0.5;
+  return abs(projectModelVectorToSubspace(extents)) * 0.5;
+}
+mat3 obbRotation() {
   float q[4] = getOrientation0();
-  mat3 R = quatToMat3(vec4(q[0], q[1], q[2], q[3]));
-  vec3 localOffset = (cornerOffset * 2.0 - 1.0) * halfExtents;
-  return subCenter + R * localOffset;
+  return quatToMat3(vec4(q[0], q[1], q[2], q[3]));
+}
+// Rotated subspace position for a corner whose offset components are in {0, 1}.
+vec3 orientedCornerPosition(vec3 cornerOffset) {
+  vec3 localOffset = (cornerOffset * 2.0 - 1.0) * obbHalfExtents();
+  return obbSubCenter() + obbRotation() * localOffset;
 }
 float orientedClipCoefficient() {
   float center[${rank}] = getBounds0();
@@ -313,6 +330,111 @@ emitAnnotation(color);
     },
   );
 
+  // Circle handles: 6 face-extrude caps + 1 center ball + 3 tripod axis tips.
+  // The handle index is derived from gl_VertexID so no per-circle attribute
+  // buffer is needed.
+  private handleCircleShaderGetter = this.getDependentShader(
+    "annotation/orientedBoundingBox/projection/handleCircle",
+    (builder: ShaderBuilder) => {
+      this.defineShader(builder);
+      defineCircleShader(builder, this.targetIsSliceView);
+      builder.addVertexCode(`
+vec3 axisUnit(int a) {
+  return vec3(a == 0 ? 1.0 : 0.0, a == 1 ? 1.0 : 0.0, a == 2 ? 1.0 : 0.0);
+}
+`);
+      builder.setVertexMain(`
+int handleIndex = gl_VertexID / ${VERTICES_PER_CIRCLE};
+vec3 subCenter = obbSubCenter();
+mat3 R = obbRotation();
+vec3 halfExtents = obbHalfExtents();
+vec3 pos;
+float diameter;
+highp uint pickOffset;
+if (handleIndex < 6) {
+  int a = handleIndex / 2;
+  float s = (handleIndex - a * 2 == 1) ? 1.0 : -1.0;
+  pos = subCenter + R * (axisUnit(a) * (s * halfExtents[a]));
+  diameter = ${FACE_CAP_DIAMETER}.0;
+  pickOffset = ${FACES_PICK_OFFSET}u + uint(handleIndex);
+} else if (handleIndex == 6) {
+  pos = subCenter;
+  diameter = ${CENTER_BALL_DIAMETER}.0;
+  pickOffset = ${CENTER_BALL_PICK_OFFSET}u;
+} else {
+  int a = handleIndex - 7;
+  float tipDist = halfExtents[a] + 0.4 * length(halfExtents);
+  pos = subCenter + R * (axisUnit(a) * tipDist);
+  diameter = ${TRIPOD_TIP_DIAMETER}.0;
+  pickOffset = ${TRANSLATE_AXIS_PICK_OFFSET}u + uint(a);
+}
+vColor = vec4(uColor, 1.0);
+emitCircle(uModelViewProjection * vec4(pos, 1.0), diameter, 0.0);
+${this.setPartIndex(builder, "pickOffset")};
+`);
+      builder.setFragmentMain(`
+vec4 borderColor = vec4(0.0, 0.0, 0.0, 1.0);
+emitAnnotation(getCircleColor(vColor, borderColor));
+`);
+    },
+  );
+
+  // Line handles: 3 tripod shafts (center -> axis tip) and 3 rotation rings
+  // (segmented loops in each local coordinate plane).
+  private handleLineShaderGetter = this.getDependentShader(
+    "annotation/orientedBoundingBox/projection/handleLine",
+    (builder: ShaderBuilder) => {
+      this.defineShader(builder);
+      defineLineShader(builder);
+      builder.addVertexCode(`
+vec3 axisUnit(int a) {
+  return vec3(a == 0 ? 1.0 : 0.0, a == 1 ? 1.0 : 0.0, a == 2 ? 1.0 : 0.0);
+}
+`);
+      builder.setVertexMain(`
+int lineIndex = gl_VertexID / ${VERTICES_PER_LINE};
+vec3 subCenter = obbSubCenter();
+mat3 R = obbRotation();
+vec3 halfExtents = obbHalfExtents();
+float sphR = length(halfExtents);
+vec3 pA;
+vec3 pB;
+highp uint pickOffset;
+if (lineIndex < ${HANDLE_LINE_RING_BASE}) {
+  int a = lineIndex;
+  float tipDist = halfExtents[a] + 0.4 * sphR;
+  pA = subCenter;
+  pB = subCenter + R * (axisUnit(a) * tipDist);
+  pickOffset = ${TRANSLATE_AXIS_PICK_OFFSET}u + uint(a);
+} else {
+  int idx = lineIndex - ${HANDLE_LINE_RING_BASE};
+  int ring = idx / ${RING_SEGMENTS};
+  int seg = idx - ring * ${RING_SEGMENTS};
+  int u = (ring + 1) % 3;
+  int v = (ring + 2) % 3;
+  float a0 = 6.28318530718 * float(seg) / float(${RING_SEGMENTS});
+  float a1 = 6.28318530718 * float(seg + 1) / float(${RING_SEGMENTS});
+  vec3 uAxis = axisUnit(u);
+  vec3 vAxis = axisUnit(v);
+  vec3 l0 = sphR * (cos(a0) * uAxis + sin(a0) * vAxis);
+  vec3 l1 = sphR * (cos(a1) * uAxis + sin(a1) * vAxis);
+  pA = subCenter + R * l0;
+  pB = subCenter + R * l1;
+  pickOffset = ${ROTATE_RING_PICK_OFFSET}u + uint(ring);
+}
+ng_lineWidth = 1.0;
+vColor = vec4(uColor, 1.0);
+emitLine(uModelViewProjection * vec4(pA, 1.0),
+         uModelViewProjection * vec4(pB, 1.0),
+         ng_lineWidth);
+${this.setPartIndex(builder, "pickOffset")};
+`);
+      builder.setFragmentMain(`
+emitAnnotation(vec4(vColor.rgb, getLineAlpha()));
+`);
+    },
+  );
+
   drawEdges(context: AnnotationRenderContext) {
     const { gl } = this;
     this.enable(this.edgeShaderGetter, context, (shader) => {
@@ -365,9 +487,34 @@ emitAnnotation(color);
     });
   }
 
+  drawHandleCircles(context: AnnotationRenderContext) {
+    this.enable(this.handleCircleShaderGetter, context, (shader) => {
+      initializeCircleShader(
+        shader,
+        context.renderContext.projectionParameters,
+        { featherWidthInPixels: 0 },
+      );
+      drawCircles(shader.gl, N_HANDLE_CIRCLES, context.count);
+    });
+  }
+
+  drawHandleLines(context: AnnotationRenderContext) {
+    const { gl } = this;
+    this.enable(this.handleLineShaderGetter, context, (shader) => {
+      initializeLineShader(
+        shader,
+        context.renderContext.projectionParameters,
+        /*featherWidthInPixels=*/ 1,
+      );
+      drawLines(gl, N_HANDLE_LINES, context.count);
+    });
+  }
+
   draw(context: AnnotationRenderContext) {
     this.drawEdges(context);
+    this.drawHandleLines(context);
     this.drawCorners(context);
+    this.drawHandleCircles(context);
   }
 }
 
@@ -528,6 +675,37 @@ function snapPositionToCorner(
   }
 }
 
+const MIN_EXTENT = 1;
+
+function quatOf(orientation: Float32Array): quat {
+  return orientation as unknown as quat;
+}
+
+// Radius of the sphere enclosing the box (half the space diagonal of the
+// spatial extents). Matches `length(halfExtents)` used by the ring shaders.
+function boundingSphereRadius(extents: Float32Array): number {
+  const x = extents[0] ?? 0;
+  const y = extents[1] ?? 0;
+  const z = extents[2] ?? 0;
+  return 0.5 * Math.sqrt(x * x + y * y + z * z);
+}
+
+// World-space direction of the box's local axis `k` (column k of the rotation
+// matrix), normalized.
+function worldAxis(rotation: mat3, k: number): vec3 {
+  return vec3.normalize(
+    vec3.create(),
+    vec3.fromValues(rotation[k * 3], rotation[k * 3 + 1], rotation[k * 3 + 2]),
+  );
+}
+
+function projectOntoPlane(v: vec3, axis: vec3) {
+  const d = vec3.dot(v, axis);
+  v[0] -= d * axis[0];
+  v[1] -= d * axis[1];
+  v[2] -= d * axis[2];
+}
+
 registerAnnotationTypeRenderHandler<OrientedBoundingBox>(
   AnnotationType.ORIENTED_BOUNDING_BOX,
   {
@@ -556,18 +734,129 @@ registerAnnotationTypeRenderHandler<OrientedBoundingBox>(
       }
       // Other parts (faces/handles/full object) keep the picked world position.
     },
-    getRepresentativePoint(out, ann) {
-      // The drag math in `updateViaRepresentativePoint` works off the box
-      // center for every handle, so the center is the representative point.
+    getRepresentativePoint(out, ann, partIndex) {
+      // Translate/extrude handles drag relative to the box center, so the
+      // center is the representative point. Rotation handles need a point off
+      // the center (on the ring / sphere) so an angle can be derived.
       out.set(ann.center);
+      const rotation = mat3.fromQuat(mat3.create(), quatOf(ann.orientation));
+      if (
+        partIndex >= ROTATE_RING_PICK_OFFSET &&
+        partIndex < ROTATE_RING_PICK_OFFSET + 3
+      ) {
+        const r = partIndex - ROTATE_RING_PICK_OFFSET;
+        const sphR = boundingSphereRadius(ann.extents);
+        const axis = worldAxis(rotation, (r + 1) % 3);
+        for (let i = 0; i < 3; ++i) out[i] = ann.center[i] + sphR * axis[i];
+      } else if (partIndex === ARCBALL_PICK_OFFSET) {
+        const sphR = boundingSphereRadius(ann.extents);
+        const axis = worldAxis(rotation, 0);
+        for (let i = 0; i < 3; ++i) out[i] = ann.center[i] + sphR * axis[i];
+      }
     },
     updateViaRepresentativePoint(
       oldAnnotation: OrientedBoundingBox,
       position: Float32Array,
+      partIndex: number,
     ) {
-      // Placeholder: translate the whole box so its center follows the drag.
-      // Per-handle extrude/rotate semantics are implemented in a later step.
-      return { ...oldAnnotation, center: new Float32Array(position) };
+      const { center, extents, orientation } = oldAnnotation;
+      const rotation = mat3.fromQuat(mat3.create(), quatOf(orientation));
+      const c3 = vec3.fromValues(center[0], center[1], center[2]);
+      const p3 = vec3.fromValues(position[0], position[1], position[2]);
+
+      // Tripod: translate the whole box along one local axis.
+      if (
+        partIndex >= TRANSLATE_AXIS_PICK_OFFSET &&
+        partIndex < TRANSLATE_AXIS_PICK_OFFSET + 3
+      ) {
+        const axis = worldAxis(
+          rotation,
+          partIndex - TRANSLATE_AXIS_PICK_OFFSET,
+        );
+        const t = vec3.dot(vec3.sub(vec3.create(), p3, c3), axis);
+        const nc = Float32Array.from(center);
+        for (let i = 0; i < 3; ++i) nc[i] = center[i] + t * axis[i];
+        return { ...oldAnnotation, center: nc };
+      }
+
+      // Face cap: extrude one face along its outward normal, anchoring the
+      // opposite face (extent grows by the drag, center shifts by half of it).
+      if (partIndex >= FACES_PICK_OFFSET && partIndex < FACES_PICK_OFFSET + 6) {
+        const f = partIndex - FACES_PICK_OFFSET;
+        const a = f >> 1;
+        const s = f & 1 ? 1 : -1;
+        const normal = worldAxis(rotation, a);
+        vec3.scale(normal, normal, s);
+        const t = vec3.dot(vec3.sub(vec3.create(), p3, c3), normal);
+        const newE = Math.max(MIN_EXTENT, extents[a] + t);
+        const grow = newE - extents[a];
+        const ne = Float32Array.from(extents);
+        ne[a] = newE;
+        const nc = Float32Array.from(center);
+        for (let i = 0; i < 3; ++i) nc[i] = center[i] + (grow / 2) * normal[i];
+        return { ...oldAnnotation, center: nc, extents: ne };
+      }
+
+      // Rotation ring: rotate about one local axis by the swept angle.
+      if (
+        partIndex >= ROTATE_RING_PICK_OFFSET &&
+        partIndex < ROTATE_RING_PICK_OFFSET + 3
+      ) {
+        const r = partIndex - ROTATE_RING_PICK_OFFSET;
+        const axis = worldAxis(rotation, r);
+        const sphR = boundingSphereRadius(extents);
+        const rep = vec3.scaleAndAdd(
+          vec3.create(),
+          c3,
+          worldAxis(rotation, (r + 1) % 3),
+          sphR,
+        );
+        const v0 = vec3.sub(vec3.create(), rep, c3);
+        const v1 = vec3.sub(vec3.create(), p3, c3);
+        projectOntoPlane(v0, axis);
+        projectOntoPlane(v1, axis);
+        vec3.normalize(v0, v0);
+        vec3.normalize(v1, v1);
+        const cross = vec3.cross(vec3.create(), v0, v1);
+        const angle = Math.atan2(vec3.dot(cross, axis), vec3.dot(v0, v1));
+        const dq = quat.setAxisAngle(quat.create(), axis, angle);
+        const no = quat.normalize(
+          quat.create(),
+          quat.multiply(quat.create(), dq, quatOf(orientation)),
+        );
+        return { ...oldAnnotation, orientation: Float32Array.from(no) };
+      }
+
+      // Arcball: free trackball rotation taking the grabbed sphere point to the
+      // dragged point.
+      if (partIndex === ARCBALL_PICK_OFFSET) {
+        const sphR = boundingSphereRadius(extents);
+        const rep = vec3.scaleAndAdd(
+          vec3.create(),
+          c3,
+          worldAxis(rotation, 0),
+          sphR,
+        );
+        const v0 = vec3.normalize(
+          vec3.create(),
+          vec3.sub(vec3.create(), rep, c3),
+        );
+        const v1 = vec3.normalize(
+          vec3.create(),
+          vec3.sub(vec3.create(), p3, c3),
+        );
+        const dq = quat.rotationTo(quat.create(), v0, v1);
+        const no = quat.normalize(
+          quat.create(),
+          quat.multiply(quat.create(), dq, quatOf(orientation)),
+        );
+        return { ...oldAnnotation, orientation: Float32Array.from(no) };
+      }
+
+      // Center ball / full object / corners / edges: free translate.
+      const nc = Float32Array.from(center);
+      for (let i = 0; i < 3; ++i) nc[i] = position[i];
+      return { ...oldAnnotation, center: nc };
     },
   },
 );

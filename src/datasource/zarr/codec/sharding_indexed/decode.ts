@@ -193,7 +193,10 @@ class ShardedKvStore<BaseKey>
       // pre-edit bytes until a full page reload. Clearing unconditionally
       // guarantees the next read re-downloads the index.
       chunk.freeSystemMemory();
-      indexCache.chunkManager.queueManager.updateChunkState(chunk, ChunkState.QUEUED);
+      indexCache.chunkManager.queueManager.updateChunkState(
+        chunk,
+        ChunkState.QUEUED,
+      );
     }
   }
 

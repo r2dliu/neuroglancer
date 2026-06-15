@@ -139,7 +139,8 @@ const MAX_LAYER_BAR_UI_INDICATOR_COLORS = 6;
 
 export class SegmentationUserLayerGroupState
   extends RefCounted
-  implements SegmentationGroupState {
+  implements SegmentationGroupState
+{
   specificationChanged = new Signal();
   constructor(public layer: SegmentationUserLayer) {
     super();
@@ -294,7 +295,8 @@ export class SegmentationUserLayerGroupState
 
 export class SegmentationUserLayerColorGroupState
   extends RefCounted
-  implements SegmentationColorGroupState {
+  implements SegmentationColorGroupState
+{
   specificationChanged = new Signal();
   constructor(public layer: SegmentationUserLayer) {
     super();
@@ -368,12 +370,13 @@ export class SegmentationUserLayerColorGroupState
 }
 
 class LinkedSegmentationGroupState<
-  State extends
-  | SegmentationUserLayerGroupState
-  | SegmentationUserLayerColorGroupState,
->
+    State extends
+      | SegmentationUserLayerGroupState
+      | SegmentationUserLayerColorGroupState,
+  >
   extends RefCounted
-  implements WatchableValueInterface<State> {
+  implements WatchableValueInterface<State>
+{
   private curRoot: SegmentationUserLayer | undefined;
   private curGroupState: Owned<State> | undefined;
   get changed() {
@@ -821,7 +824,7 @@ export class SegmentationUserLayer extends Base {
             "Not supported on non-root linked segmentation layers",
           );
         } else {
-          loadedSubsource.activate(() => { });
+          loadedSubsource.activate(() => {});
           updatedSegmentPropertyMaps.push(segmentPropertyMap);
         }
       } else if (segmentationGraph !== undefined) {
@@ -975,7 +978,7 @@ export class SegmentationUserLayer extends Base {
     if (
       layerSpec[json_keys.EQUIVALENCES_JSON_KEY] !== undefined &&
       explicitSpecs.find((spec) => spec.url === localEquivalencesUrl) ===
-      undefined
+        undefined
     ) {
       specs.push({
         url: localEquivalencesUrl,

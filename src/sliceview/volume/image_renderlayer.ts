@@ -143,8 +143,14 @@ export class ImageRenderLayer extends SliceViewVolumeRenderLayer<ShaderControlsB
     gl.uniform1f(shader.uniform("uOpacity"), this.opacity.value);
 
     // Check if called too frequently
-    const lutName=(window as any).lutName===undefined ? "Tricolor 1" : (window as any).lutName;
-    gl.uniform4fv(shader.uniform("lut"), new Float32Array((luts as any)[lutName]));
+    const lutName =
+      (window as any).lutName === undefined
+        ? "Tricolor 1"
+        : (window as any).lutName;
+    gl.uniform4fv(
+      shader.uniform("lut"),
+      new Float32Array((luts as any)[lutName]),
+    );
     setControlsInShader(
       gl,
       shader,

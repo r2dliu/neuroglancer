@@ -685,8 +685,8 @@ export interface Ellipsoid extends AnnotationBase {
 }
 
 /**
- * An oriented (rotatable) box. Unlike {@link AxisAlignedBoundingBox}, this
- * carries an explicit orientation so the box can be freely rotated in 3D.
+ * An oriented (rotatable) box. Unlike AxisAlignedBoundingBox, this carries an
+ * explicit orientation so the box can be freely rotated in 3D.
  *
  * - `center` / `extents` are rank-length vectors in model coordinates (extents
  *   are the full edge lengths, not half-extents).

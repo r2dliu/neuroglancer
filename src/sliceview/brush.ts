@@ -143,7 +143,8 @@ export class BrushTool extends Tool<Viewer> {
       const { canonicalVoxelFactors, displayDimensionIndices } = renderInfo;
 
       // Find which display dimension each in-plane axis maps to
-      let xDisplayDim = 0, yDisplayDim = 0;
+      let xDisplayDim = 0,
+        yDisplayDim = 0;
       for (let i = 0; i < 3; i++) {
         const globalDim = displayDimensionIndices[i];
         if (globalDim === -1) continue;
@@ -181,13 +182,29 @@ export class BrushTool extends Tool<Viewer> {
             const cy = dy * yFactor;
             if (cx * cx + cy * cy > radiusSq) continue;
 
-            const newPosition = vec3.fromValues(center[0], center[1], center[2]);
+            const newPosition = vec3.fromValues(
+              center[0],
+              center[1],
+              center[2],
+            );
             vec3.scaleAndAdd(newPosition, newPosition, xAxis, dx);
             vec3.scaleAndAdd(newPosition, newPosition, yAxis, dy);
 
-            const x = clampAndRoundCoordinateToVoxelCenter(bounds, 0, newPosition[0]);
-            const y = clampAndRoundCoordinateToVoxelCenter(bounds, 1, newPosition[1]);
-            const z = clampAndRoundCoordinateToVoxelCenter(bounds, 2, newPosition[2]);
+            const x = clampAndRoundCoordinateToVoxelCenter(
+              bounds,
+              0,
+              newPosition[0],
+            );
+            const y = clampAndRoundCoordinateToVoxelCenter(
+              bounds,
+              1,
+              newPosition[1],
+            );
+            const z = clampAndRoundCoordinateToVoxelCenter(
+              bounds,
+              2,
+              newPosition[2],
+            );
             brushPoints.push({ x, y, z, value: this.brushValue });
           }
         }

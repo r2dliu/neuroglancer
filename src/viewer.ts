@@ -23,6 +23,7 @@ import svg_layers from "ikonate/icons/layers.svg?raw";
 import svg_list from "ikonate/icons/list.svg?raw";
 import svg_settings from "ikonate/icons/settings.svg?raw";
 import { debounce } from "lodash-es";
+import { registerOrientedBoundingBoxToolForViewer } from "#src/annotation/oriented_bounding_box_tool.js";
 import {
   makeCoordinateSpace,
   TrackableCoordinateSpace,
@@ -1231,3 +1232,4 @@ registerBrushToolForViewer(Viewer);
 registerEraserToolForViewer(Viewer);
 registerBoundingBoxToolForViewer(Viewer);
 registerPointToolForViewer(Viewer);
+registerOrientedBoundingBoxToolForViewer(Viewer);

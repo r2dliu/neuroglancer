@@ -156,7 +156,8 @@ export function applySharding(
   ) => unknown;
   decodeCodecs: CodecChainSpec;
 } {
-  let kvStore: ReadableKvStore<unknown> & Partial<ShardedKvStoreWithInvalidation> = baseKvStore.store;
+  let kvStore: ReadableKvStore<unknown> &
+    Partial<ShardedKvStoreWithInvalidation> = baseKvStore.store;
   let curCodecs = codecs;
   while (true) {
     const { shardingInfo } = curCodecs;

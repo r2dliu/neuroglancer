@@ -125,17 +125,17 @@ import { ProgressSpan } from "#src/util/progress_listener.js";
 export class PrecomputedVolumeChunkSource extends WithParameters(
   WithSharedKvStoreContext(VolumeChunkSource),
   VolumeChunkSourceParameters,
-) { }
+) {}
 
 class PrecomputedMeshSource extends WithParameters(
   WithSharedKvStoreContext(MeshSource),
   MeshSourceParameters,
-) { }
+) {}
 
 class PrecomputedMultiscaleMeshSource extends WithParameters(
   WithSharedKvStoreContext(MultiscaleMeshSource),
   MultiscaleMeshSourceParameters,
-) { }
+) {}
 
 class PrecomputedSkeletonSource extends WithParameters(
   WithSharedKvStoreContext(SkeletonSource),
@@ -395,7 +395,7 @@ const MultiscaleAnnotationSourceBase = WithParameters(
 class PrecomputedAnnotationSpatialIndexSource extends WithParameters(
   WithSharedKvStoreContext(AnnotationGeometryChunkSource),
   AnnotationSpatialIndexSourceParameters,
-) { }
+) {}
 
 interface PrecomputedAnnotationSourceOptions {
   metadata: AnnotationMetadata;
@@ -1220,7 +1220,7 @@ function parseInlinePropertyMap(data: unknown): InlineSegmentPropertyMap {
             }
             return (
               DATA_TYPE_ARRAY_CONSTRUCTOR[
-              dataType
+                dataType
               ] as TypedNumberArrayConstructor
             ).from(valuesObj);
           },
@@ -1248,7 +1248,10 @@ function parseInlinePropertyMap(data: unknown): InlineSegmentPropertyMap {
               if (value === null || value === "") {
                 return null;
               }
-              if (typeof value === "string" && /^#[0-9A-Fa-f]{6}$/.test(value)) {
+              if (
+                typeof value === "string" &&
+                /^#[0-9A-Fa-f]{6}$/.test(value)
+              ) {
                 return value;
               }
               throw new Error(`Invalid color value: ${JSON.stringify(value)}`);
