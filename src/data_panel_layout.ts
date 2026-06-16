@@ -95,6 +95,7 @@ export interface ViewerUIState
   enableAdaptiveDownsampling: TrackableBoolean;
   showScaleBar: TrackableBoolean;
   scaleBarOptions: TrackableValue<ScaleBarOptions>;
+  show3DBox: TrackableBoolean;
   visibleLayerRoles: WatchableSet<RenderLayerRole>;
   selectedLayer: SelectedLayerState;
   inputEventBindings: InputEventBindings;
@@ -182,6 +183,7 @@ export function getCommonViewerState(viewer: ViewerUIState) {
     selectedLayer: viewer.selectedLayer,
     visibility: viewer.visibility,
     scaleBarOptions: viewer.scaleBarOptions,
+    show3DBox: viewer.show3DBox,
     hideCrossSectionBackground3D: viewer.hideCrossSectionBackground3D,
   };
 }

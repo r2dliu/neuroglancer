@@ -411,6 +411,7 @@ function getCommonViewerState(viewer: Viewer) {
     showScaleBar: viewer.showScaleBar,
     scaleBarOptions: viewer.scaleBarOptions,
     showPerspectiveSliceViews: viewer.showPerspectiveSliceViews,
+    show3DBox: viewer.show3DBox,
     inputEventBindings: viewer.inputEventBindings,
     visibility: viewer.visibility,
     selectedLayer: viewer.selectedLayer,

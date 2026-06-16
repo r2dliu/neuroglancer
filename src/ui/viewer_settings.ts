@@ -118,6 +118,7 @@ export class ViewerSettingsPanel extends SidePanel {
     addCheckbox("Show axis lines", viewer.showAxisLines);
     addCheckbox("Show scale bar", viewer.showScaleBar);
     addCheckbox("Show cross sections in 3-d", viewer.showPerspectiveSliceViews);
+    addCheckbox("Show 3-d box", viewer.show3DBox);
     addCheckbox(
       "Hide sections background 3-d",
       viewer.hideCrossSectionBackground3D,
