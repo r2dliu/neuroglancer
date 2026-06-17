@@ -5,7 +5,7 @@
 
 import { AnnotationType } from "#src/annotation/index.js";
 import { isInteractiveGizmoPart } from "#src/annotation/oriented_bounding_box.js";
-import { ensureRegionBox } from "#src/annotation/region.js";
+import { captureRegionDataBounds } from "#src/annotation/region.js";
 import type { ToolActivation } from "#src/ui/tool.js";
 import { registerTool, Tool } from "#src/ui/tool.js";
 import { EventActionMap } from "#src/util/event_action_map.js";
@@ -19,10 +19,9 @@ export class OrientedBoundingBoxTool extends Tool<Viewer> {
   }
 
   activate(activation: ToolActivation<this>) {
-    // Make sure there's a region box to edit (creates the layer + a default
-    // box at the view center on first activation). Remove once Ichnaea frontend 
-    // controls persistence
-    ensureRegionBox(this.viewer);
+    // Capture the dataset bounds the gizmo clamps edits against. The box(es)
+    // themselves are created/owned by the Ichnaea frontend.
+    captureRegionDataBounds(this.viewer);
 
     // Conditional left click control; only functions when clicking on a gizmo handle
     const { mouseState } = this.viewer;
