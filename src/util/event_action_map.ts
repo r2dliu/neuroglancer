@@ -80,6 +80,14 @@ export interface EventAction {
   action: ActionIdentifier;
 
   /**
+   * Optional guard evaluated at resolution time. When present and it returns
+   * false, this binding is skipped and resolution falls through to the
+   * next-lower-priority binding for the same event (see HierarchicalMap.get).
+   *
+   */
+  when?: () => boolean;
+
+  /**
    * Whether to call `stopPropagation()` on the triggering event.  Defaults to true.
    */
   stopPropagation?: boolean;
@@ -328,8 +336,7 @@ export class EventActionMap
     EventAction,
     EventActionMap
   >
-  implements EventActionMapInterface
-{
+  implements EventActionMapInterface {
   label: string | undefined;
 
   /**
@@ -394,6 +401,13 @@ export class EventActionMap
     }
   }
 
+  get(
+    identifier: NormalizedEventIdentifier,
+    accept: (value: EventAction) => boolean = isEventActionEnabled,
+  ): EventAction | undefined {
+    return super.get(identifier, accept);
+  }
+
   describe(): string {
     const bindings = [];
     const uniqueBindings = new Map<string, string>();
@@ -444,6 +458,10 @@ export const eventPhaseNames: string[] = [];
 eventPhaseNames[Event.AT_TARGET] = "at";
 eventPhaseNames[Event.CAPTURING_PHASE] = "capture";
 eventPhaseNames[Event.BUBBLING_PHASE] = "bubble";
+
+function isEventActionEnabled(eventAction: EventAction): boolean {
+  return eventAction.when === undefined || eventAction.when();
+}
 
 export function dispatchEvent(
   baseIdentifier: EventIdentifier,

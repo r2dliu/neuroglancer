@@ -47,15 +47,10 @@ export class PointTool extends Tool<Viewer> {
       },
     });
 
-    this.viewer.inputEventBindings.sliceView.addParent(
+    activation.pushInputLayer(
+      this.viewer.inputEventBindings.sliceView,
       pointMap,
-      Number.POSITIVE_INFINITY,
     );
-
-    activation.bindInputEventMap(pointMap);
-    activation.registerDisposer(() => {
-      this.viewer.inputEventBindings.sliceView.removeParent(pointMap);
-    });
 
     activation.bindAction<MouseEvent>(
       "neuroglancer-point-click",

@@ -49,34 +49,35 @@ export class BrushTool extends Tool<Viewer> {
     const { content } = makeToolActivationStatusMessage(activation);
     content.classList.add("neuroglancer-brush-tool");
 
-    // Override default viewer input events
+    // Claim left-click/drag for painting only when a paintable segmentation
+    // layer is selected; otherwise the guard declines and the click falls
+    // through to the normal slice-view select/navigate behavior.
+    const canPaint = () => {
+      const layer = this.viewer.selectedLayer?.layer?.layer;
+      return (
+        layer instanceof SegmentationUserLayer &&
+        layer.renderLayers.some((r) => r instanceof SegmentationRenderLayer)
+      );
+    };
     const brushMap = EventActionMap.fromObject({
-      all: {
-        action: "brush-block-default",
-        stopPropagation: true,
-        preventDefault: true,
-      },
       "at:mousedown0": {
         action: "neuroglancer-brush-paint",
+        when: canPaint,
         stopPropagation: true,
         preventDefault: true,
       },
       "at:mouseup0": {
         action: "neuroglancer-brush-release",
+        when: canPaint,
         stopPropagation: true,
         preventDefault: true,
       },
     });
 
-    this.viewer.inputEventBindings.sliceView.addParent(
+    activation.pushInputLayer(
+      this.viewer.inputEventBindings.sliceView,
       brushMap,
-      Number.POSITIVE_INFINITY,
     );
-
-    activation.bindInputEventMap(brushMap);
-    activation.registerDisposer(() => {
-      this.viewer.inputEventBindings.sliceView.removeParent(brushMap);
-    });
 
     const paint = () => {
       if (this.brushValue === -1) return;

@@ -340,7 +340,7 @@ emitLine(uModelViewProjection * vec4(endpointA, 1.0),
 ${this.setPartIndex(builder, "uint(aBoxCornerOffset2.w)")};
 `);
       builder.setFragmentMain(`
-emitAnnotation(vec4(vColor.rgb, getLineAlpha() * vClipCoefficient));
+emitAnnotation(vec4(vColor.rgb, vColor.a * getLineAlpha() * vClipCoefficient));
 `);
     },
   );

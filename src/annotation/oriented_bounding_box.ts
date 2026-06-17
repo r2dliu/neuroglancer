@@ -1,31 +1,21 @@
 /**
- * @license
- * Copyright 2024 Ichnaea.
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
-/**
  * @file Support for rendering oriented (rotatable) bounding box annotations.
+ * Includes a 3D Transform/Rotate/Scale Gizmo
  *
  * Unlike the axis-aligned bounding box, this box carries a quaternion
  * `orientation`, so its 8 corners are computed as
  * `center + R(orientation) * (sign * extents/2)` in the 3D display subspace.
- * The quaternion is supplied as a per-instance vertex attribute and converted
- * to a rotation matrix in the vertex shader.
+ *
  */
 
 import type { OrientedBoundingBox } from "#src/annotation/index.js";
 import { AnnotationType } from "#src/annotation/index.js";
+import {
+  getGizmoDragStartNdc,
+  getGizmoProjection,
+  getRegionDataBounds,
+  setGizmoProjection,
+} from "#src/annotation/region_bounds.js";
 import type {
   AnnotationRenderContext,
   AnnotationShaderGetter,
@@ -42,17 +32,17 @@ import type { SliceViewPanelRenderContext } from "#src/sliceview/renderlayer.js"
 import { tile2dArray } from "#src/util/array.js";
 import {
   mat3,
+  mat4,
   quat,
   transformVectorByMat4Transpose,
   vec3,
 } from "#src/util/geom.js";
-import { CORNERS_PER_BOX, EDGES_PER_BOX } from "#src/webgl/bounding_box.js";
+import { EDGES_PER_BOX } from "#src/webgl/bounding_box.js";
 import { GLBuffer } from "#src/webgl/buffer.js";
 import {
   defineCircleShader,
   drawCircles,
   initializeCircleShader,
-  VERTICES_PER_CIRCLE,
 } from "#src/webgl/circles.js";
 import {
   defineLineShader,
@@ -61,44 +51,191 @@ import {
   VERTICES_PER_LINE,
 } from "#src/webgl/lines.js";
 import type { ShaderBuilder, ShaderProgram } from "#src/webgl/shader.js";
+import { drawArraysInstanced } from "#src/webgl/shader.js";
 import { defineVectorArrayVertexShaderInput } from "#src/webgl/shader_lib.js";
 import { defineVertexId, VertexIdHelper } from "#src/webgl/vertex_id.js";
 
-// Pick-ID layout per instance. The box-geometry offsets (corners/edges/faces)
-// match the axis-aligned box so the existing snap/representative-point helpers
-// stay familiar; the gizmo handles are appended after.
-const FULL_OBJECT_PICK_OFFSET = 0;
-const CORNERS_PICK_OFFSET = FULL_OBJECT_PICK_OFFSET + 1;
-const EDGES_PICK_OFFSET = CORNERS_PICK_OFFSET + CORNERS_PER_BOX;
-const FACES_PICK_OFFSET = EDGES_PICK_OFFSET + EDGES_PER_BOX; // 6 extrude caps
-const ROTATE_RING_PICK_OFFSET = FACES_PICK_OFFSET + 6; // 3 rings
-const ARCBALL_PICK_OFFSET = ROTATE_RING_PICK_OFFSET + 3; // 1 free-rotate sphere
-const TRANSLATE_AXIS_PICK_OFFSET = ARCBALL_PICK_OFFSET + 1; // 3 tripod arrows
+// Pick-ID layout per instance.
+const FULL_OBJECT_PICK_OFFSET = 0; // 1: whole object / non-interactive
+const EDGES_PICK_OFFSET = FULL_OBJECT_PICK_OFFSET + 1; // EDGES_PER_BOX: edges → free rotation
+const EDGES_PICK_END = EDGES_PICK_OFFSET + EDGES_PER_BOX;
+const ROTATE_RING_PICK_OFFSET = EDGES_PICK_END; // 3 rings
+const TRANSLATE_AXIS_PICK_OFFSET = ROTATE_RING_PICK_OFFSET + 3; // 3 tripod arrows
 const CENTER_BALL_PICK_OFFSET = TRANSLATE_AXIS_PICK_OFFSET + 3; // 1 free translate
-export const ORIENTED_BBOX_PICK_IDS_PER_INSTANCE = CENTER_BALL_PICK_OFFSET + 1;
+const SCALE_AXIS_PICK_OFFSET = CENTER_BALL_PICK_OFFSET + 1; // 3 scale cubes
+export const ORIENTED_BBOX_PICK_IDS_PER_INSTANCE = SCALE_AXIS_PICK_OFFSET + 3;
 
-export {
-  FULL_OBJECT_PICK_OFFSET,
-  CORNERS_PICK_OFFSET,
-  EDGES_PICK_OFFSET,
-  FACES_PICK_OFFSET,
-  ROTATE_RING_PICK_OFFSET,
-  ARCBALL_PICK_OFFSET,
-  TRANSLATE_AXIS_PICK_OFFSET,
-  CENTER_BALL_PICK_OFFSET,
-};
+// A draggable part of the gizmo, resolved from a pick part index. `axis` is the
+// display axis (0/1/2) for the per-axis handles.
+export type GizmoHandle =
+  | { kind: "translate"; axis: number } // tripod arrow → move along a world axis
+  | { kind: "scale"; axis: number } // cube → resize along a world axis
+  | { kind: "ring"; axis: number } // ring → rotate about a local axis
+  | { kind: "centerBall" } // free translate in the screen plane
+  | { kind: "edge" } // box boundary → free trackball rotation
+  | { kind: "none" }; // interior / cross-section / nothing: not interactive
 
-// Gizmo handle geometry constants.
-// Circle handles drawn per box: 6 face-extrude caps + 1 center ball + 3 tripod
-// axis tips = 10 circles.
-const N_HANDLE_CIRCLES = 10;
-const FACE_CAP_DIAMETER = 11; // pixels
+export function classifyGizmoPart(partIndex: number): GizmoHandle {
+  const translate = partIndex - TRANSLATE_AXIS_PICK_OFFSET;
+  if (translate >= 0 && translate < 3) return { kind: "translate", axis: translate };
+  const scale = partIndex - SCALE_AXIS_PICK_OFFSET;
+  if (scale >= 0 && scale < 3) return { kind: "scale", axis: scale };
+  const ring = partIndex - ROTATE_RING_PICK_OFFSET;
+  if (ring >= 0 && ring < 3) return { kind: "ring", axis: ring };
+  if (partIndex === CENTER_BALL_PICK_OFFSET) return { kind: "centerBall" };
+  if (partIndex >= EDGES_PICK_OFFSET && partIndex < EDGES_PICK_END) return { kind: "edge" };
+  return { kind: "none" };
+}
+
+export function isInteractiveGizmoPart(partIndex: number): boolean {
+  return classifyGizmoPart(partIndex).kind !== "none";
+}
+
+// axis 0 = red, 1 = green, 2 = blue.
+// `axisUnit` returns the corresponding local unit axis vector.
+const glsl_axisColor = `
+vec3 axisColor(int a) {
+  return a == 0 ? vec3(0.0, 0.0, 1.0)
+       : a == 1 ? vec3(0.0, 1.0, 0.0)
+       :          vec3(1.0, 0.0, 0.0);
+}
+vec3 axisUnit(int a) {
+  return vec3(a == 0 ? 1.0 : 0.0, a == 1 ? 1.0 : 0.0, a == 2 ? 1.0 : 0.0);
+}
+`;
+
+// Length of the xyz part of column `col` of a column-major mat4 — i.e. the
+// view-space scale of basis axis `col` under that matrix.
+function columnXyzLength(m: mat4, col: number): number {
+  return Math.hypot(m[col * 4], m[col * 4 + 1], m[col * 4 + 2]);
+}
+
+// Unit arrow mesh. Shader tiles this 3x and repoints to the proper axes
+function makeArrowMesh(): {
+  positions: Float32Array;
+  normals: Float32Array;
+  vertexCount: number;
+} {
+  const N = 16;
+  const SHAFT = 0.81; // shaft top / cone base, as a fraction of total length
+  const rS = 0.4; // shaft radius (relative to cone base radius = 1)
+  const rC = 1.0; // cone base radius
+  const coneH = 1 - SHAFT;
+  const coneHyp = Math.hypot(coneH, rC);
+  const nz = rC / coneHyp; // cone normal z component
+  const nr = coneH / coneHyp; // cone normal radial component
+  const P: number[] = [];
+  const Nm: number[] = [];
+  const add = (
+    px: number,
+    py: number,
+    pz: number,
+    nx: number,
+    ny: number,
+    nz: number,
+  ) => {
+    P.push(px, py, pz);
+    Nm.push(nx, ny, nz);
+  };
+  for (let i = 0; i < N; ++i) {
+    const a0 = (2 * Math.PI * i) / N;
+    const a1 = (2 * Math.PI * (i + 1)) / N;
+    const am = (a0 + a1) / 2;
+    const c0 = Math.cos(a0);
+    const s0 = Math.sin(a0);
+    const c1 = Math.cos(a1);
+    const s1 = Math.sin(a1);
+    // Shaft side wall (two triangles).
+    add(rS * c0, rS * s0, 0, c0, s0, 0);
+    add(rS * c0, rS * s0, SHAFT, c0, s0, 0);
+    add(rS * c1, rS * s1, SHAFT, c1, s1, 0);
+    add(rS * c0, rS * s0, 0, c0, s0, 0);
+    add(rS * c1, rS * s1, SHAFT, c1, s1, 0);
+    add(rS * c1, rS * s1, 0, c1, s1, 0);
+    // Shaft bottom disc (faces -Z).
+    add(0, 0, 0, 0, 0, -1);
+    add(rS * c1, rS * s1, 0, 0, 0, -1);
+    add(rS * c0, rS * s0, 0, 0, 0, -1);
+    // Cone base disc (faces -Z).
+    add(0, 0, SHAFT, 0, 0, -1);
+    add(rC * c0, rC * s0, SHAFT, 0, 0, -1);
+    add(rC * c1, rC * s1, SHAFT, 0, 0, -1);
+    // Cone side.
+    add(rC * c0, rC * s0, SHAFT, nr * c0, nr * s0, nz);
+    add(0, 0, 1, nr * Math.cos(am), nr * Math.sin(am), nz);
+    add(rC * c1, rC * s1, SHAFT, nr * c1, nr * s1, nz);
+  }
+  return {
+    positions: Float32Array.from(P),
+    normals: Float32Array.from(Nm),
+    vertexCount: P.length / 3,
+  };
+}
+
+const ARROW_MESH = makeArrowMesh();
+const VERTS_PER_ARROW = ARROW_MESH.vertexCount;
+const ARROW_COUNT = 3;
+const ARROW_DRAW_VERTEX_COUNT = VERTS_PER_ARROW * ARROW_COUNT;
+function tileMesh(unit: Float32Array, copies: number): Float32Array {
+  const out = new Float32Array(unit.length * copies);
+  for (let i = 0; i < copies; ++i) out.set(unit, i * unit.length);
+  return out;
+}
+const ARROW_POSITIONS = tileMesh(ARROW_MESH.positions, ARROW_COUNT);
+const ARROW_NORMALS = tileMesh(ARROW_MESH.normals, ARROW_COUNT);
+
+// Unit cube mesh
+function makeCubeMesh(): {
+  positions: Float32Array;
+  normals: Float32Array;
+  vertexCount: number;
+} {
+  const faces: [number[], number[][]][] = [
+    [[0, 0, 1], [[-0.5, -0.5, 0.5], [0.5, -0.5, 0.5], [0.5, 0.5, 0.5], [-0.5, 0.5, 0.5]]],
+    [[0, 0, -1], [[0.5, -0.5, -0.5], [-0.5, -0.5, -0.5], [-0.5, 0.5, -0.5], [0.5, 0.5, -0.5]]],
+    [[1, 0, 0], [[0.5, -0.5, 0.5], [0.5, -0.5, -0.5], [0.5, 0.5, -0.5], [0.5, 0.5, 0.5]]],
+    [[-1, 0, 0], [[-0.5, -0.5, -0.5], [-0.5, -0.5, 0.5], [-0.5, 0.5, 0.5], [-0.5, 0.5, -0.5]]],
+    [[0, 1, 0], [[-0.5, 0.5, 0.5], [0.5, 0.5, 0.5], [0.5, 0.5, -0.5], [-0.5, 0.5, -0.5]]],
+    [[0, -1, 0], [[-0.5, -0.5, -0.5], [0.5, -0.5, -0.5], [0.5, -0.5, 0.5], [-0.5, -0.5, 0.5]]],
+  ];
+  const P: number[] = [];
+  const Nm: number[] = [];
+  for (const [n, c] of faces) {
+    for (const i of [0, 1, 2, 0, 2, 3]) {
+      P.push(c[i][0], c[i][1], c[i][2]);
+      Nm.push(n[0], n[1], n[2]);
+    }
+  }
+  return {
+    positions: Float32Array.from(P),
+    normals: Float32Array.from(Nm),
+    vertexCount: P.length / 3,
+  };
+}
+
+const CUBE_MESH = makeCubeMesh();
+const VERTS_PER_CUBE = CUBE_MESH.vertexCount;
+const N_SCALE_CUBES = 3;
+const CUBE_DRAW_VERTEX_COUNT = VERTS_PER_CUBE * N_SCALE_CUBES;
+const CUBE_POSITIONS = tileMesh(CUBE_MESH.positions, N_SCALE_CUBES);
+const CUBE_NORMALS = tileMesh(CUBE_MESH.normals, N_SCALE_CUBES);
+// Scale-cube placement, in isotropic gizmo units (the arrow spans 0..1 along its
+// axis): cube floating a little past the arrow tip (a small gap), this edge size.
+const CUBE_CENTER_Z = 1.32;
+const CUBE_EDGE = 0.16;
+
+// Gizmo handles are drawn at a constant on-screen size, independent of zoom.
+// Scale is from -1 to 1 for full viewport
+const GIZMO_SIZE = 0.18;
+// Tripod arrows start this fraction of their length out from the center, so they
+// begin just past the center ball instead of clipping through it.
+const GIZMO_ARROW_START_FRACTION = 0.15;
+// Center "free translate" ball diameter, in pixels (screen-space via emitCircle).
 const CENTER_BALL_DIAMETER = 13;
-const TRIPOD_TIP_DIAMETER = 9;
-// Line handles per box: 3 tripod shafts + 3 rotation rings (segmented loops).
+// Rotation rings: 3 segmented line loops (the great circles of the box's
+// bounding sphere), colored per local axis.
 const RING_SEGMENTS = 48;
-const N_HANDLE_LINES = 3 + 3 * RING_SEGMENTS;
-const HANDLE_LINE_RING_BASE = 3; // tripod shafts are line indices [0,3)
+const N_RING_LINES = 3 * RING_SEGMENTS;
 
 // The 12 edges of the unit cube [0,1]^3. Each row is:
 //   cornerA (xyz in {0,1}), cornerB (xyz in {0,1}), edge pick index.
@@ -159,7 +296,7 @@ abstract class RenderHelper extends AnnotationRenderHelper {
       builder,
       "float",
       WebGL2RenderingContext.FLOAT,
-      /*normalized=*/ false,
+      false,
       "Bounds",
       rank,
       2,
@@ -169,7 +306,7 @@ abstract class RenderHelper extends AnnotationRenderHelper {
       builder,
       "float",
       WebGL2RenderingContext.FLOAT,
-      /*normalized=*/ false,
+      false,
       "Orientation",
       4,
       1,
@@ -194,18 +331,6 @@ vec3 orientedCornerPosition(vec3 cornerOffset) {
   vec3 localOffset = (cornerOffset * 2.0 - 1.0) * obbHalfExtents();
   return obbSubCenter() + obbRotation() * localOffset;
 }
-float orientedClipCoefficient() {
-  float center[${rank}] = getBounds0();
-  float extents[${rank}] = getBounds1();
-  float modelLower[${rank}];
-  float modelUpper[${rank}];
-  for (int i = 0; i < ${rank}; ++i) {
-    float halfExtent = extents[i] * 0.5;
-    modelLower[i] = center[i] - halfExtent;
-    modelUpper[i] = center[i] + halfExtent;
-  }
-  return getMaxSubspaceClipCoefficient(modelLower, modelUpper);
-}
 float ng_lineWidth;
 `);
   }
@@ -216,6 +341,7 @@ float ng_lineWidth;
     shaderGetter: AnnotationShaderGetter,
     context: AnnotationRenderContext,
     callback: (shader: ShaderProgram) => void,
+    vertexIdCount = 256, // default; increase later if not enough for mesh
   ) {
     super.enable(shaderGetter, context, (shader) => {
       const { gl } = this;
@@ -225,13 +351,12 @@ float ng_lineWidth;
       orientationBinder.enable(1);
       gl.bindBuffer(WebGL2RenderingContext.ARRAY_BUFFER, context.buffer.buffer);
       boundsBinder.bind(this.geometryDataStride, context.bufferOffset);
-      // The quaternion follows the two rank-length vectors in each instance.
       orientationBinder.bind(
         this.geometryDataStride,
         context.bufferOffset + 2 * 4 * this.rank,
       );
       const { vertexIdHelper } = this;
-      vertexIdHelper.enable();
+      vertexIdHelper.enable(vertexIdCount);
       callback(shader);
       vertexIdHelper.disable();
       orientationBinder.disable();
@@ -241,14 +366,35 @@ float ng_lineWidth;
 }
 
 class PerspectiveViewRenderHelper extends RenderHelper {
+  // Reused variables
+  private scratchViewModelMatrix = mat4.create();
+  private scratchRegionCenter = vec3.create();
+  private scratchAxisWorld = vec3.create();
+
+  // Unit-arrow geometry (positions + normals) for the single handle.
+  private arrowPosBuffer = this.registerDisposer(
+    GLBuffer.fromData(this.gl, ARROW_POSITIONS),
+  );
+  private arrowNormalBuffer = this.registerDisposer(
+    GLBuffer.fromData(this.gl, ARROW_NORMALS),
+  );
+
+  // Scale-cube geometry (positions + normals) for the 3 scale handles.
+  private cubePosBuffer = this.registerDisposer(
+    GLBuffer.fromData(this.gl, CUBE_POSITIONS),
+  );
+  private cubeNormalBuffer = this.registerDisposer(
+    GLBuffer.fromData(this.gl, CUBE_NORMALS),
+  );
+
   private edgeBoxCornerOffsetsBuffer = this.registerDisposer(
     GLBuffer.fromData(
       this.gl,
       tile2dArray(
         edgeBoxCornerOffsetData,
-        /*majorDimension=*/ 7,
-        /*minorTiles=*/ 1,
-        /*majorTiles=*/ VERTICES_PER_LINE,
+        7,
+        1,
+        VERTICES_PER_LINE,
       ),
     ),
   );
@@ -258,119 +404,178 @@ class PerspectiveViewRenderHelper extends RenderHelper {
     (builder: ShaderBuilder) => {
       this.defineShader(builder);
       defineLineShader(builder);
-
       builder.addAttribute("highp vec3", "aBoxCornerOffset1");
-      // Last component of aBoxCornerOffset2 is the edge pick index.
       builder.addAttribute("highp vec4", "aBoxCornerOffset2");
-      builder.addVarying("highp float", "vClipCoefficient");
-
       builder.setVertexMain(`
-vClipCoefficient = orientedClipCoefficient();
-if (vClipCoefficient == 0.0) {
-  gl_Position = vec4(2.0, 0.0, 0.0, 1.0);
-  return;
-}
+// always draw a box's full wireframe in 3-D
+// (no subspace-clip fade, which would cull a box smaller than the data bounds).
 vec3 endpointA = orientedCornerPosition(aBoxCornerOffset1);
 vec3 endpointB = orientedCornerPosition(aBoxCornerOffset2.xyz);
 ng_lineWidth = 1.0;
 ${this.invokeUserMain}
-vColor = vec4(uColor, 1.0);
+vColor = vec4(uColor, 1.0);  // region box: layer annotation color (yellow default)
 emitLine(uModelViewProjection * vec4(endpointA, 1.0),
          uModelViewProjection * vec4(endpointB, 1.0),
          ng_lineWidth);
 ${this.setPartIndex(builder, "uint(aBoxCornerOffset2.w)")};
 `);
       builder.setFragmentMain(`
-emitAnnotation(vec4(vColor.rgb, getLineAlpha() * vClipCoefficient));
+emitAnnotation(vec4(vColor.rgb, getLineAlpha()));
 `);
     },
   );
 
-  private boxCornerOffsetsBuffer = this.registerDisposer(
-    GLBuffer.fromData(
-      this.gl,
-      tile2dArray(
-        vertexBasePositions,
-        /*majorDimension=*/ 3,
-        /*minorTiles=*/ 1,
-        /*majorTiles=*/ VERTICES_PER_CIRCLE,
-      ),
-    ),
-  );
-
-  private cornerShaderGetter = this.getDependentShader(
-    "annotation/orientedBoundingBox/projection/corner",
+  // The translate tripod: 3 shaded arrows (shaft + cone) along the box's local
+  // axes, colored per axis (X red, Y green, Z blue) and sized to a constant
+  // on-screen size. The arrow (axis) index comes from gl_VertexID (the unit mesh
+  // is tiled once per arrow).
+  private arrowShaderGetter = this.getDependentShader(
+    "annotation/orientedBoundingBox/projection/arrow",
     (builder: ShaderBuilder) => {
       this.defineShader(builder);
-      defineCircleShader(builder, this.targetIsSliceView);
-
-      builder.addAttribute("highp vec3", "aBoxCornerOffset");
-      builder.addVarying("highp float", "vClipCoefficient");
+      builder.addAttribute("highp vec3", "aArrowPos");
+      builder.addAttribute("highp vec3", "aArrowNormal");
+      builder.addUniform("highp vec3", "uGizmoAxisWorld");
+      builder.addVertexCode(glsl_axisColor);
       builder.setVertexMain(`
-vClipCoefficient = orientedClipCoefficient();
-if (vClipCoefficient == 0.0) {
-  gl_Position = vec4(2.0, 0.0, 0.0, 1.0);
-  return;
-}
-vec3 vertexPosition = orientedCornerPosition(aBoxCornerOffset);
-ng_lineWidth = 6.0;
-${this.invokeUserMain}
-vColor = vec4(uColor, 1.0);
-emitCircle(uModelViewProjection * vec4(vertexPosition, 1.0), ng_lineWidth, 0.0);
-uint cornerIndex = uint(aBoxCornerOffset.x + aBoxCornerOffset.y * 2.0 + aBoxCornerOffset.z * 4.0);
-uint cornerPickOffset = ${CORNERS_PICK_OFFSET}u + cornerIndex;
-${this.setPartIndex(builder, "cornerPickOffset")};
+int axis = gl_VertexID / ${VERTS_PER_ARROW};
+vec3 subCenter = obbSubCenter();
+// Keep the extents/orientation attributes referenced (arrows are world-aligned
+// and don't use them) so their per-instance binders aren't enabled at location -1.
+vec3 keep = obbHalfExtents() * 0.0 + obbRotation() * vec3(0.0);
+// Translate arrows stay aligned to the display axes: they do NOT rotate with the
+// box orientation (only the rings and box wireframe show the orientation).
+vec3 dir = axisUnit(axis);
+// Orthonormal basis around the axis for the arrow's radial directions.
+vec3 t1 = normalize(abs(dir.x) < 0.9
+  ? cross(vec3(1.0, 0.0, 0.0), dir)
+  : cross(vec3(0.0, 1.0, 0.0), dir));
+vec3 t2 = cross(dir, t1);
+// Build the arrow in an isotropic "gizmo space" (unit length, radius 0.06,
+// started just past the center), then scale each subspace component by its
+// per-axis world size. This undistorts BOTH the length and the cross-section, so
+// the arrow is a fixed on-screen size and shape regardless of voxel anisotropy.
+vec3 gizmoOffset =
+    (aArrowPos.x * 0.06) * t1
+  + (aArrowPos.y * 0.06) * t2
+  + (${GIZMO_ARROW_START_FRACTION} + aArrowPos.z) * dir;
+vec3 worldPos = subCenter + keep + gizmoOffset * uGizmoAxisWorld;
+vec3 nrm = normalize(
+  aArrowNormal.x * t1 + aArrowNormal.y * t2 + aArrowNormal.z * dir);
+vec3 lightDir = normalize(vec3(0.4, 0.6, 0.9));
+float shade = 0.45 + 0.55 * abs(dot(nrm, lightDir));
+vColor = vec4(axisColor(axis) * shade, 1.0);
+gl_Position = uModelViewProjection * vec4(worldPos, 1.0);
+${this.setPartIndex(builder, `${TRANSLATE_AXIS_PICK_OFFSET}u + uint(axis)`)};
 `);
       builder.setFragmentMain(`
-vec4 borderColor = vec4(0.0, 0.0, 0.0, 1.0);
-vec4 color = getCircleColor(vColor, borderColor);
-color.a *= vClipCoefficient;
-emitAnnotation(color);
+emitAnnotation(vColor);
 `);
     },
   );
 
-  // Circle handles: 6 face-extrude caps + 1 center ball + 3 tripod axis tips.
-  // The handle index is derived from gl_VertexID so no per-circle attribute
-  // buffer is needed.
-  private handleCircleShaderGetter = this.getDependentShader(
-    "annotation/orientedBoundingBox/projection/handleCircle",
+  // Scale cubes: one shaded cube per display axis, sitting just past the arrow
+  // tip on the same axis line, colored per axis. Built the same isotropic-gizmo-
+  // space way as the arrows so they are a fixed on-screen size and shape.
+  private cubeShaderGetter = this.getDependentShader(
+    "annotation/orientedBoundingBox/projection/cube",
+    (builder: ShaderBuilder) => {
+      this.defineShader(builder);
+      builder.addAttribute("highp vec3", "aCubePos");
+      builder.addAttribute("highp vec3", "aCubeNormal");
+      builder.addUniform("highp vec3", "uGizmoAxisWorld");
+      builder.addVertexCode(glsl_axisColor);
+      builder.setVertexMain(`
+int axis = gl_VertexID / ${VERTS_PER_CUBE};
+vec3 subCenter = obbSubCenter();
+vec3 keep = obbHalfExtents() * 0.0 + obbRotation() * vec3(0.0);
+vec3 dir = axisUnit(axis);
+vec3 t1 = normalize(abs(dir.x) < 0.9
+  ? cross(vec3(1.0, 0.0, 0.0), dir)
+  : cross(vec3(0.0, 1.0, 0.0), dir));
+vec3 t2 = cross(dir, t1);
+vec3 gizmoOffset =
+    (aCubePos.x * ${CUBE_EDGE}) * t1
+  + (aCubePos.y * ${CUBE_EDGE}) * t2
+  + (${CUBE_CENTER_Z} + aCubePos.z * ${CUBE_EDGE}) * dir;
+vec3 worldPos = subCenter + keep + gizmoOffset * uGizmoAxisWorld;
+vec3 nrm = normalize(
+  aCubeNormal.x * t1 + aCubeNormal.y * t2 + aCubeNormal.z * dir);
+vec3 lightDir = normalize(vec3(0.4, 0.6, 0.9));
+float shade = 0.45 + 0.55 * abs(dot(nrm, lightDir));
+vColor = vec4(axisColor(axis) * shade, 1.0);
+gl_Position = uModelViewProjection * vec4(worldPos, 1.0);
+${this.setPartIndex(builder, `${SCALE_AXIS_PICK_OFFSET}u + uint(axis)`)};
+`);
+      builder.setFragmentMain(`
+emitAnnotation(vColor);
+`);
+    },
+  );
+
+  // Rotation rings: 3 segmented line loops (the box's bounding-sphere great
+  // circles), colored per local axis. The ring/segment indices come from
+  // gl_VertexID.
+  private ringShaderGetter = this.getDependentShader(
+    "annotation/orientedBoundingBox/projection/rings",
+    (builder: ShaderBuilder) => {
+      this.defineShader(builder);
+      defineLineShader(builder);
+      builder.addUniform("highp vec3", "uGizmoAxisWorld");
+      // -1 = draw all three rings; otherwise draw only this ring index (used so
+      // the ring being dragged stays visible while the others are hidden).
+      builder.addUniform("highp int", "uRingActive");
+      builder.addVertexCode(glsl_axisColor);
+      builder.setVertexMain(`
+int lineIndex = gl_VertexID / ${VERTICES_PER_LINE};
+int ring = lineIndex / ${RING_SEGMENTS};
+int seg = lineIndex - ring * ${RING_SEGMENTS};
+if (uRingActive >= 0 && ring != uRingActive) {
+  gl_Position = vec4(2.0, 0.0, 0.0, 1.0);  // cull other rings
+  return;
+}
+int u = (ring + 1) % 3;
+int v = (ring + 2) % 3;
+vec3 subCenter = obbSubCenter();
+mat3 R = obbRotation();
+// Build a unit circle in the box's rotated axis plane in ISOTROPIC gizmo space
+// (rotate by R first), THEN scale each subspace component by its per-axis world
+// size. Correcting anisotropy after the rotation keeps the ring a true circle in
+// every orientation (correcting before R would let anisotropy warp it as the box
+// turns). Radius is half the arrow's, a constant on-screen size.
+float a0 = 6.28318530718 * float(seg) / float(${RING_SEGMENTS});
+float a1 = 6.28318530718 * float(seg + 1) / float(${RING_SEGMENTS});
+vec3 g0 = 0.5 * (cos(a0) * axisUnit(u) + sin(a0) * axisUnit(v));
+vec3 g1 = 0.5 * (cos(a1) * axisUnit(u) + sin(a1) * axisUnit(v));
+vec3 l0 = (R * g0) * uGizmoAxisWorld;
+vec3 l1 = (R * g1) * uGizmoAxisWorld;
+ng_lineWidth = 1.5;
+vColor = vec4(axisColor(ring), 1.0);
+emitLine(uModelViewProjection * vec4(subCenter + l0, 1.0),
+         uModelViewProjection * vec4(subCenter + l1, 1.0),
+         ng_lineWidth);
+${this.setPartIndex(builder, `${ROTATE_RING_PICK_OFFSET}u + uint(ring)`)};
+`);
+      builder.setFragmentMain(`
+emitAnnotation(vec4(vColor.rgb, getLineAlpha()));
+`);
+    },
+  );
+
+  // Center "free translate" ball — a billboarded circle, already screen-sized.
+  private centerBallShaderGetter = this.getDependentShader(
+    "annotation/orientedBoundingBox/projection/centerBall",
     (builder: ShaderBuilder) => {
       this.defineShader(builder);
       defineCircleShader(builder, this.targetIsSliceView);
-      builder.addVertexCode(`
-vec3 axisUnit(int a) {
-  return vec3(a == 0 ? 1.0 : 0.0, a == 1 ? 1.0 : 0.0, a == 2 ? 1.0 : 0.0);
-}
-`);
       builder.setVertexMain(`
-int handleIndex = gl_VertexID / ${VERTICES_PER_CIRCLE};
-vec3 subCenter = obbSubCenter();
-mat3 R = obbRotation();
-vec3 halfExtents = obbHalfExtents();
-vec3 pos;
-float diameter;
-highp uint pickOffset;
-if (handleIndex < 6) {
-  int a = handleIndex / 2;
-  float s = (handleIndex - a * 2 == 1) ? 1.0 : -1.0;
-  pos = subCenter + R * (axisUnit(a) * (s * halfExtents[a]));
-  diameter = ${FACE_CAP_DIAMETER}.0;
-  pickOffset = ${FACES_PICK_OFFSET}u + uint(handleIndex);
-} else if (handleIndex == 6) {
-  pos = subCenter;
-  diameter = ${CENTER_BALL_DIAMETER}.0;
-  pickOffset = ${CENTER_BALL_PICK_OFFSET}u;
-} else {
-  int a = handleIndex - 7;
-  float tipDist = halfExtents[a] + 0.4 * length(halfExtents);
-  pos = subCenter + R * (axisUnit(a) * tipDist);
-  diameter = ${TRIPOD_TIP_DIAMETER}.0;
-  pickOffset = ${TRANSLATE_AXIS_PICK_OFFSET}u + uint(a);
-}
-vColor = vec4(uColor, 1.0);
-emitCircle(uModelViewProjection * vec4(pos, 1.0), diameter, 0.0);
-${this.setPartIndex(builder, "pickOffset")};
+// Reference the box rotation/extents so their per-instance attributes are not
+// optimized out (the shared binder would otherwise enable location -1).
+vec3 keep = obbHalfExtents() + obbRotation() * vec3(0.0);
+vColor = vec4(0.6, 0.6, 0.6, 1.0);
+emitCircle(uModelViewProjection * vec4(obbSubCenter() + keep * 0.0, 1.0),
+           ${CENTER_BALL_DIAMETER}.0, 0.0);
+${this.setPartIndex(builder, `${CENTER_BALL_PICK_OFFSET}u`)};
 `);
       builder.setFragmentMain(`
 vec4 borderColor = vec4(0.0, 0.0, 0.0, 1.0);
@@ -379,87 +584,137 @@ emitAnnotation(getCircleColor(vColor, borderColor));
     },
   );
 
-  // Line handles: 3 tripod shafts (center -> axis tip) and 3 rotation rings
-  // (segmented loops in each local coordinate plane).
-  private handleLineShaderGetter = this.getDependentShader(
-    "annotation/orientedBoundingBox/projection/handleLine",
+  // Axis guide line shown during a single-axis (tripod) translate drag: a line
+  // through the box center along the dragged display axis, clamped to the data
+  // box's extent on that axis (uGuideLo/uGuideHi in model coordinates).
+  private guideLineShaderGetter = this.getDependentShader(
+    "annotation/orientedBoundingBox/projection/guideLine",
     (builder: ShaderBuilder) => {
+      const { rank } = this;
       this.defineShader(builder);
       defineLineShader(builder);
-      builder.addVertexCode(`
-vec3 axisUnit(int a) {
-  return vec3(a == 0 ? 1.0 : 0.0, a == 1 ? 1.0 : 0.0, a == 2 ? 1.0 : 0.0);
-}
-`);
+      builder.addVertexCode(glsl_axisColor);
+      builder.addUniform("highp int", "uGuideAxis");
+      builder.addUniform("highp float", "uGuideLo");
+      builder.addUniform("highp float", "uGuideHi");
       builder.setVertexMain(`
-int lineIndex = gl_VertexID / ${VERTICES_PER_LINE};
-vec3 subCenter = obbSubCenter();
-mat3 R = obbRotation();
-vec3 halfExtents = obbHalfExtents();
-float sphR = length(halfExtents);
-vec3 pA;
-vec3 pB;
-highp uint pickOffset;
-if (lineIndex < ${HANDLE_LINE_RING_BASE}) {
-  int a = lineIndex;
-  float tipDist = halfExtents[a] + 0.4 * sphR;
-  pA = subCenter;
-  pB = subCenter + R * (axisUnit(a) * tipDist);
-  pickOffset = ${TRANSLATE_AXIS_PICK_OFFSET}u + uint(a);
-} else {
-  int idx = lineIndex - ${HANDLE_LINE_RING_BASE};
-  int ring = idx / ${RING_SEGMENTS};
-  int seg = idx - ring * ${RING_SEGMENTS};
-  int u = (ring + 1) % 3;
-  int v = (ring + 2) % 3;
-  float a0 = 6.28318530718 * float(seg) / float(${RING_SEGMENTS});
-  float a1 = 6.28318530718 * float(seg + 1) / float(${RING_SEGMENTS});
-  vec3 uAxis = axisUnit(u);
-  vec3 vAxis = axisUnit(v);
-  vec3 l0 = sphR * (cos(a0) * uAxis + sin(a0) * vAxis);
-  vec3 l1 = sphR * (cos(a1) * uAxis + sin(a1) * vAxis);
-  pA = subCenter + R * l0;
-  pB = subCenter + R * l1;
-  pickOffset = ${ROTATE_RING_PICK_OFFSET}u + uint(ring);
+// Keep extents/orientation attributes referenced so their binders aren't -1.
+vec3 keep = obbHalfExtents() * 0.0 + obbRotation() * vec3(0.0);
+float c[${rank}] = getBounds0();
+float lo[${rank}];
+float hi[${rank}];
+for (int i = 0; i < ${rank}; ++i) {
+  lo[i] = (i == uGuideAxis) ? uGuideLo : c[i];
+  hi[i] = (i == uGuideAxis) ? uGuideHi : c[i];
 }
+vec3 pa = projectModelVectorToSubspace(lo) + keep;
+vec3 pb = projectModelVectorToSubspace(hi);
 ng_lineWidth = 1.0;
-vColor = vec4(uColor, 1.0);
-emitLine(uModelViewProjection * vec4(pA, 1.0),
-         uModelViewProjection * vec4(pB, 1.0),
+vColor = vec4(axisColor(uGuideAxis), 0.85);
+emitLine(uModelViewProjection * vec4(pa, 1.0),
+         uModelViewProjection * vec4(pb, 1.0),
          ng_lineWidth);
-${this.setPartIndex(builder, "pickOffset")};
+${this.setPartIndex(builder)};
 `);
       builder.setFragmentMain(`
-emitAnnotation(vec4(vColor.rgb, getLineAlpha()));
+emitAnnotation(vec4(vColor.rgb, vColor.a * getLineAlpha()));
 `);
     },
   );
+
+  // Compute and upload uGizmoAxisWorld: per display-axis world length that
+  // projects to GIZMO_SIZE on screen. Uses the true view-space length of each
+  // axis (|view·model·eₖ|, rotation-invariant) and the box depth (clip.w), both
+  // view-independent, so handles keep a constant on-screen size as the camera
+  // orbits and each axis is sized correctly under anisotropic voxels.
+  private setGizmoAxisWorld(
+    shader: ShaderProgram,
+    context: AnnotationRenderContext,
+  ) {
+    const loc = shader.uniform("uGizmoAxisWorld");
+    if (loc === null) return;
+    const pp = context.renderContext.projectionParameters;
+    const sm = context.subspaceMatrix;
+    const mvp = context.modelViewProjectionMatrix;
+
+    // Perspective depth (clip.w) of the box center: handles are scaled by this
+    // so they keep a constant on-screen size regardless of distance.
+    const center = this.regionCenterInSubspace(context, this.scratchRegionCenter);
+    const clipW =
+      Math.abs(
+        mvp[3] * center[0] + mvp[7] * center[1] + mvp[11] * center[2] + mvp[15],
+      ) || 1;
+
+    // For each display axis, the world length that projects to GIZMO_SIZE on
+    // screen. |view·model·eₖ| (column k of view·model) is the axis's view-space
+    // scale, rotation-invariant; the perspective NDC-per-world factor is then
+    // (fy · scale) / clip.w.
+    const viewModel = this.scratchViewModelMatrix;
+    const axisWorld = this.scratchAxisWorld;
+    const fy = Math.abs(pp.projectionMat[5]);
+    mat4.multiply(viewModel, pp.viewMatrix, context.renderSubspaceModelMatrix);
+    for (let k = 0; k < 3; ++k) {
+      const ndcPerWorld = (fy * columnXyzLength(viewModel, k)) / clipW;
+      axisWorld[k] = GIZMO_SIZE / Math.max(ndcPerWorld, 1e-6);
+    }
+    this.gl.uniform3f(loc, axisWorld[0], axisWorld[1], axisWorld[2]);
+
+    setGizmoProjection({
+      mvp: Float32Array.from(mvp),
+      subspaceMatrix: Float32Array.from(sm),
+      aspect: pp.width / pp.height,
+      axisWorld: Float32Array.from(axisWorld),
+    });
+  }
+
+  private regionCenterInSubspace(
+    context: AnnotationRenderContext,
+    out: vec3,
+  ): vec3 {
+    const bounds = getRegionDataBounds();
+    const sm = context.subspaceMatrix;
+    vec3.set(out, 0, 0, 0);
+    for (let i = 0; i < this.rank; ++i) {
+      const lo = bounds?.lower[i];
+      const hi = bounds?.upper[i];
+      const ci =
+        lo !== undefined &&
+          hi !== undefined &&
+          Number.isFinite(lo) &&
+          Number.isFinite(hi)
+          ? (lo + hi) / 2
+          : 0;
+      for (let j = 0; j < 3; ++j) out[j] += sm[i * 3 + j] * ci;
+    }
+    return out;
+  }
 
   drawEdges(context: AnnotationRenderContext) {
     const { gl } = this;
     this.enable(this.edgeShaderGetter, context, (shader) => {
       const aBoxCornerOffset1 = shader.attribute("aBoxCornerOffset1");
       const aBoxCornerOffset2 = shader.attribute("aBoxCornerOffset2");
+      const vertexStride = 4 * 7;
       this.edgeBoxCornerOffsetsBuffer.bindToVertexAttrib(
         aBoxCornerOffset1,
-        /*components=*/ 3,
-        /*attributeType=*/ WebGL2RenderingContext.FLOAT,
-        /*normalized=*/ false,
-        /*stride=*/ 4 * 7,
-        /*offset=*/ 0,
+        3,
+        WebGL2RenderingContext.FLOAT,
+        false,
+        vertexStride,
+        0,
       );
       this.edgeBoxCornerOffsetsBuffer.bindToVertexAttrib(
         aBoxCornerOffset2,
-        /*components=*/ 4,
-        /*attributeType=*/ WebGL2RenderingContext.FLOAT,
-        /*normalized=*/ false,
-        /*stride=*/ 4 * 7,
-        /*offset=*/ 4 * 3,
+        4,
+        WebGL2RenderingContext.FLOAT,
+        false,
+        vertexStride,
+        4 * 3,
       );
       initializeLineShader(
         shader,
         context.renderContext.projectionParameters,
-        /*featherWidthInPixels=*/ 1,
+        1,
       );
       drawLines(gl, EDGES_PER_BOX, context.count);
       gl.disableVertexAttribArray(aBoxCornerOffset1);
@@ -467,68 +722,169 @@ emitAnnotation(vec4(vColor.rgb, getLineAlpha()));
     });
   }
 
-  drawCorners(context: AnnotationRenderContext) {
+  // Draw a solid, two-sided instanced mesh (the arrow / cube handles): bind its
+  // position and normal buffers, disable backface culling so both sides show,
+  // draw, then restore state.
+  private drawSolidMesh(
+    context: AnnotationRenderContext,
+    shaderGetter: AnnotationShaderGetter,
+    positionBuffer: GLBuffer,
+    normalBuffer: GLBuffer,
+    positionAttribute: string,
+    normalAttribute: string,
+    vertexCount: number,
+  ) {
     const { gl } = this;
-    this.enable(this.cornerShaderGetter, context, (shader) => {
-      const aBoxCornerOffset = shader.attribute("aBoxCornerOffset");
-      this.boxCornerOffsetsBuffer.bindToVertexAttrib(
-        aBoxCornerOffset,
-        /*components=*/ 3,
-        /*attributeType=*/ WebGL2RenderingContext.FLOAT,
-        /*normalized=*/ false,
-      );
+    this.enable(
+      shaderGetter,
+      context,
+      (shader) => {
+        this.setGizmoAxisWorld(shader, context);
+        const position = shader.attribute(positionAttribute);
+        const normal = shader.attribute(normalAttribute);
+        positionBuffer.bindToVertexAttrib(position, 3);
+        normalBuffer.bindToVertexAttrib(normal, 3);
+        const wasCulling = gl.isEnabled(WebGL2RenderingContext.CULL_FACE);
+        gl.disable(WebGL2RenderingContext.CULL_FACE);
+        drawArraysInstanced(
+          gl,
+          WebGL2RenderingContext.TRIANGLES,
+          0,
+          vertexCount,
+          context.count,
+        );
+        if (wasCulling) gl.enable(WebGL2RenderingContext.CULL_FACE);
+        gl.disableVertexAttribArray(position);
+        gl.disableVertexAttribArray(normal);
+      },
+      vertexCount,
+    );
+  }
+
+  drawArrow(context: AnnotationRenderContext) {
+    this.drawSolidMesh(
+      context,
+      this.arrowShaderGetter,
+      this.arrowPosBuffer,
+      this.arrowNormalBuffer,
+      "aArrowPos",
+      "aArrowNormal",
+      ARROW_DRAW_VERTEX_COUNT,
+    );
+  }
+
+  drawCubes(context: AnnotationRenderContext) {
+    this.drawSolidMesh(
+      context,
+      this.cubeShaderGetter,
+      this.cubePosBuffer,
+      this.cubeNormalBuffer,
+      "aCubePos",
+      "aCubeNormal",
+      CUBE_DRAW_VERTEX_COUNT,
+    );
+  }
+
+  // activeRing = -1 draws all three rings; otherwise only that ring (so the ring
+  // being dragged stays visible while the rest of the gizmo hides).
+  drawRings(context: AnnotationRenderContext, activeRing = -1) {
+    const { gl } = this;
+    this.enable(
+      this.ringShaderGetter,
+      context,
+      (shader) => {
+        this.setGizmoAxisWorld(shader, context);
+        gl.uniform1i(shader.uniform("uRingActive"), activeRing);
+        initializeLineShader(
+          shader,
+          context.renderContext.projectionParameters,
+          1,
+        );
+        drawLines(gl, N_RING_LINES, context.count);
+      },
+      N_RING_LINES * VERTICES_PER_LINE,
+    );
+  }
+
+  drawCenterBall(context: AnnotationRenderContext) {
+    this.enable(this.centerBallShaderGetter, context, (shader) => {
       initializeCircleShader(
         shader,
         context.renderContext.projectionParameters,
         { featherWidthInPixels: 0 },
       );
-      drawCircles(shader.gl, CORNERS_PER_BOX, context.count);
-      gl.disableVertexAttribArray(aBoxCornerOffset);
+      drawCircles(shader.gl, 1, context.count);
     });
   }
 
-  drawHandleCircles(context: AnnotationRenderContext) {
-    this.enable(this.handleCircleShaderGetter, context, (shader) => {
-      initializeCircleShader(
-        shader,
-        context.renderContext.projectionParameters,
-        { featherWidthInPixels: 0 },
-      );
-      drawCircles(shader.gl, N_HANDLE_CIRCLES, context.count);
-    });
-  }
-
-  drawHandleLines(context: AnnotationRenderContext) {
+  drawGuideLine(context: AnnotationRenderContext, axis: number) {
     const { gl } = this;
-    this.enable(this.handleLineShaderGetter, context, (shader) => {
+    const bounds = getRegionDataBounds();
+    let lo = -1e6;
+    let hi = 1e6;
+    if (bounds) {
+      const l = bounds.lower[axis];
+      const h = bounds.upper[axis];
+      if (Number.isFinite(l) && Number.isFinite(h)) {
+        lo = l;
+        hi = h;
+      }
+    }
+    this.enable(this.guideLineShaderGetter, context, (shader) => {
+      gl.uniform1i(shader.uniform("uGuideAxis"), axis);
+      gl.uniform1f(shader.uniform("uGuideLo"), lo);
+      gl.uniform1f(shader.uniform("uGuideHi"), hi);
       initializeLineShader(
         shader,
         context.renderContext.projectionParameters,
-        /*featherWidthInPixels=*/ 1,
+        0,
       );
-      drawLines(gl, N_HANDLE_LINES, context.count);
+      drawLines(gl, 1, context.count);
     });
   }
 
   draw(context: AnnotationRenderContext) {
+    const { gl } = this;
     this.drawEdges(context);
-    this.drawHandleLines(context);
-    this.drawCorners(context);
-    this.drawHandleCircles(context);
+    // Remove depth rendering for gizmo so it is always visible and never occluded
+    gl.disable(WebGL2RenderingContext.DEPTH_TEST);
+    gl.depthMask(false);
+    try {
+      // While an interactive handle is being dragged, hide the rest of the gizmo
+      // and show only a drag-specific affordance: the axis guide line for a
+      // tripod translate, or the ring being dragged for a rotation. Otherwise
+      // (idle, or a non-interactive pick) the full gizmo is shown.
+      const dragged = getGizmoDragStartNdc()
+        ? classifyGizmoPart(
+          context.selectedIndex % ORIENTED_BBOX_PICK_IDS_PER_INSTANCE,
+        )
+        : { kind: "none" as const };
+      if (dragged.kind === "none") {
+        this.drawRings(context);
+        this.drawArrow(context);
+        this.drawCubes(context);
+      } else if (dragged.kind === "translate") {
+        this.drawGuideLine(context, dragged.axis);
+      } else if (dragged.kind === "ring") {
+        this.drawRings(context, dragged.axis);
+      }
+      this.drawCenterBall(context);
+    } finally {
+      gl.enable(WebGL2RenderingContext.DEPTH_TEST);
+      gl.depthMask(true);
+    }
   }
 }
 
-const sliceTempVec3 = vec3.create();
-const sliceTempVec3b = vec3.create();
-
 /**
- * Slice-view rendering draws the true cross-section: the convex polygon where
- * the viewport plane cuts the oriented box (up to 6 vertices). The Salama-Kolb
- * box/plane intersection is done in the box's LOCAL (axis-aligned) frame by
- * transforming the slice plane with the per-instance rotation, so the
- * front-vertex ordering is correct per box rather than per draw call.
+ * Slice-view rendering draws a non-interactable cross section of the box
  */
 class SliceViewRenderHelper extends RenderHelper {
+  // Reused scratch for the per-draw slice-plane computation (see setPlane),
+  // allocated once and consumed synchronously within a single call.
+  private scratchPlaneNormal = vec3.create();
+  private scratchPlaneCenter = vec3.create();
+
   private defineCrossSection(builder: ShaderBuilder) {
     const { rank } = this;
     builder.addUniform("highp vec3", "uPlaneNormal");
@@ -594,11 +950,13 @@ vec3 p1 = orientedCrossSectionVertex(vertexIndex1);
 vec3 p2 = orientedCrossSectionVertex(vertexIndex2);
 ng_lineWidth = 1.0;
 ${this.invokeUserMain}
-vColor = vec4(uColor, 1.0);
+vColor = vec4(uColor, 1.0);  // region box: layer annotation color (yellow default)
 emitLine(uModelViewProjection * vec4(p1, 1.0),
          uModelViewProjection * vec4(p2, 1.0),
          ng_lineWidth);
-${this.setPartIndex(builder)};
+// Region gizmo editing is 3-D only: emit a background pick ID so the slice
+// cross-section is purely visual (not hoverable, selectable, or draggable in 2-D).
+vPickID = 0u;
 `);
       builder.setFragmentMain(`
 emitAnnotation(vec4(vColor.rgb, vColor.a * getLineAlpha()));
@@ -616,14 +974,14 @@ emitAnnotation(vec4(vColor.rgb, vColor.a * getLineAlpha()));
     const projectionParameters =
       context.renderContext.sliceView.projectionParameters.value;
     const localPlaneNormal = transformVectorByMat4Transpose(
-      sliceTempVec3,
+      this.scratchPlaneNormal,
       projectionParameters.viewportNormalInGlobalCoordinates,
       context.renderSubspaceModelMatrix,
     );
     vec3.normalize(localPlaneNormal, localPlaneNormal);
     const planeDistance = vec3.dot(
       vec3.transformMat4(
-        sliceTempVec3b,
+        this.scratchPlaneCenter,
         projectionParameters.centerDataPosition,
         context.renderSubspaceInvModelMatrix,
       ),
@@ -643,35 +1001,10 @@ emitAnnotation(vec4(vColor.rgb, vColor.a * getLineAlpha()));
       initializeLineShader(
         shader,
         context.renderContext.projectionParameters,
-        /*featherWidthInPixels=*/ 1.0,
+        1.0,
       );
       drawLines(shader.gl, 6, context.count);
     });
-  }
-}
-
-function snapPositionToCorner(
-  position: Float32Array,
-  center: Float32Array,
-  extents: Float32Array,
-  orientation: Float32Array,
-  cornerIndex: number,
-) {
-  const rank = position.length;
-  const r = mat3.fromQuat(mat3.create(), orientation as unknown as quat);
-  // Decode the corner sign pattern from the corner index (x + 2y + 4z).
-  const sx = cornerIndex & 1 ? 1 : -1;
-  const sy = cornerIndex & 2 ? 1 : -1;
-  const sz = cornerIndex & 4 ? 1 : -1;
-  const local = [
-    (sx * (extents[0] ?? 0)) / 2,
-    (sy * (extents[1] ?? 0)) / 2,
-    (sz * (extents[2] ?? 0)) / 2,
-  ];
-  // Rotate the local corner into world space (subspace == first 3 model dims).
-  for (let i = 0; i < Math.min(3, rank); ++i) {
-    position[i] =
-      center[i] + r[i] * local[0] + r[i + 3] * local[1] + r[i + 6] * local[2];
   }
 }
 
@@ -681,8 +1014,10 @@ function quatOf(orientation: Float32Array): quat {
   return orientation as unknown as quat;
 }
 
-// Radius of the sphere enclosing the box (half the space diagonal of the
-// spatial extents). Matches `length(halfExtents)` used by the ring shaders.
+function toVec3(point: ArrayLike<number>): vec3 {
+  return vec3.fromValues(point[0], point[1], point[2]);
+}
+
 function boundingSphereRadius(extents: Float32Array): number {
   const x = extents[0] ?? 0;
   const y = extents[1] ?? 0;
@@ -690,8 +1025,6 @@ function boundingSphereRadius(extents: Float32Array): number {
   return 0.5 * Math.sqrt(x * x + y * y + z * z);
 }
 
-// World-space direction of the box's local axis `k` (column k of the rotation
-// matrix), normalized.
 function worldAxis(rotation: mat3, k: number): vec3 {
   return vec3.normalize(
     vec3.create(),
@@ -699,11 +1032,151 @@ function worldAxis(rotation: mat3, k: number): vec3 {
   );
 }
 
-function projectOntoPlane(v: vec3, axis: vec3) {
-  const d = vec3.dot(v, axis);
-  v[0] -= d * axis[0];
-  v[1] -= d * axis[1];
-  v[2] -= d * axis[2];
+// Angle to rotate a ring by, using the projected-ellipse tangent at the
+// clicked point. Falls back to a world estimate without a projection.
+function ringRotationAngle(
+  center: Float32Array,
+  rotation: mat3,
+  ringAxis: number,
+  grabbedPoint: vec3,
+  draggedPoint: Float32Array,
+  sphereRadius: number,
+): number {
+  const rank = center.length;
+  const projection = getGizmoProjection();
+  const grabNdc = getGizmoDragStartNdc();
+
+  // Fallback without a captured projection: approximate from the world-space
+  // ring tangent at the grabbed point.
+  if (projection === null || grabNdc === null) {
+    const axis = worldAxis(rotation, ringAxis);
+    const tangent = vec3.normalize(
+      vec3.create(),
+      vec3.cross(
+        vec3.create(),
+        axis,
+        vec3.sub(vec3.create(), grabbedPoint, toVec3(center)),
+      ),
+    );
+    const drag = vec3.sub(vec3.create(), toVec3(draggedPoint), grabbedPoint);
+    return vec3.dot(drag, tangent) / Math.max(sphereRadius, 1e-6);
+  }
+
+  const { mvp, subspaceMatrix, aspect, axisWorld } = projection;
+  const ringU = worldAxis(rotation, (ringAxis + 1) % 3);
+  const ringV = worldAxis(rotation, (ringAxis + 2) % 3);
+
+  // Project a model/data point into the render subspace.
+  const toSubspace = (point: ArrayLike<number>): number[] => {
+    const sub = [0, 0, 0];
+    for (let i = 0; i < rank; ++i) {
+      sub[0] += subspaceMatrix[i * 3] * point[i];
+      sub[1] += subspaceMatrix[i * 3 + 1] * point[i];
+      sub[2] += subspaceMatrix[i * 3 + 2] * point[i];
+    }
+    return sub;
+  };
+  // Project a subspace point to aspect-corrected, y-up screen coords.
+  const toScreen = (sub: number[]) => {
+    const x = mvp[0] * sub[0] + mvp[4] * sub[1] + mvp[8] * sub[2] + mvp[12];
+    const y = mvp[1] * sub[0] + mvp[5] * sub[1] + mvp[9] * sub[2] + mvp[13];
+    const w = mvp[3] * sub[0] + mvp[7] * sub[1] + mvp[11] * sub[2] + mvp[15];
+    return { x: (x / w) * aspect, y: y / w };
+  };
+
+  // A point in the ring's plane: subspaceCenter + (u·eᵤ + v·eᵥ)·axisWorld,
+  // matching the ring shader. (u, v) = ½(cosφ, sinφ) traces the ring itself.
+  const subspaceCenter = toSubspace(center);
+  const ringPlanePoint = (u: number, v: number): number[] => [
+    subspaceCenter[0] + (u * ringU[0] + v * ringV[0]) * axisWorld[0],
+    subspaceCenter[1] + (u * ringU[1] + v * ringV[1]) * axisWorld[1],
+    subspaceCenter[2] + (u * ringU[2] + v * ringV[2]) * axisWorld[2],
+  ];
+
+  // Find the ring's parametric angle whose projection is nearest the grab point.
+  const grabX = grabNdc.x * aspect;
+  const grabY = grabNdc.y;
+  const SAMPLES = 64;
+  let nearestPhi = 0;
+  let nearestDistSq = Infinity;
+  for (let i = 0; i < SAMPLES; ++i) {
+    const phi = (2 * Math.PI * i) / SAMPLES;
+    const screen = toScreen(
+      ringPlanePoint(0.5 * Math.cos(phi), 0.5 * Math.sin(phi)),
+    );
+    const distSq = (screen.x - grabX) ** 2 + (screen.y - grabY) ** 2;
+    if (distSq < nearestDistSq) {
+      nearestDistSq = distSq;
+      nearestPhi = phi;
+    }
+  }
+
+  // Screen-space ring tangent (dScreen/dφ) at the grabbed angle: project the
+  // ring point and a point one derivative-step further, then subtract. Adding
+  // the derivative coefficients to the ring coefficients yields the tangent
+  // probe in one ringPlanePoint call.
+  const halfCos = 0.5 * Math.cos(nearestPhi);
+  const halfSin = 0.5 * Math.sin(nearestPhi);
+  const dHalfCos = -0.5 * Math.sin(nearestPhi);
+  const dHalfSin = 0.5 * Math.cos(nearestPhi);
+  const ringScreen = toScreen(ringPlanePoint(halfCos, halfSin));
+  const tangentScreen = toScreen(
+    ringPlanePoint(halfCos + dHalfCos, halfSin + dHalfSin),
+  );
+  const tangentX = tangentScreen.x - ringScreen.x;
+  const tangentY = tangentScreen.y - ringScreen.y;
+  const tangentLenSq = tangentX * tangentX + tangentY * tangentY || 1e-9;
+
+  // Cursor's screen displacement from the grab: project the fixed grabbed point
+  // (with its higher dims taken from the center) and the dragged point.
+  const grabbedFull = new Float32Array(rank);
+  for (let i = 0; i < rank; ++i) {
+    grabbedFull[i] = i < 3 ? grabbedPoint[i] : center[i];
+  }
+  const grabbedScreen = toScreen(toSubspace(grabbedFull));
+  const draggedScreen = toScreen(toSubspace(draggedPoint));
+  const dragX = draggedScreen.x - grabbedScreen.x;
+  const dragY = draggedScreen.y - grabbedScreen.y;
+
+  // Radians = drag projected onto the screen tangent / screen-length-per-radian.
+  return (dragX * tangentX + dragY * tangentY) / tangentLenSq;
+}
+
+function clampBoxToDataBounds(center: Float32Array, extents: Float32Array) {
+  const bounds = getRegionDataBounds();
+  if (bounds === null) return;
+  const rank = Math.min(center.length, bounds.lower.length);
+  for (let i = 0; i < rank; ++i) {
+    const lo = bounds.lower[i];
+    const hi = bounds.upper[i];
+    if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) continue;
+    const ext = Math.max(MIN_EXTENT, Math.min(extents[i], hi - lo));
+    const half = ext / 2;
+    extents[i] = ext;
+    center[i] = Math.min(Math.max(center[i], lo + half), hi - half);
+  }
+}
+
+function boxWithBounds(
+  base: OrientedBoundingBox,
+  center: Float32Array,
+  extents: Float32Array,
+): OrientedBoundingBox {
+  clampBoxToDataBounds(center, extents);
+  return { ...base, center, extents };
+}
+
+function boxWithRotation(
+  base: OrientedBoundingBox,
+  delta: quat,
+): OrientedBoundingBox {
+  const orientation = quat.multiply(
+    quat.create(),
+    delta,
+    quatOf(base.orientation),
+  );
+  quat.normalize(orientation, orientation);
+  return { ...base, orientation: Float32Array.from(orientation) };
 }
 
 registerAnnotationTypeRenderHandler<OrientedBoundingBox>(
@@ -717,146 +1190,109 @@ registerAnnotationTypeRenderHandler<OrientedBoundingBox>(
       // no-op stubs from us.
     },
     pickIdsPerInstance: ORIENTED_BBOX_PICK_IDS_PER_INSTANCE,
-    snapPosition(position, data, offset, partIndex) {
-      const rank = position.length;
-      // Layout: center (rank), extents (rank), orientation (4).
-      const center = new Float32Array(data, offset, rank);
-      const extents = new Float32Array(data, offset + rank * 4, rank);
-      const orientation = new Float32Array(data, offset + rank * 8, 4);
-      if (partIndex >= CORNERS_PICK_OFFSET && partIndex < EDGES_PICK_OFFSET) {
-        snapPositionToCorner(
-          position,
-          center,
-          extents,
-          orientation,
-          partIndex - CORNERS_PICK_OFFSET,
-        );
-      }
-      // Other parts (faces/handles/full object) keep the picked world position.
+    snapPosition(_position, _data, _offset, _partIndex) {
+      // No part snaps to a fixed point: the box edges and every gizmo handle
+      // drag from the picked world position directly.
     },
     getRepresentativePoint(out, ann, partIndex) {
-      // Translate/extrude handles drag relative to the box center, so the
-      // center is the representative point. Rotation handles need a point off
-      // the center (on the ring / sphere) so an angle can be derived.
+      // Most handles drag from the box center; rotation handles need a point off
+      // the center (on the ring / bounding sphere) so a drag angle can be
+      // derived. For a ring, that point lies perpendicular to its axis; for the
+      // box-edge free rotation, any point on the sphere works.
       out.set(ann.center);
-      const rotation = mat3.fromQuat(mat3.create(), quatOf(ann.orientation));
-      if (
-        partIndex >= ROTATE_RING_PICK_OFFSET &&
-        partIndex < ROTATE_RING_PICK_OFFSET + 3
-      ) {
-        const r = partIndex - ROTATE_RING_PICK_OFFSET;
-        const sphR = boundingSphereRadius(ann.extents);
-        const axis = worldAxis(rotation, (r + 1) % 3);
-        for (let i = 0; i < 3; ++i) out[i] = ann.center[i] + sphR * axis[i];
-      } else if (partIndex === ARCBALL_PICK_OFFSET) {
-        const sphR = boundingSphereRadius(ann.extents);
-        const axis = worldAxis(rotation, 0);
-        for (let i = 0; i < 3; ++i) out[i] = ann.center[i] + sphR * axis[i];
+      const handle = classifyGizmoPart(partIndex);
+      const sphereAxis =
+        handle.kind === "ring" ? (handle.axis + 1) % 3
+          : handle.kind === "edge" ? 0
+            : -1;
+      if (sphereAxis >= 0) {
+        const rotation = mat3.fromQuat(mat3.create(), quatOf(ann.orientation));
+        const radius = boundingSphereRadius(ann.extents);
+        const axis = worldAxis(rotation, sphereAxis);
+        for (let i = 0; i < 3; ++i) out[i] = ann.center[i] + radius * axis[i];
       }
     },
     updateViaRepresentativePoint(
-      oldAnnotation: OrientedBoundingBox,
-      position: Float32Array,
+      base: OrientedBoundingBox,
+      draggedPoint: Float32Array,
       partIndex: number,
     ) {
-      const { center, extents, orientation } = oldAnnotation;
-      const rotation = mat3.fromQuat(mat3.create(), quatOf(orientation));
-      const c3 = vec3.fromValues(center[0], center[1], center[2]);
-      const p3 = vec3.fromValues(position[0], position[1], position[2]);
-
-      // Tripod: translate the whole box along one local axis.
-      if (
-        partIndex >= TRANSLATE_AXIS_PICK_OFFSET &&
-        partIndex < TRANSLATE_AXIS_PICK_OFFSET + 3
-      ) {
-        const axis = worldAxis(
-          rotation,
-          partIndex - TRANSLATE_AXIS_PICK_OFFSET,
-        );
-        const t = vec3.dot(vec3.sub(vec3.create(), p3, c3), axis);
-        const nc = Float32Array.from(center);
-        for (let i = 0; i < 3; ++i) nc[i] = center[i] + t * axis[i];
-        return { ...oldAnnotation, center: nc };
+      const { center, extents, orientation } = base;
+      const handle = classifyGizmoPart(partIndex);
+      switch (handle.kind) {
+        case "translate": {
+          // Arrows translate along a world display axis (they don't rotate with
+          // the box), so only that coordinate of the center follows the drag.
+          const newCenter = Float32Array.from(center);
+          newCenter[handle.axis] = draggedPoint[handle.axis];
+          return boxWithBounds(base, newCenter, Float32Array.from(extents));
+        }
+        case "scale": {
+          // Symmetric resize along one world axis: the drag distance from the
+          // center grows/shrinks the extent on both sides equally.
+          const halfDelta = draggedPoint[handle.axis] - center[handle.axis];
+          const newExtents = Float32Array.from(extents);
+          newExtents[handle.axis] = Math.max(
+            MIN_EXTENT,
+            extents[handle.axis] + 2 * halfDelta,
+          );
+          return boxWithBounds(base, Float32Array.from(center), newExtents);
+        }
+        case "ring": {
+          // Rotate about one local axis by the angle swept on its projected ring.
+          const rotation = mat3.fromQuat(mat3.create(), quatOf(orientation));
+          const radius = boundingSphereRadius(extents);
+          const grabbedPoint = vec3.scaleAndAdd(
+            vec3.create(),
+            toVec3(center),
+            worldAxis(rotation, (handle.axis + 1) % 3),
+            radius,
+          );
+          const angle = ringRotationAngle(
+            center,
+            rotation,
+            handle.axis,
+            grabbedPoint,
+            draggedPoint,
+            radius,
+          );
+          const delta = quat.setAxisAngle(
+            quat.create(),
+            worldAxis(rotation, handle.axis),
+            angle,
+          );
+          return boxWithRotation(base, delta);
+        }
+        case "centerBall": {
+          // Free translate on the screen plane: the center follows the drag.
+          const newCenter = Float32Array.from(center);
+          for (let i = 0; i < 3; ++i) newCenter[i] = draggedPoint[i];
+          return boxWithBounds(base, newCenter, Float32Array.from(extents));
+        }
+        case "edge": {
+          // Free trackball rotation: rotate the grabbed bounding-sphere point
+          // toward the dragged point.
+          const rotation = mat3.fromQuat(mat3.create(), quatOf(orientation));
+          const radius = boundingSphereRadius(extents);
+          const grabbedPoint = vec3.scaleAndAdd(
+            vec3.create(),
+            toVec3(center),
+            worldAxis(rotation, 0),
+            radius,
+          );
+          const from = vec3.normalize(
+            vec3.create(),
+            vec3.sub(vec3.create(), grabbedPoint, toVec3(center)),
+          );
+          const to = vec3.normalize(
+            vec3.create(),
+            vec3.sub(vec3.create(), toVec3(draggedPoint), toVec3(center)),
+          );
+          return boxWithRotation(base, quat.rotationTo(quat.create(), from, to));
+        }
+        case "none":
+          return base; // interior / cross-section: not draggable
       }
-
-      // Face cap: extrude one face along its outward normal, anchoring the
-      // opposite face (extent grows by the drag, center shifts by half of it).
-      if (partIndex >= FACES_PICK_OFFSET && partIndex < FACES_PICK_OFFSET + 6) {
-        const f = partIndex - FACES_PICK_OFFSET;
-        const a = f >> 1;
-        const s = f & 1 ? 1 : -1;
-        const normal = worldAxis(rotation, a);
-        vec3.scale(normal, normal, s);
-        const t = vec3.dot(vec3.sub(vec3.create(), p3, c3), normal);
-        const newE = Math.max(MIN_EXTENT, extents[a] + t);
-        const grow = newE - extents[a];
-        const ne = Float32Array.from(extents);
-        ne[a] = newE;
-        const nc = Float32Array.from(center);
-        for (let i = 0; i < 3; ++i) nc[i] = center[i] + (grow / 2) * normal[i];
-        return { ...oldAnnotation, center: nc, extents: ne };
-      }
-
-      // Rotation ring: rotate about one local axis by the swept angle.
-      if (
-        partIndex >= ROTATE_RING_PICK_OFFSET &&
-        partIndex < ROTATE_RING_PICK_OFFSET + 3
-      ) {
-        const r = partIndex - ROTATE_RING_PICK_OFFSET;
-        const axis = worldAxis(rotation, r);
-        const sphR = boundingSphereRadius(extents);
-        const rep = vec3.scaleAndAdd(
-          vec3.create(),
-          c3,
-          worldAxis(rotation, (r + 1) % 3),
-          sphR,
-        );
-        const v0 = vec3.sub(vec3.create(), rep, c3);
-        const v1 = vec3.sub(vec3.create(), p3, c3);
-        projectOntoPlane(v0, axis);
-        projectOntoPlane(v1, axis);
-        vec3.normalize(v0, v0);
-        vec3.normalize(v1, v1);
-        const cross = vec3.cross(vec3.create(), v0, v1);
-        const angle = Math.atan2(vec3.dot(cross, axis), vec3.dot(v0, v1));
-        const dq = quat.setAxisAngle(quat.create(), axis, angle);
-        const no = quat.normalize(
-          quat.create(),
-          quat.multiply(quat.create(), dq, quatOf(orientation)),
-        );
-        return { ...oldAnnotation, orientation: Float32Array.from(no) };
-      }
-
-      // Arcball: free trackball rotation taking the grabbed sphere point to the
-      // dragged point.
-      if (partIndex === ARCBALL_PICK_OFFSET) {
-        const sphR = boundingSphereRadius(extents);
-        const rep = vec3.scaleAndAdd(
-          vec3.create(),
-          c3,
-          worldAxis(rotation, 0),
-          sphR,
-        );
-        const v0 = vec3.normalize(
-          vec3.create(),
-          vec3.sub(vec3.create(), rep, c3),
-        );
-        const v1 = vec3.normalize(
-          vec3.create(),
-          vec3.sub(vec3.create(), p3, c3),
-        );
-        const dq = quat.rotationTo(quat.create(), v0, v1);
-        const no = quat.normalize(
-          quat.create(),
-          quat.multiply(quat.create(), dq, quatOf(orientation)),
-        );
-        return { ...oldAnnotation, orientation: Float32Array.from(no) };
-      }
-
-      // Center ball / full object / corners / edges: free translate.
-      const nc = Float32Array.from(center);
-      for (let i = 0; i < 3; ++i) nc[i] = position[i];
-      return { ...oldAnnotation, center: nc };
     },
   },
 );

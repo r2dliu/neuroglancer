@@ -44,34 +44,35 @@ export class EraserTool extends Tool<Viewer> {
     const { content } = makeToolActivationStatusMessage(activation);
     content.classList.add("neuroglancer-eraser-tool");
 
-    // Override default viewer input events
+    // Claim left-click/drag for erasing only when a paintable segmentation
+    // layer is selected; otherwise the guard declines and the click falls
+    // through to the normal slice-view select/navigate behavior.
+    const canErase = () => {
+      const layer = this.viewer.selectedLayer?.layer?.layer;
+      return (
+        layer instanceof SegmentationUserLayer &&
+        layer.renderLayers.some((r) => r instanceof SegmentationRenderLayer)
+      );
+    };
     const eraserMap = EventActionMap.fromObject({
-      all: {
-        action: "eraser-block-default",
-        stopPropagation: true,
-        preventDefault: true,
-      },
       "at:mousedown0": {
         action: "neuroglancer-eraser-erase",
+        when: canErase,
         stopPropagation: true,
         preventDefault: true,
       },
       "at:mouseup0": {
         action: "neuroglancer-eraser-release",
+        when: canErase,
         stopPropagation: true,
         preventDefault: true,
       },
     });
 
-    this.viewer.inputEventBindings.sliceView.addParent(
+    activation.pushInputLayer(
+      this.viewer.inputEventBindings.sliceView,
       eraserMap,
-      Number.POSITIVE_INFINITY,
     );
-
-    activation.bindInputEventMap(eraserMap);
-    activation.registerDisposer(() => {
-      this.viewer.inputEventBindings.sliceView.removeParent(eraserMap);
-    });
 
     const erase = () => {
       const selectedLayer = this.viewer.selectedLayer?.layer?.layer;

@@ -43,15 +43,10 @@ export class BoundingBoxTool extends Tool<Viewer> {
       },
     });
 
-    this.viewer.inputEventBindings.sliceView.addParent(
+    activation.pushInputLayer(
+      this.viewer.inputEventBindings.sliceView,
       bboxMap,
-      Number.POSITIVE_INFINITY,
     );
-
-    activation.bindInputEventMap(bboxMap);
-    activation.registerDisposer(() => {
-      this.viewer.inputEventBindings.sliceView.removeParent(bboxMap);
-    });
 
     const updatePosition = (startPosition: vec3) => {
       const mouseState = this.viewer.mouseState;

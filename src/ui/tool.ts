@@ -73,6 +73,12 @@ export class ToolActivation<ToolType extends Tool = Tool> extends RefCounted {
   bindInputEventMap(inputEventMap: EventActionMap) {
     this.inputEventMapBinder(inputEventMap, this);
   }
+  pushInputLayer(panelBindings: EventActionMap, inputEventMap: EventActionMap) {
+    this.registerDisposer(
+      panelBindings.addParent(inputEventMap, Number.POSITIVE_INFINITY),
+    );
+    this.bindInputEventMap(inputEventMap);
+  }
   cancel() {
     const { globalBinder } = this.tool;
     if (this === globalBinder.activeTool_) {
@@ -148,7 +154,7 @@ export abstract class LegacyTool<
   }
   abstract trigger(mouseState: MouseSelectionState): void;
   abstract toJSON(): any;
-  deactivate(): void {}
+  deactivate(): void { }
   abstract description: string;
   unbind() {
     const { layer } = this;
@@ -242,8 +248,7 @@ export function registerTool<Context extends object>(
 
 export class SelectedLegacyTool
   extends RefCounted
-  implements TrackableValueInterface<LegacyTool | undefined>
-{
+  implements TrackableValueInterface<LegacyTool | undefined> {
   changed = new Signal();
   private value_: Owned<LegacyTool> | undefined;
 
@@ -668,7 +673,7 @@ export class ToolBindingWidget<Context extends object> extends RefCounted {
           dragElement,
           "drag",
           "Drag tool to another tool palette, " +
-            "or to the left/top/right/bottom edge of a layer group to create a new tool palette",
+          "or to the left/top/right/bottom edge of a layer group to create a new tool palette",
         );
         beginToolDrag(this);
         const { toolPaletteState } = this.localBinder.globalBinder;

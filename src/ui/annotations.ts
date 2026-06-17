@@ -115,8 +115,7 @@ import { VirtualList } from "#src/widget/virtual_list.js";
 
 export class MergedAnnotationStates
   extends RefCounted
-  implements WatchableValueInterface<readonly AnnotationLayerState[]>
-{
+  implements WatchableValueInterface<readonly AnnotationLayerState[]> {
   changed = new NullarySignal();
   isLoadingChanged = new NullarySignal();
   states: Borrowed<AnnotationLayerState>[] = [];
@@ -235,10 +234,10 @@ interface AnnotationLayerViewAttachedState {
 export class AnnotationLayerView extends Tab {
   private previousSelectedState:
     | {
-        annotationId: string;
-        annotationLayerState: AnnotationLayerState;
-        pin: boolean;
-      }
+      annotationId: string;
+      annotationLayerState: AnnotationLayerState;
+      pin: boolean;
+    }
     | undefined = undefined;
   private previousHoverId: string | undefined = undefined;
   private previousHoverAnnotationLayerState: AnnotationLayerState | undefined =
@@ -577,7 +576,7 @@ export class AnnotationLayerView extends Tab {
         selectionState !== undefined &&
         previousSelectedState.annotationId === selectionState.annotationId &&
         previousSelectedState.annotationLayerState ===
-          selectionState.annotationLayerState &&
+        selectionState.annotationLayerState &&
         previousSelectedState.pin === selectionState.pin)
     ) {
       return;
@@ -1107,10 +1106,10 @@ function getMousePositionInAnnotationCoordinates(
 abstract class TwoStepAnnotationTool extends PlaceAnnotationTool {
   inProgressAnnotation: WatchableValue<
     | {
-        annotationLayer: AnnotationLayerState;
-        reference: AnnotationReference;
-        disposer: () => void;
-      }
+      annotationLayer: AnnotationLayerState;
+      reference: AnnotationReference;
+      disposer: () => void;
+    }
     | undefined
   > = new WatchableValue(undefined);
 
@@ -1592,7 +1591,7 @@ function makeRelatedSegmentList(
 
 const ANNOTATION_COLOR_JSON_KEY = "annotationColor";
 export function UserLayerWithAnnotationsMixin<
-  TBase extends { new (...args: any[]): UserLayer },
+  TBase extends { new(...args: any[]): UserLayer },
 >(Base: TBase) {
   abstract class C extends Base implements UserLayerWithAnnotations {
     annotationStates = this.registerDisposer(new MergedAnnotationStates());
@@ -1637,6 +1636,9 @@ export function UserLayerWithAnnotationsMixin<
       const { mouseState } = this.manager.layerSelectedValues;
       this.registerDisposer(
         mouseState.changed.add(() => {
+          // While a drag pins the hover, keep the dragged part highlighted and
+          // ignore mouse-driven hover changes until the drag ends.
+          if (this.annotationDisplayState.hoverPinned) return;
           if (mouseState.active) {
             const { pickedAnnotationLayer } = mouseState;
             if (
@@ -1753,8 +1755,8 @@ export function UserLayerWithAnnotationsMixin<
                   annotation = handler.deserialize(
                     dataView,
                     baseOffset +
-                      annotationPropertySerializer.propertyGroupBytes[0] *
-                        annotationIndex,
+                    annotationPropertySerializer.propertyGroupBytes[0] *
+                    annotationIndex,
                     isLittleEndian,
                     rank,
                     state.annotationId!,
@@ -1957,30 +1959,30 @@ export function UserLayerWithAnnotationsMixin<
                         sourceReadonly
                           ? undefined
                           : (newIds) => {
-                              const annotation = reference.value;
-                              if (annotation == null) {
-                                return;
-                              }
-                              let { relatedSegments } = annotation;
-                              if (relatedSegments === undefined) {
-                                relatedSegments =
-                                  annotationLayer.source.relationships.map(
-                                    () => new BigUint64Array(0),
-                                  );
-                              } else {
-                                relatedSegments = relatedSegments.slice();
-                              }
-                              relatedSegments[relationshipIndex] = newIds;
-                              const newAnnotation = {
-                                ...annotation,
-                                relatedSegments,
-                              };
-                              annotationLayer.source.update(
-                                reference,
-                                newAnnotation,
-                              );
-                              annotationLayer.source.commit(reference);
-                            },
+                            const annotation = reference.value;
+                            if (annotation == null) {
+                              return;
+                            }
+                            let { relatedSegments } = annotation;
+                            if (relatedSegments === undefined) {
+                              relatedSegments =
+                                annotationLayer.source.relationships.map(
+                                  () => new BigUint64Array(0),
+                                );
+                            } else {
+                              relatedSegments = relatedSegments.slice();
+                            }
+                            relatedSegments[relationshipIndex] = newIds;
+                            const newAnnotation = {
+                              ...annotation,
+                              relatedSegments,
+                            };
+                            annotationLayer.source.update(
+                              reference,
+                              newAnnotation,
+                            );
+                            annotationLayer.source.commit(reference);
+                          },
                       ),
                     ).element,
                   );
@@ -2044,19 +2046,20 @@ export function UserLayerWithAnnotationsMixin<
       loadedSubsource: LoadedDataSubsource,
       source: AnnotationSource,
       role: RenderLayerRole,
+      displayState: AnnotationDisplayState = this.annotationDisplayState,
     ) {
       const { subsourceEntry } = loadedSubsource;
       const state = new AnnotationLayerState({
         localPosition: this.localPosition,
         transform: loadedSubsource.getRenderLayerTransform(),
         source,
-        displayState: this.annotationDisplayState,
+        displayState,
         dataSource: loadedSubsource.loadedDataSource.layerDataSource,
         subsourceIndex: loadedSubsource.subsourceIndex,
         subsourceId: subsourceEntry.id,
         role,
       });
-      this.annotationDisplayState.annotationProperties.value = [];
+      displayState.annotationProperties.value = source.properties;
       this.addAnnotationLayerState(state, loadedSubsource);
     }
 
@@ -2064,11 +2067,19 @@ export function UserLayerWithAnnotationsMixin<
       const { subsourceEntry } = loadedSubsource;
       const { staticAnnotations } = subsourceEntry.subsource;
       if (staticAnnotations === undefined) return false;
-      loadedSubsource.activate(() => {
+      loadedSubsource.activate((refCounted) => {
+        // Hard code a soft grey for default bounds box to d make it less obstructive
+        const displayState = refCounted.registerDisposer(
+          new AnnotationDisplayState(),
+        );
+        displayState.color.value = vec3.fromValues(0.5, 0.5, 0.5);
+        displayState.shader.value =
+          "void main() {\n  setColor(vec4(defaultColor(), 0.1));\n}\n";
         this.addLocalAnnotations(
           loadedSubsource,
           staticAnnotations,
           RenderLayerRole.DEFAULT_ANNOTATION,
+          displayState,
         );
       });
       return true;

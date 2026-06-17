@@ -182,6 +182,12 @@ export class AnnotationDisplayState extends RefCounted {
     this.ignoreNullSegmentFilter,
   );
   hoverState = new AnnotationHoverState(undefined);
+  // While a handle/annotation is being dragged, `hoverState` is pinned to the
+  // dragged part and this is set true, so the mouse-driven hover update is
+  // suppressed. This keeps the dragged part identifiable for the whole drag (the
+  // region gizmo uses it to decide what to hide / which guide line to draw),
+  // even as the cursor moves off the handle.
+  hoverPinned = false;
 }
 
 export class AnnotationLayerState extends RefCounted {
