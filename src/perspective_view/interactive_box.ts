@@ -27,9 +27,32 @@ const BLUE = new Float32Array([0, 0.35, 1, 1]);
 const WHITE = new Float32Array([1, 1, 1, 1]);
 const BOX_EDGE_COUNT = 12;
 const VERTEX_COMPONENTS = 4;
-const ENDPOINTS_PER_EDGE = 2;
+const ENDPOINTS_PER_LINE_SEGMENT = 2;
+const EDGE_ARROW_LINE_SEGMENTS = 3;
+const MAX_RESIZE_ICON_LINE_SEGMENTS = 2 * EDGE_ARROW_LINE_SEGMENTS;
+const ROTATE_ICON_ARROW_COUNT = 4;
+const ROTATE_ICON_ARC_SEGMENTS = 5;
+const MAX_ROTATE_ICON_LINE_SEGMENTS =
+  ROTATE_ICON_ARROW_COUNT * (ROTATE_ICON_ARC_SEGMENTS + 2);
 const MAX_EDGE_VERTEX_DATA_LENGTH =
-  BOX_EDGE_COUNT * ENDPOINTS_PER_EDGE * VERTEX_COMPONENTS;
+  BOX_EDGE_COUNT * ENDPOINTS_PER_LINE_SEGMENT * VERTEX_COMPONENTS;
+const MAX_ICON_VERTEX_DATA_LENGTH =
+  Math.max(MAX_RESIZE_ICON_LINE_SEGMENTS, MAX_ROTATE_ICON_LINE_SEGMENTS) *
+  ENDPOINTS_PER_LINE_SEGMENT *
+  VERTEX_COMPONENTS;
+const MAX_LINE_VERTEX_DATA_LENGTH = Math.max(
+  MAX_EDGE_VERTEX_DATA_LENGTH,
+  MAX_ICON_VERTEX_DATA_LENGTH,
+);
+const HOVER_REGION_CENTER_FRACTION = 2 / 3;
+const RESIZE_ARROW_START_FRACTION = 0.48;
+const RESIZE_ARROW_END_FRACTION = 0.88;
+const RESIZE_ARROW_HEAD_LENGTH_FRACTION = 0.14;
+const RESIZE_ARROW_HEAD_WIDTH_FRACTION = 0.08;
+const ROTATE_ICON_RADIUS_FRACTION = 0.23;
+const ROTATE_ICON_ARC_GAP_RADIANS = 0.34;
+const ROTATE_ICON_HEAD_LENGTH_FRACTION = 0.42;
+const ROTATE_ICON_HEAD_WIDTH_FRACTION = 0.24;
 
 const tempVec = vec3.create();
 const tempVec2 = vec3.create();
@@ -38,6 +61,7 @@ const tempQuat = quat.create();
 const tempMat = mat4.create();
 
 type BoxAxes = [vec3, vec3, vec3];
+type LocalPoint = [number, number, number];
 
 interface EdgeMove {
   dimension: 0 | 1 | 2;
@@ -162,6 +186,10 @@ function transformLocalToWorld(
   }
 }
 
+function copyLocalPoint(point: LocalPoint): LocalPoint {
+  return [point[0], point[1], point[2]];
+}
+
 function getRayFromMouse(
   origin: vec3,
   direction: vec3,
@@ -211,7 +239,7 @@ export class PerspectiveViewBoxOverlay extends RefCounted {
   private hover: BoxHover | undefined;
   private drag: BoxDrag | undefined;
   private vertexBuffer: GLBuffer;
-  private edgeVertexData = new Float32Array(MAX_EDGE_VERTEX_DATA_LENGTH);
+  private lineVertexData = new Float32Array(MAX_LINE_VERTEX_DATA_LENGTH);
   private shader: ShaderProgram;
 
   constructor(public gl: GL) {
@@ -671,6 +699,7 @@ export class PerspectiveViewBoxOverlay extends RefCounted {
     if (highlightedEdges !== undefined && highlightedEdges.length !== 0) {
       gl.lineWidth(2);
       this.drawEdges(highlightedEdges, WHITE, attribute);
+      this.drawHoverIcons(this.hover!, attribute);
       gl.lineWidth(1);
     }
     gl.disableVertexAttribArray(attribute);
@@ -681,15 +710,223 @@ export class PerspectiveViewBoxOverlay extends RefCounted {
     const shader = this.shader;
     let offset = 0;
     for (const edge of edges) {
-      offset = this.writeEdge(edge, this.edgeVertexData, offset);
+      offset = this.writeEdge(edge, this.lineVertexData, offset);
     }
     this.vertexBuffer.setData(
-      this.edgeVertexData.subarray(0, offset),
+      this.lineVertexData.subarray(0, offset),
       WebGL2RenderingContext.DYNAMIC_DRAW,
     );
     this.vertexBuffer.bindToVertexAttrib(attribute, 4);
     gl.uniform4fv(shader.uniform("uColor"), color);
     gl.drawArrays(WebGL2RenderingContext.LINES, 0, offset / VERTEX_COMPONENTS);
+  }
+
+  private drawHoverIcons(hover: BoxHover, attribute: number) {
+    const gl = this.gl;
+    const shader = this.shader;
+    const offset = hover.rotate
+      ? this.writeRotateHoverIcons(hover, this.lineVertexData, 0)
+      : this.writeResizeHoverIcons(hover, this.lineVertexData, 0);
+    if (offset === 0) return;
+    this.vertexBuffer.setData(
+      this.lineVertexData.subarray(0, offset),
+      WebGL2RenderingContext.DYNAMIC_DRAW,
+    );
+    this.vertexBuffer.bindToVertexAttrib(attribute, 4);
+    gl.uniform4fv(shader.uniform("uColor"), WHITE);
+    gl.drawArrays(WebGL2RenderingContext.LINES, 0, offset / VERTEX_COMPONENTS);
+  }
+
+  private writeResizeHoverIcons(
+    hover: BoxHover,
+    out: Float32Array,
+    offset: number,
+  ) {
+    const faceAxes = otherAxes(hover.faceAxis);
+    const regionCenter: LocalPoint = [0, 0, 0];
+    regionCenter[hover.faceAxis] =
+      hover.faceSign * this.halfSize[hover.faceAxis];
+    for (const axis of faceAxes) {
+      const resizeEdge = hover.resizeEdges.find(
+        (edge) => edge.dimension === axis,
+      );
+      regionCenter[axis] =
+        resizeEdge === undefined
+          ? 0
+          : resizeEdge.sign *
+            this.halfSize[axis] *
+            HOVER_REGION_CENTER_FRACTION;
+    }
+
+    for (const edge of hover.resizeEdges) {
+      offset = this.writeResizeArrowIcon(
+        hover,
+        edge,
+        regionCenter,
+        out,
+        offset,
+      );
+    }
+    return offset;
+  }
+
+  private writeResizeArrowIcon(
+    hover: BoxHover,
+    edge: EdgeMove,
+    regionCenter: LocalPoint,
+    out: Float32Array,
+    offset: number,
+  ) {
+    const faceAxes = otherAxes(hover.faceAxis);
+    const perpendicularAxis =
+      faceAxes[0] === edge.dimension ? faceAxes[1] : faceAxes[0];
+    const start = copyLocalPoint(regionCenter);
+    const end = copyLocalPoint(regionCenter);
+    start[edge.dimension] =
+      edge.sign * this.halfSize[edge.dimension] * RESIZE_ARROW_START_FRACTION;
+    end[edge.dimension] =
+      edge.sign * this.halfSize[edge.dimension] * RESIZE_ARROW_END_FRACTION;
+    offset = this.writeLocalLine(start, end, out, offset);
+
+    const direction: LocalPoint = [0, 0, 0];
+    direction[edge.dimension] = edge.sign;
+    return this.writeLocalArrowHead(
+      hover.faceAxis,
+      end,
+      direction,
+      this.halfSize[edge.dimension] * RESIZE_ARROW_HEAD_LENGTH_FRACTION,
+      this.halfSize[perpendicularAxis] * RESIZE_ARROW_HEAD_WIDTH_FRACTION,
+      out,
+      offset,
+    );
+  }
+
+  private writeRotateHoverIcons(
+    hover: BoxHover,
+    out: Float32Array,
+    offset: number,
+  ) {
+    const faceAxes = otherAxes(hover.faceAxis);
+    const uAxis = faceAxes[0];
+    const vAxis = faceAxes[1];
+    const radius =
+      Math.min(this.halfSize[uAxis], this.halfSize[vAxis]) *
+      ROTATE_ICON_RADIUS_FRACTION;
+    if (radius <= 0) return offset;
+    const center: LocalPoint = [0, 0, 0];
+    center[hover.faceAxis] = hover.faceSign * this.halfSize[hover.faceAxis];
+    const angleStep = (2 * Math.PI) / ROTATE_ICON_ARROW_COUNT;
+    const arcLength = angleStep - ROTATE_ICON_ARC_GAP_RADIANS;
+    for (let arrow = 0; arrow < ROTATE_ICON_ARROW_COUNT; ++arrow) {
+      const startAngle = arrow * angleStep + ROTATE_ICON_ARC_GAP_RADIANS / 2;
+      const endAngle = startAngle + arcLength;
+      let previousPoint = this.getRotateIconPoint(
+        center,
+        uAxis,
+        vAxis,
+        radius,
+        startAngle,
+      );
+      for (let segment = 1; segment <= ROTATE_ICON_ARC_SEGMENTS; ++segment) {
+        const angle =
+          startAngle + (arcLength * segment) / ROTATE_ICON_ARC_SEGMENTS;
+        const currentPoint = this.getRotateIconPoint(
+          center,
+          uAxis,
+          vAxis,
+          radius,
+          angle,
+        );
+        offset = this.writeLocalLine(previousPoint, currentPoint, out, offset);
+        previousPoint = currentPoint;
+      }
+
+      const direction: LocalPoint = [0, 0, 0];
+      direction[uAxis] = -Math.sin(endAngle);
+      direction[vAxis] = Math.cos(endAngle);
+      offset = this.writeLocalArrowHead(
+        hover.faceAxis,
+        previousPoint,
+        direction,
+        radius * ROTATE_ICON_HEAD_LENGTH_FRACTION,
+        radius * ROTATE_ICON_HEAD_WIDTH_FRACTION,
+        out,
+        offset,
+      );
+    }
+    return offset;
+  }
+
+  private getRotateIconPoint(
+    center: LocalPoint,
+    uAxis: 0 | 1 | 2,
+    vAxis: 0 | 1 | 2,
+    radius: number,
+    angle: number,
+  ): LocalPoint {
+    const point = copyLocalPoint(center);
+    point[uAxis] += Math.cos(angle) * radius;
+    point[vAxis] += Math.sin(angle) * radius;
+    return point;
+  }
+
+  private writeLocalArrowHead(
+    faceAxis: 0 | 1 | 2,
+    tip: LocalPoint,
+    direction: LocalPoint,
+    headLength: number,
+    headWidth: number,
+    out: Float32Array,
+    offset: number,
+  ) {
+    const directionLength = Math.hypot(
+      direction[0],
+      direction[1],
+      direction[2],
+    );
+    if (directionLength === 0) return offset;
+    const unitDirection: LocalPoint = [
+      direction[0] / directionLength,
+      direction[1] / directionLength,
+      direction[2] / directionLength,
+    ];
+    const faceAxes = otherAxes(faceAxis);
+    const uAxis = faceAxes[0];
+    const vAxis = faceAxes[1];
+    const perpendicular: LocalPoint = [0, 0, 0];
+    perpendicular[uAxis] = -unitDirection[vAxis];
+    perpendicular[vAxis] = unitDirection[uAxis];
+    const base0: LocalPoint = [
+      tip[0] - unitDirection[0] * headLength + perpendicular[0] * headWidth,
+      tip[1] - unitDirection[1] * headLength + perpendicular[1] * headWidth,
+      tip[2] - unitDirection[2] * headLength + perpendicular[2] * headWidth,
+    ];
+    const base1: LocalPoint = [
+      tip[0] - unitDirection[0] * headLength - perpendicular[0] * headWidth,
+      tip[1] - unitDirection[1] * headLength - perpendicular[1] * headWidth,
+      tip[2] - unitDirection[2] * headLength - perpendicular[2] * headWidth,
+    ];
+    offset = this.writeLocalLine(tip, base0, out, offset);
+    return this.writeLocalLine(tip, base1, out, offset);
+  }
+
+  private writeLocalLine(
+    start: LocalPoint,
+    end: LocalPoint,
+    out: Float32Array,
+    offset: number,
+  ) {
+    transformLocalToWorld(tempVec, start, this.center, this.axes);
+    out[offset++] = tempVec[0];
+    out[offset++] = tempVec[1];
+    out[offset++] = tempVec[2];
+    out[offset++] = 1;
+    transformLocalToWorld(tempVec, end, this.center, this.axes);
+    out[offset++] = tempVec[0];
+    out[offset++] = tempVec[1];
+    out[offset++] = tempVec[2];
+    out[offset++] = 1;
+    return offset;
   }
 
   private writeEdge(edge: number, out: Float32Array, offset: number) {
