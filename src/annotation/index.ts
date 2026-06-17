@@ -419,7 +419,7 @@ export class AnnotationPropertySerializer {
   ) {
     if (propertySpecs.length === 0) {
       this.serializedBytes = firstGroupInitialOffset;
-      this.serialize = this.deserialize = () => {};
+      this.serialize = this.deserialize = () => { };
       this.propertyGroupBytes = [firstGroupInitialOffset];
       return;
     }
@@ -435,9 +435,8 @@ export class AnnotationPropertySerializer {
       groupIndex < propertyGroupBytes.length;
       ++groupIndex
     ) {
-      groupOffsetCode += `let groupOffset${groupIndex} = groupOffset${
-        groupIndex - 1
-      } + ${propertyGroupBytes[groupIndex - 1]}*annotationCount;`;
+      groupOffsetCode += `let groupOffset${groupIndex} = groupOffset${groupIndex - 1
+        } + ${propertyGroupBytes[groupIndex - 1]}*annotationCount;`;
     }
     for (
       let groupIndex = 0;
@@ -1115,7 +1114,6 @@ export const annotationTypeHandlers: Record<
     visitGeometry(annotation: OrientedBoundingBox, callback) {
       callback(annotation.center, false);
       callback(annotation.extents, true);
-      // orientation is not a model-space geometry vector; do not visit it.
     },
   },
 };
@@ -1220,8 +1218,7 @@ export interface AnnotationSourceSignals {
 
 export class AnnotationSource
   extends RefCounted
-  implements AnnotationSourceSignals
-{
+  implements AnnotationSourceSignals {
   protected annotationMap = new Map<AnnotationId, Annotation>();
   changed = new NullarySignal();
   readonly = false;
@@ -1336,7 +1333,7 @@ export class AnnotationSource
 
   references = new Map<AnnotationId, Borrowed<AnnotationReference>>();
 
-  protected ensureUpdated() {}
+  protected ensureUpdated() { }
 
   toJSON() {
     this.ensureUpdated();
@@ -1454,8 +1451,6 @@ export class LocalAnnotationSource extends AnnotationSource {
           annotation.radii = mapVector(annotation.radii);
           break;
         case AnnotationType.ORIENTED_BOUNDING_BOX:
-          // Note: `orientation` is intrinsically 3D and is intentionally not
-          // remapped (reordering dims of an oriented box is unsupported).
           annotation.center = mapVector(annotation.center);
           annotation.extents = mapVector(annotation.extents);
           break;
@@ -1569,7 +1564,7 @@ export class AnnotationSerializer {
     Ellipsoid[],
     OrientedBoundingBox[],
   ] = [[], [], [], [], []];
-  constructor(public propertySerializers: AnnotationPropertySerializer[]) {}
+  constructor(public propertySerializers: AnnotationPropertySerializer[]) { }
   add(annotation: Annotation) {
     (<Annotation[]>this.annotations[annotation.type]).push(annotation);
   }

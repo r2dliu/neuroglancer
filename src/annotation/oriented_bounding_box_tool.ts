@@ -15,18 +15,16 @@ const ORIENTED_BOX_TOOL_ID = "orientedBox";
 
 export class OrientedBoundingBoxTool extends Tool<Viewer> {
   constructor(public viewer: Viewer) {
-    super(viewer.toolBinder, /*toggle=*/ true);
+    super(viewer.toolBinder, true);
   }
 
   activate(activation: ToolActivation<this>) {
     // Make sure there's a region box to edit (creates the layer + a default
-    // box at the view center on first activation).
+    // box at the view center on first activation). Remove once Ichnaea frontend 
+    // controls persistence
     ensureRegionBox(this.viewer);
 
-    // Claim plain left-drag only when over an interactive gizmo part; otherwise
-    // the guard declines and left-drag falls through to the default camera
-    // rotate. All other bindings (shift = pan, ctrl = annotate, etc.) keep
-    // their defaults because we only bind `at:mousedown0`.
+    // Conditional left click control; only functions when clicking on a gizmo handle
     const { mouseState } = this.viewer;
     const gizmoMap = EventActionMap.fromObject({
       "at:mousedown0": {

@@ -433,12 +433,16 @@ emitAnnotation(vec4(vColor.rgb, getLineAlpha()));
     "annotation/orientedBoundingBox/projection/arrow",
     (builder: ShaderBuilder) => {
       this.defineShader(builder);
+      this.defineGizmoVisibility(builder);
       builder.addAttribute("highp vec3", "aArrowPos");
       builder.addAttribute("highp vec3", "aArrowNormal");
       builder.addUniform("highp vec3", "uGizmoAxisWorld");
       builder.addVertexCode(glsl_axisColor);
       builder.setVertexMain(`
 int axis = gl_VertexID / ${VERTS_PER_ARROW};
+// During a drag the dragged box hides its arrows (a tripod drag shows a guide
+// line instead); other boxes keep theirs.
+if (onDraggedInstance()) { cullVertex(); return; }
 vec3 subCenter = obbSubCenter();
 // Keep the extents/orientation attributes referenced (arrows are world-aligned
 // and don't use them) so their per-instance binders aren't enabled at location -1.
@@ -474,33 +478,43 @@ emitAnnotation(vColor);
     },
   );
 
-  // Scale cubes: one shaded cube per display axis, sitting just past the arrow
-  // tip on the same axis line, colored per axis. Built the same isotropic-gizmo-
-  // space way as the arrows so they are a fixed on-screen size and shape.
+  // Scale cubes: one shaded cube per axis, colored per axis, a constant on-screen
+  // size. Unlike the arrows, the cubes rotate WITH the box (orientation R) so each
+  // sits on the box's rotated face — the face that actually grows when scaling
+  // that local axis.
   private cubeShaderGetter = this.getDependentShader(
     "annotation/orientedBoundingBox/projection/cube",
     (builder: ShaderBuilder) => {
       this.defineShader(builder);
+      this.defineGizmoVisibility(builder);
       builder.addAttribute("highp vec3", "aCubePos");
       builder.addAttribute("highp vec3", "aCubeNormal");
       builder.addUniform("highp vec3", "uGizmoAxisWorld");
       builder.addVertexCode(glsl_axisColor);
       builder.setVertexMain(`
 int axis = gl_VertexID / ${VERTS_PER_CUBE};
+// On the dragged box, show only the cube being scaled; other boxes keep all 3.
+if (gizmoPartHidden(${SCALE_AXIS_PICK_OFFSET} + axis)) { cullVertex(); return; }
 vec3 subCenter = obbSubCenter();
-vec3 keep = obbHalfExtents() * 0.0 + obbRotation() * vec3(0.0);
+vec3 keep = obbHalfExtents() * 0.0;  // keep the Bounds1 (extents) binder referenced
+mat3 R = obbRotation();
 vec3 dir = axisUnit(axis);
 vec3 t1 = normalize(abs(dir.x) < 0.9
   ? cross(vec3(1.0, 0.0, 0.0), dir)
   : cross(vec3(0.0, 1.0, 0.0), dir));
 vec3 t2 = cross(dir, t1);
+// Build the cube in isotropic gizmo space (sitting CUBE_CENTER_Z out along the
+// axis), rotate by R so it tracks the box's rotated face — the face that
+// actually grows when scaling that local axis — then scale per-axis for a
+// constant on-screen size (anisotropy corrected after the rotation, as the
+// rings do).
 vec3 gizmoOffset =
     (aCubePos.x * ${CUBE_EDGE}) * t1
   + (aCubePos.y * ${CUBE_EDGE}) * t2
   + (${CUBE_CENTER_Z} + aCubePos.z * ${CUBE_EDGE}) * dir;
-vec3 worldPos = subCenter + keep + gizmoOffset * uGizmoAxisWorld;
+vec3 worldPos = subCenter + keep + (R * gizmoOffset) * uGizmoAxisWorld;
 vec3 nrm = normalize(
-  aCubeNormal.x * t1 + aCubeNormal.y * t2 + aCubeNormal.z * dir);
+  R * (aCubeNormal.x * t1 + aCubeNormal.y * t2 + aCubeNormal.z * dir));
 vec3 lightDir = normalize(vec3(0.4, 0.6, 0.9));
 float shade = 0.45 + 0.55 * abs(dot(nrm, lightDir));
 vColor = vec4(axisColor(axis) * shade, 1.0);
@@ -520,20 +534,16 @@ emitAnnotation(vColor);
     "annotation/orientedBoundingBox/projection/rings",
     (builder: ShaderBuilder) => {
       this.defineShader(builder);
+      this.defineGizmoVisibility(builder);
       defineLineShader(builder);
       builder.addUniform("highp vec3", "uGizmoAxisWorld");
-      // -1 = draw all three rings; otherwise draw only this ring index (used so
-      // the ring being dragged stays visible while the others are hidden).
-      builder.addUniform("highp int", "uRingActive");
       builder.addVertexCode(glsl_axisColor);
       builder.setVertexMain(`
 int lineIndex = gl_VertexID / ${VERTICES_PER_LINE};
 int ring = lineIndex / ${RING_SEGMENTS};
 int seg = lineIndex - ring * ${RING_SEGMENTS};
-if (uRingActive >= 0 && ring != uRingActive) {
-  gl_Position = vec4(2.0, 0.0, 0.0, 1.0);  // cull other rings
-  return;
-}
+// On the dragged box, show only the ring being rotated; other boxes keep all 3.
+if (gizmoPartHidden(${ROTATE_RING_PICK_OFFSET} + ring)) { cullVertex(); return; }
 int u = (ring + 1) % 3;
 int v = (ring + 2) % 3;
 vec3 subCenter = obbSubCenter();
@@ -592,12 +602,15 @@ emitAnnotation(getCircleColor(vColor, borderColor));
     (builder: ShaderBuilder) => {
       const { rank } = this;
       this.defineShader(builder);
+      this.defineGizmoVisibility(builder);
       defineLineShader(builder);
       builder.addVertexCode(glsl_axisColor);
       builder.addUniform("highp int", "uGuideAxis");
       builder.addUniform("highp float", "uGuideLo");
       builder.addUniform("highp float", "uGuideHi");
       builder.setVertexMain(`
+// The guide line belongs to the box being dragged; never show it on others.
+if (gl_InstanceID != uDraggedInstance) { cullVertex(); return; }
 // Keep extents/orientation attributes referenced so their binders aren't -1.
 vec3 keep = obbHalfExtents() * 0.0 + obbRotation() * vec3(0.0);
 float c[${rank}] = getBounds0();
@@ -621,6 +634,34 @@ emitAnnotation(vec4(vColor.rgb, vColor.a * getLineAlpha()));
 `);
     },
   );
+
+  // Per-instance drag focus, shared by the arrow / cube / ring / guide-line
+  // shaders. uDraggedInstance is the gl_InstanceID of the box being dragged
+  // (-1 when idle); uDraggedPart is the active part index within that box.
+  // During a drag the dragged box collapses to just its active handle, while
+  // every other box keeps its full gizmo.
+  private defineGizmoVisibility(builder: ShaderBuilder) {
+    builder.addUniform("highp int", "uDraggedInstance");
+    builder.addUniform("highp int", "uDraggedPart");
+    builder.addVertexCode(`
+bool onDraggedInstance() {
+  return uDraggedInstance >= 0 && gl_InstanceID == uDraggedInstance;
+}
+bool gizmoPartHidden(int thisPart) {
+  return onDraggedInstance() && thisPart != uDraggedPart;
+}
+void cullVertex() { gl_Position = vec4(2.0, 0.0, 0.0, 1.0); }
+`);
+  }
+
+  private setGizmoVisibility(
+    shader: ShaderProgram,
+    draggedInstance: number,
+    draggedPart: number,
+  ) {
+    this.gl.uniform1i(shader.uniform("uDraggedInstance"), draggedInstance);
+    this.gl.uniform1i(shader.uniform("uDraggedPart"), draggedPart);
+  }
 
   // Compute and upload uGizmoAxisWorld: per display-axis world length that
   // projects to GIZMO_SIZE on screen. Uses the true view-space length of each
@@ -733,6 +774,8 @@ emitAnnotation(vec4(vColor.rgb, vColor.a * getLineAlpha()));
     positionAttribute: string,
     normalAttribute: string,
     vertexCount: number,
+    draggedInstance: number,
+    draggedPart: number,
   ) {
     const { gl } = this;
     this.enable(
@@ -740,6 +783,7 @@ emitAnnotation(vec4(vColor.rgb, vColor.a * getLineAlpha()));
       context,
       (shader) => {
         this.setGizmoAxisWorld(shader, context);
+        this.setGizmoVisibility(shader, draggedInstance, draggedPart);
         const position = shader.attribute(positionAttribute);
         const normal = shader.attribute(normalAttribute);
         positionBuffer.bindToVertexAttrib(position, 3);
@@ -761,7 +805,11 @@ emitAnnotation(vec4(vColor.rgb, vColor.a * getLineAlpha()));
     );
   }
 
-  drawArrow(context: AnnotationRenderContext) {
+  drawArrow(
+    context: AnnotationRenderContext,
+    draggedInstance: number,
+    draggedPart: number,
+  ) {
     this.drawSolidMesh(
       context,
       this.arrowShaderGetter,
@@ -770,10 +818,16 @@ emitAnnotation(vec4(vColor.rgb, vColor.a * getLineAlpha()));
       "aArrowPos",
       "aArrowNormal",
       ARROW_DRAW_VERTEX_COUNT,
+      draggedInstance,
+      draggedPart,
     );
   }
 
-  drawCubes(context: AnnotationRenderContext) {
+  drawCubes(
+    context: AnnotationRenderContext,
+    draggedInstance: number,
+    draggedPart: number,
+  ) {
     this.drawSolidMesh(
       context,
       this.cubeShaderGetter,
@@ -782,19 +836,23 @@ emitAnnotation(vec4(vColor.rgb, vColor.a * getLineAlpha()));
       "aCubePos",
       "aCubeNormal",
       CUBE_DRAW_VERTEX_COUNT,
+      draggedInstance,
+      draggedPart,
     );
   }
 
-  // activeRing = -1 draws all three rings; otherwise only that ring (so the ring
-  // being dragged stays visible while the rest of the gizmo hides).
-  drawRings(context: AnnotationRenderContext, activeRing = -1) {
+  drawRings(
+    context: AnnotationRenderContext,
+    draggedInstance: number,
+    draggedPart: number,
+  ) {
     const { gl } = this;
     this.enable(
       this.ringShaderGetter,
       context,
       (shader) => {
         this.setGizmoAxisWorld(shader, context);
-        gl.uniform1i(shader.uniform("uRingActive"), activeRing);
+        this.setGizmoVisibility(shader, draggedInstance, draggedPart);
         initializeLineShader(
           shader,
           context.renderContext.projectionParameters,
@@ -817,7 +875,11 @@ emitAnnotation(vec4(vColor.rgb, vColor.a * getLineAlpha()));
     });
   }
 
-  drawGuideLine(context: AnnotationRenderContext, axis: number) {
+  drawGuideLine(
+    context: AnnotationRenderContext,
+    axis: number,
+    draggedInstance: number,
+  ) {
     const { gl } = this;
     const bounds = getRegionDataBounds();
     let lo = -1e6;
@@ -831,6 +893,7 @@ emitAnnotation(vec4(vColor.rgb, vColor.a * getLineAlpha()));
       }
     }
     this.enable(this.guideLineShaderGetter, context, (shader) => {
+      this.setGizmoVisibility(shader, draggedInstance, -1);
       gl.uniform1i(shader.uniform("uGuideAxis"), axis);
       gl.uniform1f(shader.uniform("uGuideLo"), lo);
       gl.uniform1f(shader.uniform("uGuideHi"), hi);
@@ -850,23 +913,24 @@ emitAnnotation(vec4(vColor.rgb, vColor.a * getLineAlpha()));
     gl.disable(WebGL2RenderingContext.DEPTH_TEST);
     gl.depthMask(false);
     try {
-      // While an interactive handle is being dragged, hide the rest of the gizmo
-      // and show only a drag-specific affordance: the axis guide line for a
-      // tripod translate, or the ring being dragged for a rotation. Otherwise
-      // (idle, or a non-interactive pick) the full gizmo is shown.
-      const dragged = getGizmoDragStartNdc()
-        ? classifyGizmoPart(
-          context.selectedIndex % ORIENTED_BBOX_PICK_IDS_PER_INSTANCE,
-        )
-        : { kind: "none" as const };
-      if (dragged.kind === "none") {
-        this.drawRings(context);
-        this.drawArrow(context);
-        this.drawCubes(context);
-      } else if (dragged.kind === "translate") {
-        this.drawGuideLine(context, dragged.axis);
-      } else if (dragged.kind === "ring") {
-        this.drawRings(context, dragged.axis);
+      // While a handle is dragged, the dragged box collapses to just its active
+      // handle while every other box keeps its full gizmo. selectedIndex encodes
+      // (instance, part) for the dragged box (the hover is pinned to it during a
+      // drag); the shaders use uDraggedInstance/uDraggedPart to cull per box, so
+      // we always issue every handle draw and let the GPU decide visibility.
+      const dragging = getGizmoDragStartNdc() !== null;
+      const pids = ORIENTED_BBOX_PICK_IDS_PER_INSTANCE;
+      const draggedInstance = dragging
+        ? Math.floor(context.selectedIndex / pids)
+        : -1;
+      const draggedPart = dragging ? context.selectedIndex % pids : -1;
+      this.drawRings(context, draggedInstance, draggedPart);
+      this.drawArrow(context, draggedInstance, draggedPart);
+      this.drawCubes(context, draggedInstance, draggedPart);
+      // A tripod translate replaces the dragged box's arrow with a long axis
+      // guide line (shown only on that box).
+      if (dragging && classifyGizmoPart(draggedPart).kind === "translate") {
+        this.drawGuideLine(context, draggedPart - TRANSLATE_AXIS_PICK_OFFSET, draggedInstance);
       }
       this.drawCenterBall(context);
     } finally {
@@ -1228,9 +1292,16 @@ registerAnnotationTypeRenderHandler<OrientedBoundingBox>(
           return boxWithBounds(base, newCenter, Float32Array.from(extents));
         }
         case "scale": {
-          // Symmetric resize along one world axis: the drag distance from the
-          // center grows/shrinks the extent on both sides equally.
-          const halfDelta = draggedPoint[handle.axis] - center[handle.axis];
+          // Symmetric resize along the box's local (rotated) axis — the same
+          // axis the scale cube sits on. Project the drag onto that world-space
+          // axis direction so the grabbed face grows/shrinks on both sides
+          // equally. (For an unrotated box this reduces to the axis component.)
+          const rotation = mat3.fromQuat(mat3.create(), quatOf(orientation));
+          const axis = worldAxis(rotation, handle.axis);
+          const halfDelta = vec3.dot(
+            vec3.sub(vec3.create(), toVec3(draggedPoint), toVec3(center)),
+            axis,
+          );
           const newExtents = Float32Array.from(extents);
           newExtents[handle.axis] = Math.max(
             MIN_EXTENT,
