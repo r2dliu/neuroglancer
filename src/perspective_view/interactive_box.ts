@@ -25,6 +25,7 @@ import { trivialUniformColorShader } from "#src/webgl/trivial_shaders.js";
 
 const BLUE = new Float32Array([0, 0.35, 1, 1]);
 const WHITE = new Float32Array([1, 1, 1, 1]);
+const HOVER_REGION_BACKGROUND = new Float32Array([1, 1, 1, 0.2]);
 const BOX_EDGE_COUNT = 12;
 const VERTEX_COMPONENTS = 4;
 const ENDPOINTS_PER_LINE_SEGMENT = 2;
@@ -62,6 +63,7 @@ const tempMat = mat4.create();
 
 type BoxAxes = [vec3, vec3, vec3];
 type LocalPoint = [number, number, number];
+type HoverRegionIndex = 0 | 1 | 2;
 
 interface EdgeMove {
   dimension: 0 | 1 | 2;
@@ -72,6 +74,8 @@ interface EdgeMove {
 interface BoxHover {
   faceAxis: 0 | 1 | 2;
   faceSign: -1 | 1;
+  uRegion: HoverRegionIndex;
+  vRegion: HoverRegionIndex;
   highlightedEdges: number[];
   resizeEdges: EdgeMove[];
   rotate: boolean;
@@ -136,10 +140,13 @@ function faceEdgeMove(
   };
 }
 
-function clampRegionIndex(value: number, halfSize: number) {
+function clampRegionIndex(value: number, halfSize: number): HoverRegionIndex {
   if (halfSize <= 0) return 1;
   const normalized = (value / halfSize + 1) * 0.5;
-  return Math.max(0, Math.min(2, Math.floor(normalized * 3)));
+  return Math.max(
+    0,
+    Math.min(2, Math.floor(normalized * 3)),
+  ) as HoverRegionIndex;
 }
 
 function normalizeAxis(axis: vec3) {
@@ -486,6 +493,8 @@ export class PerspectiveViewBoxOverlay extends RefCounted {
       return {
         faceAxis,
         faceSign,
+        uRegion,
+        vRegion,
         highlightedEdges: resizeEdges.map((edge) => edge.edgeIndex),
         resizeEdges,
         rotate: false,
@@ -501,6 +510,8 @@ export class PerspectiveViewBoxOverlay extends RefCounted {
     return {
       faceAxis,
       faceSign,
+      uRegion,
+      vRegion,
       highlightedEdges,
       resizeEdges: [],
       rotate: true,
@@ -529,6 +540,8 @@ export class PerspectiveViewBoxOverlay extends RefCounted {
     if (
       a.faceAxis !== b.faceAxis ||
       a.faceSign !== b.faceSign ||
+      a.uRegion !== b.uRegion ||
+      a.vRegion !== b.vRegion ||
       a.rotate !== b.rotate ||
       a.highlightedEdges.length !== b.highlightedEdges.length
     ) {
@@ -690,19 +703,40 @@ export class PerspectiveViewBoxOverlay extends RefCounted {
     gl.uniformMatrix4fv(shader.uniform("uProjectionMatrix"), false, tempMat);
     const attribute = shader.attribute("aVertexPosition");
     gl.lineWidth(1);
+    const hover = this.hover;
+    if (hover !== undefined) {
+      this.drawHoverRegionBackground(hover, attribute);
+    }
     this.drawEdges(
       Array.from({ length: BOX_EDGE_COUNT }, (_value, index) => index),
       BLUE,
       attribute,
     );
-    const highlightedEdges = this.hover?.highlightedEdges;
+    const highlightedEdges = hover?.highlightedEdges;
     if (highlightedEdges !== undefined && highlightedEdges.length !== 0) {
       gl.lineWidth(2);
       this.drawEdges(highlightedEdges, WHITE, attribute);
-      this.drawHoverIcons(this.hover!, attribute);
+      this.drawHoverIcons(hover!, attribute);
       gl.lineWidth(1);
     }
     gl.disableVertexAttribArray(attribute);
+  }
+
+  private drawHoverRegionBackground(hover: BoxHover, attribute: number) {
+    const gl = this.gl;
+    const shader = this.shader;
+    const offset = this.writeHoverRegionQuad(hover, this.lineVertexData, 0);
+    this.vertexBuffer.setData(
+      this.lineVertexData.subarray(0, offset),
+      WebGL2RenderingContext.DYNAMIC_DRAW,
+    );
+    this.vertexBuffer.bindToVertexAttrib(attribute, 4);
+    gl.uniform4fv(shader.uniform("uColor"), HOVER_REGION_BACKGROUND);
+    gl.drawArrays(
+      WebGL2RenderingContext.TRIANGLES,
+      0,
+      offset / VERTEX_COMPONENTS,
+    );
   }
 
   private drawEdges(edges: number[], color: Float32Array, attribute: number) {
@@ -855,6 +889,48 @@ export class PerspectiveViewBoxOverlay extends RefCounted {
       );
     }
     return offset;
+  }
+
+  private writeHoverRegionQuad(
+    hover: BoxHover,
+    out: Float32Array,
+    offset: number,
+  ) {
+    const faceAxes = otherAxes(hover.faceAxis);
+    const uAxis = faceAxes[0];
+    const vAxis = faceAxes[1];
+    const uMin = this.getRegionLowerBound(hover.uRegion, uAxis);
+    const uMax = this.getRegionLowerBound(
+      (hover.uRegion + 1) as 1 | 2 | 3,
+      uAxis,
+    );
+    const vMin = this.getRegionLowerBound(hover.vRegion, vAxis);
+    const vMax = this.getRegionLowerBound(
+      (hover.vRegion + 1) as 1 | 2 | 3,
+      vAxis,
+    );
+    const local: LocalPoint = [0, 0, 0];
+    local[hover.faceAxis] = hover.faceSign * this.halfSize[hover.faceAxis];
+    const writeCorner = (u: number, v: number) => {
+      local[uAxis] = u;
+      local[vAxis] = v;
+      transformLocalToWorld(tempVec, local, this.center, this.axes);
+      out[offset++] = tempVec[0];
+      out[offset++] = tempVec[1];
+      out[offset++] = tempVec[2];
+      out[offset++] = 1;
+    };
+    writeCorner(uMin, vMin);
+    writeCorner(uMax, vMin);
+    writeCorner(uMax, vMax);
+    writeCorner(uMin, vMin);
+    writeCorner(uMax, vMax);
+    writeCorner(uMin, vMax);
+    return offset;
+  }
+
+  private getRegionLowerBound(region: 0 | 1 | 2 | 3, axis: 0 | 1 | 2) {
+    return ((2 * region) / 3 - 1) * this.halfSize[axis];
   }
 
   private getRotateIconPoint(
