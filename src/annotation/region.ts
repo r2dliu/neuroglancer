@@ -153,13 +153,9 @@ export function addRegionBoxWithId(
 ): void {
   const addNow = (source: any): boolean => {
     if (source === undefined) return false;
-    // skip if the box already exists (re-hydration).
-    if (source.getReference) {
-      const ref = source.getReference(id);
-      const exists = ref?.value !== undefined;
-      ref?.dispose?.();
-      if (exists) return true;
-    }
+    // Idempotent across retries / re-hydration: one box per layer, so if the
+    // layer already has its box we're done
+    if (firstBox(source) !== undefined) return true;
     const rank: number = source.rank;
     const center = new Float32Array(rank);
     const extents = new Float32Array(rank);
