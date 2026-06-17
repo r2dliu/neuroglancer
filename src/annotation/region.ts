@@ -78,6 +78,28 @@ export function ensureRegionLayer(viewer: Viewer) {
   return managed;
 }
 
+/**
+ * Create `local://annotations` only after data layers establish bounds
+ * Otherwise, it loads defaults which do not fit the viewport
+ */
+function withRegionLayer(
+  viewer: Viewer,
+  cb: (layer: ReturnType<typeof ensureRegionLayer>) => void,
+): () => void {
+  const coordinateSpace = viewer.navigationState.position.coordinateSpace;
+  if (coordinateSpace.value?.valid) {
+    cb(ensureRegionLayer(viewer));
+    return () => { };
+  }
+  const unsubscribe = coordinateSpace.changed.add(() => {
+    if (coordinateSpace.value?.valid) {
+      unsubscribe();
+      cb(ensureRegionLayer(viewer));
+    }
+  });
+  return unsubscribe;
+}
+
 export interface RegionBoxTransform {
   center: number[];
   extents: number[];
@@ -110,7 +132,6 @@ export function addRegionBoxWithId(
   id: string,
   t: RegionBoxTransform,
 ): void {
-  const layer = ensureRegionLayer(viewer);
   const addNow = (source: any): boolean => {
     if (source === undefined) return false;
     const rank: number = source.rank;
@@ -134,24 +155,26 @@ export function addRegionBoxWithId(
     return true;
   };
 
-  if (addNow(getMutableSource(layer.layer))) return;
+  withRegionLayer(viewer, (layer) => {
+    if (addNow(getMutableSource(layer.layer))) return;
 
-  // Source not ready yet (layer just created): add once it becomes available.
-  const unsubscribers: (() => void)[] = [];
-  const cleanup = () => {
-    while (unsubscribers.length) unsubscribers.pop()!();
-  };
-  const retry = () => {
-    if (addNow(getMutableSource(layer.layer))) cleanup();
-  };
-  unsubscribers.push(layer.readyStateChanged.add(retry));
-  unsubscribers.push(
-    layer.layerChanged.add(() => {
-      const states = (layer.layer as any)?.annotationStates;
-      if (states?.changed) unsubscribers.push(states.changed.add(retry));
-      retry();
-    }),
-  );
+    // Source not ready yet (layer just created): add once it becomes available.
+    const unsubscribers: (() => void)[] = [];
+    const cleanup = () => {
+      while (unsubscribers.length) unsubscribers.pop()!();
+    };
+    const retry = () => {
+      if (addNow(getMutableSource(layer.layer))) cleanup();
+    };
+    unsubscribers.push(layer.readyStateChanged.add(retry));
+    unsubscribers.push(
+      layer.layerChanged.add(() => {
+        const states = (layer.layer as any)?.annotationStates;
+        if (states?.changed) unsubscribers.push(states.changed.add(retry));
+        retry();
+      }),
+    );
+  });
 }
 
 function regionSource(viewer: Viewer): any | undefined {
@@ -241,15 +264,18 @@ export function subscribeRegionChanges(
   viewer: Viewer,
   callback: () => void,
 ): () => void {
-  const layer = ensureRegionLayer(viewer);
   const unsubscribers: (() => void)[] = [];
-  const subscribeSource = () => {
-    const source = getMutableSource(layer.layer);
-    if (source?.changed?.add) unsubscribers.push(source.changed.add(callback));
-  };
-  subscribeSource();
-  unsubscribers.push(layer.readyStateChanged.add(subscribeSource));
+  const cancelWait = withRegionLayer(viewer, (layer) => {
+    const subscribeSource = () => {
+      const source = getMutableSource(layer.layer);
+      if (source?.changed?.add)
+        unsubscribers.push(source.changed.add(callback));
+    };
+    subscribeSource();
+    unsubscribers.push(layer.readyStateChanged.add(subscribeSource));
+  });
   return () => {
+    cancelWait();
     while (unsubscribers.length) unsubscribers.pop()!();
   };
 }
