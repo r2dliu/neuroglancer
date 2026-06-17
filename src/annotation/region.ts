@@ -253,3 +253,34 @@ export function subscribeRegionChanges(
     while (unsubscribers.length) unsubscribers.pop()!();
   };
 }
+
+/**
+ * Reflect the (Ichnaea-owned) selected box into neuroglancer's built-in
+ * selection state: the gizmo renders only on the selected annotation, and the
+ * selection-details panel stays in sync. Passing null clears this layer's
+ * annotation selection.
+ */
+export function setRegionSelection(
+  viewer: Viewer,
+  id: string | null,
+): void {
+  const managed = findRegionLayer(viewer);
+  const layer: any = managed?.layer;
+  const annotationState = layer?.annotationStates?.states?.find(
+    (s: any) => s.source && !s.source.readonly,
+  );
+  if (!annotationState) return;
+  if (id !== null && typeof layer.selectAnnotation === "function") {
+    layer.selectAnnotation(annotationState, id, false);
+  } else {
+    // Clear this layer's annotation selection.
+    layer.manager.root.selectionState.captureSingleLayerState(
+      layer,
+      (state: any) => {
+        state.annotationId = undefined;
+        return true;
+      },
+      false,
+    );
+  }
+}

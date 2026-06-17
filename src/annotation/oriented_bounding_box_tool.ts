@@ -19,8 +19,6 @@ export class OrientedBoundingBoxTool extends Tool<Viewer> {
   }
 
   activate(activation: ToolActivation<this>) {
-    // Capture the dataset bounds the gizmo clamps edits against. The box(es)
-    // themselves are created/owned by the Ichnaea frontend.
     captureRegionDataBounds(this.viewer);
 
     // Conditional left click control; only functions when clicking on a gizmo handle

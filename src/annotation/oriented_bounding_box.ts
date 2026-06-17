@@ -440,9 +440,9 @@ emitAnnotation(vec4(vColor.rgb, getLineAlpha()));
       builder.addVertexCode(glsl_axisColor);
       builder.setVertexMain(`
 int axis = gl_VertexID / ${VERTS_PER_ARROW};
-// During a drag the dragged box hides its arrows (a tripod drag shows a guide
-// line instead); other boxes keep theirs.
-if (onDraggedInstance()) { cullVertex(); return; }
+// Arrows show only on the selected box, and not while it's being dragged (a
+// tripod drag shows a guide line instead).
+if (gizmoInstanceHidden() || onDraggedInstance()) { cullVertex(); return; }
 vec3 subCenter = obbSubCenter();
 // Keep the extents/orientation attributes referenced (arrows are world-aligned
 // and don't use them) so their per-instance binders aren't enabled at location -1.
@@ -493,8 +493,8 @@ emitAnnotation(vColor);
       builder.addVertexCode(glsl_axisColor);
       builder.setVertexMain(`
 int axis = gl_VertexID / ${VERTS_PER_CUBE};
-// On the dragged box, show only the cube being scaled; other boxes keep all 3.
-if (gizmoPartHidden(${SCALE_AXIS_PICK_OFFSET} + axis)) { cullVertex(); return; }
+// Cubes show only on the selected box; mid-scale-drag, only the dragged cube.
+if (gizmoInstanceHidden() || gizmoPartHidden(${SCALE_AXIS_PICK_OFFSET} + axis)) { cullVertex(); return; }
 vec3 subCenter = obbSubCenter();
 vec3 keep = obbHalfExtents() * 0.0;  // keep the Bounds1 (extents) binder referenced
 mat3 R = obbRotation();
@@ -542,8 +542,8 @@ emitAnnotation(vColor);
 int lineIndex = gl_VertexID / ${VERTICES_PER_LINE};
 int ring = lineIndex / ${RING_SEGMENTS};
 int seg = lineIndex - ring * ${RING_SEGMENTS};
-// On the dragged box, show only the ring being rotated; other boxes keep all 3.
-if (gizmoPartHidden(${ROTATE_RING_PICK_OFFSET} + ring)) { cullVertex(); return; }
+// Rings show only on the selected box; mid-rotate-drag, only the dragged ring.
+if (gizmoInstanceHidden() || gizmoPartHidden(${ROTATE_RING_PICK_OFFSET} + ring)) { cullVertex(); return; }
 int u = (ring + 1) % 3;
 int v = (ring + 2) % 3;
 vec3 subCenter = obbSubCenter();
@@ -577,8 +577,11 @@ emitAnnotation(vec4(vColor.rgb, getLineAlpha()));
     "annotation/orientedBoundingBox/projection/centerBall",
     (builder: ShaderBuilder) => {
       this.defineShader(builder);
+      this.defineGizmoVisibility(builder);
       defineCircleShader(builder, this.targetIsSliceView);
       builder.setVertexMain(`
+// The center ball shows only on the selected box.
+if (gizmoInstanceHidden()) { cullVertex(); return; }
 // Reference the box rotation/extents so their per-instance attributes are not
 // optimized out (the shared binder would otherwise enable location -1).
 vec3 keep = obbHalfExtents() + obbRotation() * vec3(0.0);
@@ -635,15 +638,18 @@ emitAnnotation(vec4(vColor.rgb, vColor.a * getLineAlpha()));
     },
   );
 
-  // Per-instance drag focus, shared by the arrow / cube / ring / guide-line
-  // shaders. uDraggedInstance is the gl_InstanceID of the box being dragged
-  // (-1 when idle); uDraggedPart is the active part index within that box.
-  // During a drag the dragged box collapses to just its active handle, while
-  // every other box keeps its full gizmo.
+  // Gizmo handle visibility, shared by the arrow / cube / ring / center-ball /
+  // guide-line shaders.
+  //  - uSelectedInstance: the only box whose handles render (the selected box,
+  //    or the dragged box mid-drag). -1 hides all handles (nothing selected).
+  //  - uDraggedInstance / uDraggedPart: during a drag the dragged box collapses
+  //    to just its active handle (the part being dragged).
   private defineGizmoVisibility(builder: ShaderBuilder) {
+    builder.addUniform("highp int", "uSelectedInstance");
     builder.addUniform("highp int", "uDraggedInstance");
     builder.addUniform("highp int", "uDraggedPart");
     builder.addVertexCode(`
+bool gizmoInstanceHidden() { return gl_InstanceID != uSelectedInstance; }
 bool onDraggedInstance() {
   return uDraggedInstance >= 0 && gl_InstanceID == uDraggedInstance;
 }
@@ -656,9 +662,11 @@ void cullVertex() { gl_Position = vec4(2.0, 0.0, 0.0, 1.0); }
 
   private setGizmoVisibility(
     shader: ShaderProgram,
+    selectedInstance: number,
     draggedInstance: number,
     draggedPart: number,
   ) {
+    this.gl.uniform1i(shader.uniform("uSelectedInstance"), selectedInstance);
     this.gl.uniform1i(shader.uniform("uDraggedInstance"), draggedInstance);
     this.gl.uniform1i(shader.uniform("uDraggedPart"), draggedPart);
   }
@@ -774,6 +782,7 @@ void cullVertex() { gl_Position = vec4(2.0, 0.0, 0.0, 1.0); }
     positionAttribute: string,
     normalAttribute: string,
     vertexCount: number,
+    selectedInstance: number,
     draggedInstance: number,
     draggedPart: number,
   ) {
@@ -783,7 +792,12 @@ void cullVertex() { gl_Position = vec4(2.0, 0.0, 0.0, 1.0); }
       context,
       (shader) => {
         this.setGizmoAxisWorld(shader, context);
-        this.setGizmoVisibility(shader, draggedInstance, draggedPart);
+        this.setGizmoVisibility(
+          shader,
+          selectedInstance,
+          draggedInstance,
+          draggedPart,
+        );
         const position = shader.attribute(positionAttribute);
         const normal = shader.attribute(normalAttribute);
         positionBuffer.bindToVertexAttrib(position, 3);
@@ -807,6 +821,7 @@ void cullVertex() { gl_Position = vec4(2.0, 0.0, 0.0, 1.0); }
 
   drawArrow(
     context: AnnotationRenderContext,
+    selectedInstance: number,
     draggedInstance: number,
     draggedPart: number,
   ) {
@@ -818,6 +833,7 @@ void cullVertex() { gl_Position = vec4(2.0, 0.0, 0.0, 1.0); }
       "aArrowPos",
       "aArrowNormal",
       ARROW_DRAW_VERTEX_COUNT,
+      selectedInstance,
       draggedInstance,
       draggedPart,
     );
@@ -825,6 +841,7 @@ void cullVertex() { gl_Position = vec4(2.0, 0.0, 0.0, 1.0); }
 
   drawCubes(
     context: AnnotationRenderContext,
+    selectedInstance: number,
     draggedInstance: number,
     draggedPart: number,
   ) {
@@ -836,6 +853,7 @@ void cullVertex() { gl_Position = vec4(2.0, 0.0, 0.0, 1.0); }
       "aCubePos",
       "aCubeNormal",
       CUBE_DRAW_VERTEX_COUNT,
+      selectedInstance,
       draggedInstance,
       draggedPart,
     );
@@ -843,6 +861,7 @@ void cullVertex() { gl_Position = vec4(2.0, 0.0, 0.0, 1.0); }
 
   drawRings(
     context: AnnotationRenderContext,
+    selectedInstance: number,
     draggedInstance: number,
     draggedPart: number,
   ) {
@@ -852,7 +871,12 @@ void cullVertex() { gl_Position = vec4(2.0, 0.0, 0.0, 1.0); }
       context,
       (shader) => {
         this.setGizmoAxisWorld(shader, context);
-        this.setGizmoVisibility(shader, draggedInstance, draggedPart);
+        this.setGizmoVisibility(
+          shader,
+          selectedInstance,
+          draggedInstance,
+          draggedPart,
+        );
         initializeLineShader(
           shader,
           context.renderContext.projectionParameters,
@@ -864,8 +888,9 @@ void cullVertex() { gl_Position = vec4(2.0, 0.0, 0.0, 1.0); }
     );
   }
 
-  drawCenterBall(context: AnnotationRenderContext) {
+  drawCenterBall(context: AnnotationRenderContext, selectedInstance: number) {
     this.enable(this.centerBallShaderGetter, context, (shader) => {
+      this.setGizmoVisibility(shader, selectedInstance, -1, -1);
       initializeCircleShader(
         shader,
         context.renderContext.projectionParameters,
@@ -878,6 +903,7 @@ void cullVertex() { gl_Position = vec4(2.0, 0.0, 0.0, 1.0); }
   drawGuideLine(
     context: AnnotationRenderContext,
     axis: number,
+    selectedInstance: number,
     draggedInstance: number,
   ) {
     const { gl } = this;
@@ -893,7 +919,7 @@ void cullVertex() { gl_Position = vec4(2.0, 0.0, 0.0, 1.0); }
       }
     }
     this.enable(this.guideLineShaderGetter, context, (shader) => {
-      this.setGizmoVisibility(shader, draggedInstance, -1);
+      this.setGizmoVisibility(shader, selectedInstance, draggedInstance, -1);
       gl.uniform1i(shader.uniform("uGuideAxis"), axis);
       gl.uniform1f(shader.uniform("uGuideLo"), lo);
       gl.uniform1f(shader.uniform("uGuideHi"), hi);
@@ -913,26 +939,32 @@ void cullVertex() { gl_Position = vec4(2.0, 0.0, 0.0, 1.0); }
     gl.disable(WebGL2RenderingContext.DEPTH_TEST);
     gl.depthMask(false);
     try {
-      // While a handle is dragged, the dragged box collapses to just its active
-      // handle while every other box keeps its full gizmo. selectedIndex encodes
-      // (instance, part) for the dragged box (the hover is pinned to it during a
-      // drag); the shaders use uDraggedInstance/uDraggedPart to cull per box, so
-      // we always issue every handle draw and let the GPU decide visibility.
+      // Handles render only on the selected box (context.selectedInstance);
+      // while dragging, that's the dragged box and it collapses to just the
+      // active part. Every handle draw is issued and the shaders cull per box.
       const dragging = getGizmoDragStartNdc() !== null;
       const pids = ORIENTED_BBOX_PICK_IDS_PER_INSTANCE;
       const draggedInstance = dragging
         ? Math.floor(context.selectedIndex / pids)
         : -1;
       const draggedPart = dragging ? context.selectedIndex % pids : -1;
-      this.drawRings(context, draggedInstance, draggedPart);
-      this.drawArrow(context, draggedInstance, draggedPart);
-      this.drawCubes(context, draggedInstance, draggedPart);
+      const selectedInstance = dragging
+        ? draggedInstance
+        : context.selectedInstance;
+      this.drawRings(context, selectedInstance, draggedInstance, draggedPart);
+      this.drawArrow(context, selectedInstance, draggedInstance, draggedPart);
+      this.drawCubes(context, selectedInstance, draggedInstance, draggedPart);
       // A tripod translate replaces the dragged box's arrow with a long axis
       // guide line (shown only on that box).
       if (dragging && classifyGizmoPart(draggedPart).kind === "translate") {
-        this.drawGuideLine(context, draggedPart - TRANSLATE_AXIS_PICK_OFFSET, draggedInstance);
+        this.drawGuideLine(
+          context,
+          draggedPart - TRANSLATE_AXIS_PICK_OFFSET,
+          selectedInstance,
+          draggedInstance,
+        );
       }
-      this.drawCenterBall(context);
+      this.drawCenterBall(context, selectedInstance);
     } finally {
       gl.enable(WebGL2RenderingContext.DEPTH_TEST);
       gl.depthMask(true);

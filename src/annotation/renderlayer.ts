@@ -351,6 +351,9 @@ export class AnnotationLayer extends RefCounted {
       this.hoverState.changed.add(this.redrawNeeded.dispatch),
     );
     this.registerDisposer(
+      displayState.selectedAnnotation.changed.add(this.redrawNeeded.dispatch),
+    );
+    this.registerDisposer(
       this.transform.changed.add(this.redrawNeeded.dispatch),
     );
   }
@@ -653,6 +656,7 @@ function AnnotationRenderLayer<
         annotationLayer: base,
         renderContext,
         selectedIndex: 0,
+        selectedInstance: -1,
         basePickId: pickId,
         buffer: chunk.buffer!,
         bufferOffset: 0,
@@ -684,10 +688,19 @@ function AnnotationRenderLayer<
               selectedIndex += hoverValue.partIndex;
             }
           }
+          // Selected annotation (mirrored from the global selection) → its
+          // instance index, so the oriented-box gizmo renders only on it.
+          const selectedAnnotationId =
+            base.state.displayState.selectedAnnotation.value;
+          const selInstance =
+            selectedAnnotationId !== undefined
+              ? idMap.get(selectedAnnotationId)
+              : undefined;
           count = Math.round(count * drawFraction);
           context.count = count;
           context.bufferOffset = typeToOffset[annotationType];
           context.selectedIndex = selectedIndex;
+          context.selectedInstance = selInstance ?? -1;
           const renderHelper = this.renderHelpers[annotationType];
           renderHelper.draw(context);
           if (computeHistograms) {

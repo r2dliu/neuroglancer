@@ -1613,6 +1613,20 @@ export function UserLayerWithAnnotationsMixin<
       this.annotationDisplayState.shaderControls.changed.add(
         this.specificationChanged.dispatch,
       );
+
+      const syncSelectedAnnotation = () => {
+        const selectionState = this.manager.root.selectionState.value;
+        const layerState = selectionState?.layers.find(
+          (s) => s.layer === this,
+        )?.state;
+        this.annotationDisplayState.selectedAnnotation.value =
+          layerState?.annotationId;
+      };
+      this.registerDisposer(
+        this.manager.root.selectionState.changed.add(syncSelectedAnnotation),
+      );
+      syncSelectedAnnotation();
+
       this.tabs.add("annotations", {
         label: "Annotations",
         order: 10,
