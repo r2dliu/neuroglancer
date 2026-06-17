@@ -589,10 +589,12 @@ class RenderingOptionsTab extends Tab {
       ).element,
     );
 
-    const lutSelector=document.createElement("div");
+    const lutSelector = document.createElement("div");
     lutSelector.innerHTML = `
       <select onchange="window.lutName=this.options[this.selectedIndex].text">
-        ${Object.keys(luts).map((lut) => `<option>${lut}</option>`).join('')}
+        ${Object.keys(luts)
+          .map((lut) => `<option>${lut}</option>`)
+          .join("")}
       </select>
     `;
     element.appendChild(lutSelector);

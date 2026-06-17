@@ -77,6 +77,7 @@ export enum AnnotationType {
   LINE = 1,
   AXIS_ALIGNED_BOUNDING_BOX = 2,
   ELLIPSOID = 3,
+  ORIENTED_BOUNDING_BOX = 4,
 }
 
 export const annotationTypes = [
@@ -84,6 +85,7 @@ export const annotationTypes = [
   AnnotationType.LINE,
   AnnotationType.AXIS_ALIGNED_BOUNDING_BOX,
   AnnotationType.ELLIPSOID,
+  AnnotationType.ORIENTED_BOUNDING_BOX,
 ];
 
 export interface AnnotationPropertySpecBase {
@@ -417,7 +419,7 @@ export class AnnotationPropertySerializer {
   ) {
     if (propertySpecs.length === 0) {
       this.serializedBytes = firstGroupInitialOffset;
-      this.serialize = this.deserialize = () => {};
+      this.serialize = this.deserialize = () => { };
       this.propertyGroupBytes = [firstGroupInitialOffset];
       return;
     }
@@ -433,9 +435,8 @@ export class AnnotationPropertySerializer {
       groupIndex < propertyGroupBytes.length;
       ++groupIndex
     ) {
-      groupOffsetCode += `let groupOffset${groupIndex} = groupOffset${
-        groupIndex - 1
-      } + ${propertyGroupBytes[groupIndex - 1]}*annotationCount;`;
+      groupOffsetCode += `let groupOffset${groupIndex} = groupOffset${groupIndex - 1
+        } + ${propertyGroupBytes[groupIndex - 1]}*annotationCount;`;
     }
     for (
       let groupIndex = 0;
@@ -682,7 +683,30 @@ export interface Ellipsoid extends AnnotationBase {
   type: AnnotationType.ELLIPSOID;
 }
 
-export type Annotation = Line | Point | AxisAlignedBoundingBox | Ellipsoid;
+/**
+ * An oriented (rotatable) box. Unlike AxisAlignedBoundingBox, this carries an
+ * explicit orientation so the box can be freely rotated in 3D.
+ *
+ * - `center` / `extents` are rank-length vectors in model coordinates (extents
+ *   are the full edge lengths, not half-extents).
+ * - `orientation` is a unit quaternion `[x, y, z, w]` expressing the box's
+ *   rotation in the 3D display subspace. It is intrinsically 3D, so (unlike the
+ *   rank-length geometry vectors) it is not remapped when the coordinate space
+ *   is reordered; reordering dimensions of an oriented box is unsupported.
+ */
+export interface OrientedBoundingBox extends AnnotationBase {
+  center: Float32Array;
+  extents: Float32Array;
+  orientation: Float32Array;
+  type: AnnotationType.ORIENTED_BOUNDING_BOX;
+}
+
+export type Annotation =
+  | Line
+  | Point
+  | AxisAlignedBoundingBox
+  | Ellipsoid
+  | OrientedBoundingBox;
 
 export interface AnnotationTypeHandler<T extends Annotation = Annotation> {
   icon: string;
@@ -1008,6 +1032,90 @@ export const annotationTypeHandlers: Record<
       callback(annotation.radii, true);
     },
   },
+  [AnnotationType.ORIENTED_BOUNDING_BOX]: {
+    icon: "◫",
+    description: "Oriented Bounding Box",
+    toJSON: (annotation: OrientedBoundingBox) => {
+      return {
+        center: Array.from(annotation.center),
+        extents: Array.from(annotation.extents),
+        orientation: Array.from(annotation.orientation),
+      };
+    },
+    restoreState: (annotation: OrientedBoundingBox, obj: any, rank: number) => {
+      annotation.center = verifyObjectProperty(obj, "center", (x) =>
+        parseFixedLengthArray(new Float32Array(rank), x, verifyFiniteFloat),
+      );
+      annotation.extents = verifyObjectProperty(obj, "extents", (x) =>
+        parseFixedLengthArray(
+          new Float32Array(rank),
+          x,
+          verifyFiniteNonNegativeFloat,
+        ),
+      );
+      annotation.orientation = verifyObjectProperty(obj, "orientation", (x) =>
+        parseFixedLengthArray(new Float32Array(4), x, verifyFiniteFloat),
+      );
+    },
+    // center + extents (rank each) followed by the orientation quaternion (4
+    // floats, independent of rank).
+    serializedBytes: (rank) => 2 * 4 * rank + 4 * 4,
+    serialize(
+      buffer: DataView,
+      offset: number,
+      isLittleEndian: boolean,
+      rank: number,
+      annotation: OrientedBoundingBox,
+    ) {
+      offset = serializeTwoFloatVectors(
+        buffer,
+        offset,
+        isLittleEndian,
+        rank,
+        annotation.center,
+        annotation.extents,
+      );
+      serializeFloatVector(
+        buffer,
+        offset,
+        isLittleEndian,
+        4,
+        annotation.orientation,
+      );
+    },
+    deserialize: (
+      buffer: DataView,
+      offset: number,
+      isLittleEndian: boolean,
+      rank: number,
+      id: string,
+    ): OrientedBoundingBox => {
+      const center = new Float32Array(rank);
+      const extents = new Float32Array(rank);
+      const orientation = new Float32Array(4);
+      offset = deserializeTwoFloatVectors(
+        buffer,
+        offset,
+        isLittleEndian,
+        rank,
+        center,
+        extents,
+      );
+      deserializeFloatVector(buffer, offset, isLittleEndian, 4, orientation);
+      return {
+        type: AnnotationType.ORIENTED_BOUNDING_BOX,
+        center,
+        extents,
+        orientation,
+        id,
+        properties: [],
+      };
+    },
+    visitGeometry(annotation: OrientedBoundingBox, callback) {
+      callback(annotation.center, false);
+      callback(annotation.extents, true);
+    },
+  },
 };
 
 export interface AnnotationSchema {
@@ -1110,8 +1218,7 @@ export interface AnnotationSourceSignals {
 
 export class AnnotationSource
   extends RefCounted
-  implements AnnotationSourceSignals
-{
+  implements AnnotationSourceSignals {
   protected annotationMap = new Map<AnnotationId, Annotation>();
   changed = new NullarySignal();
   readonly = false;
@@ -1226,7 +1333,7 @@ export class AnnotationSource
 
   references = new Map<AnnotationId, Borrowed<AnnotationReference>>();
 
-  protected ensureUpdated() {}
+  protected ensureUpdated() { }
 
   toJSON() {
     this.ensureUpdated();
@@ -1343,6 +1450,10 @@ export class LocalAnnotationSource extends AnnotationSource {
           annotation.center = mapVector(annotation.center);
           annotation.radii = mapVector(annotation.radii);
           break;
+        case AnnotationType.ORIENTED_BOUNDING_BOX:
+          annotation.center = mapVector(annotation.center);
+          annotation.extents = mapVector(annotation.extents);
+          break;
       }
     }
     if (this.rank_ !== sourceRank) {
@@ -1446,13 +1557,14 @@ function serializeAnnotations(
 }
 
 export class AnnotationSerializer {
-  annotations: [Point[], Line[], AxisAlignedBoundingBox[], Ellipsoid[]] = [
-    [],
-    [],
-    [],
-    [],
-  ];
-  constructor(public propertySerializers: AnnotationPropertySerializer[]) {}
+  annotations: [
+    Point[],
+    Line[],
+    AxisAlignedBoundingBox[],
+    Ellipsoid[],
+    OrientedBoundingBox[],
+  ] = [[], [], [], [], []];
+  constructor(public propertySerializers: AnnotationPropertySerializer[]) { }
   add(annotation: Annotation) {
     (<Annotation[]>this.annotations[annotation.type]).push(annotation);
   }

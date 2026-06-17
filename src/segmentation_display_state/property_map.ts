@@ -310,7 +310,8 @@ export class PreprocessedSegmentPropertyMap {
         numProperty.values = newValues;
       } else if (property.type === "color") {
         const colorProperty = property as InlineSegmentColorProperty;
-        const newColor = (properties[property.id] as string | undefined) || null;
+        const newColor =
+          (properties[property.id] as string | undefined) || null;
         colorProperty.values = [...colorProperty.values, newColor];
       }
     }
@@ -344,7 +345,11 @@ export class PreprocessedSegmentPropertyMap {
     inlineProperties.ids = newIds;
 
     for (const property of inlineProperties.properties) {
-      if (property.type === "string" || property.type === "label" || property.type === "description") {
+      if (
+        property.type === "string" ||
+        property.type === "label" ||
+        property.type === "description"
+      ) {
         const stringProperty = property as InlineSegmentStringProperty;
         stringProperty.values.splice(index, 1);
       } else if (property.type === "tags") {
@@ -435,7 +440,7 @@ export class PreprocessedSegmentPropertyMap {
 
     // Check if color property already exists
     const existingColorProperty = inlineProperties.properties.find(
-      (p) => p.id === "color" && p.type === "color"
+      (p) => p.id === "color" && p.type === "color",
     );
 
     if (!existingColorProperty) {
@@ -449,7 +454,6 @@ export class PreprocessedSegmentPropertyMap {
       inlineProperties.properties.push(colorProperty);
     }
   }
-
 }
 
 function remapArray<T>(
@@ -1313,7 +1317,7 @@ function updatePropertyHistogram(
         ++histogram[
           (Math.min(numBins - 1, Math.max(-1, (value - min) * multiplier)) +
             1) >>>
-          0
+            0
         ];
       }
     }
@@ -1331,7 +1335,7 @@ function updatePropertyHistogram(
           ++histogram[
             (Math.min(numBins - 1, Math.max(-1, (value - min) * multiplier)) +
               1) >>>
-            0
+              0
           ];
         }
       }

@@ -206,7 +206,7 @@ export class Chunk implements Disposable {
     }
   }
 
-  freeSystemMemory() { }
+  freeSystemMemory() {}
 
   serialize(msg: any, _transfers: any[]) {
     msg.id = this.key;
@@ -300,7 +300,7 @@ export class Chunk implements Disposable {
 }
 
 export interface ChunkConstructor<T extends Chunk> {
-  new(): T;
+  new (): T;
 }
 
 const numSourceQueueLevels = 2;
@@ -921,7 +921,7 @@ export class ChunkQueueManager extends SharedObjectCounterpart {
     if (DEBUG_CHUNK_UPDATES) {
       console.log(
         `${chunk}: changed priority ${chunk.priorityTier}:` +
-        `${chunk.priority} -> ${chunk.newPriorityTier}:${chunk.newPriority}`,
+          `${chunk.priority} -> ${chunk.newPriorityTier}:${chunk.newPriority}`,
       );
     }
     this.removeChunkFromQueues_(chunk);
@@ -939,7 +939,8 @@ export class ChunkQueueManager extends SharedObjectCounterpart {
     }
     if (DEBUG_CHUNK_UPDATES) {
       console.log(
-        `${chunk}: changed state ${ChunkState[chunk.state]} -> ${ChunkState[newState]
+        `${chunk}: changed state ${ChunkState[chunk.state]} -> ${
+          ChunkState[newState]
         }`,
       );
     }
@@ -1148,8 +1149,8 @@ export class ChunkQueueManager extends SharedObjectCounterpart {
     if (DEBUG_CHUNK_UPDATES) {
       console.log(
         `[Chunk status] QUEUED: ${this.numQueued}, FAILED: ` +
-        `${this.numFailed}, DOWNLOAD: ${this.downloadCapacity}, ` +
-        `MEM: ${this.systemMemoryCapacity}, GPU: ${this.gpuMemoryCapacity}`,
+          `${this.numFailed}, DOWNLOAD: ${this.downloadCapacity}, ` +
+          `MEM: ${this.systemMemoryCapacity}, GPU: ${this.gpuMemoryCapacity}`,
       );
     }
   }
@@ -1250,7 +1251,8 @@ export class ChunkQueueManager extends SharedObjectCounterpart {
 
 export class ChunkRenderLayerBackend
   extends SharedObjectCounterpart
-  implements LayerChunkProgressInfo {
+  implements LayerChunkProgressInfo
+{
   chunkManagerGeneration = -1;
 
   numVisibleChunksNeeded = 0;
@@ -1447,7 +1449,7 @@ export class ChunkManager extends SharedObjectCounterpart {
  */
 export function WithParameters<
   Parameters,
-  TBase extends { new(...args: any[]): SharedObject },
+  TBase extends { new (...args: any[]): SharedObject },
 >(
   Base: TBase,
   parametersConstructor: ChunkSourceParametersConstructor<Parameters>,
@@ -1477,7 +1479,7 @@ export interface ChunkRequester extends SharedObject {
  * The resultant class implements `ChunkRequester`.
  */
 export function withChunkManager<
-  T extends { new(...args: any[]): SharedObject },
+  T extends { new (...args: any[]): SharedObject },
 >(Base: T) {
   return class extends Base implements ChunkRequester {
     chunkManager: ChunkManager;

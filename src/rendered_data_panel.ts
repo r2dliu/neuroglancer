@@ -18,6 +18,7 @@ import "#src/rendered_data_panel.css";
 import "#src/noselect.css";
 
 import type { Annotation } from "#src/annotation/index.js";
+import { setGizmoDragStartNdc } from "#src/annotation/region_bounds.js";
 import { getAnnotationTypeRenderHandler } from "#src/annotation/type_handler.js";
 import type { DisplayContext } from "#src/display_context.js";
 import { RenderedPanel } from "#src/display_context.js";
@@ -499,6 +500,21 @@ export abstract class RenderedDataPanel extends RenderedPanel {
       /*capture=*/ true,
     );
 
+    // Show a "move" cursor while hovering (or dragging) a movable annotation
+    // handle, such as a region gizmo handle, so it reads as draggable.
+    this.registerDisposer(
+      this.viewer.mouseState.changed.add(() => {
+        const mouseState = this.viewer.mouseState;
+        const layer = mouseState.pickedAnnotationLayer;
+        const overHandle =
+          mouseState.active &&
+          layer !== undefined &&
+          !layer.source.readonly &&
+          mouseState.pickedAnnotationId !== undefined;
+        this.element.style.cursor = overHandle ? "move" : "";
+      }),
+    );
+
     registerActionListener(element, "select-position", () => {
       this.viewer.selectionDetailsState.select();
     });
@@ -652,6 +668,16 @@ export abstract class RenderedDataPanel extends RenderedPanel {
           selectedAnnotationId !== undefined
         ) {
           e.stopPropagation();
+          // Record where the drag began in NDC so gizmo rotation can anchor its
+          // tangent at the clicked point.
+          {
+            const rect = element.getBoundingClientRect();
+            const ev = e.detail;
+            setGizmoDragStartNdc({
+              x: ((ev.clientX - rect.left) / rect.width) * 2 - 1,
+              y: 1 - ((ev.clientY - rect.top) / rect.height) * 2,
+            });
+          }
           const annotationRef =
             annotationLayer.source.getReference(selectedAnnotationId)!;
           const ann = <Annotation>annotationRef.value;
@@ -671,6 +697,17 @@ export abstract class RenderedDataPanel extends RenderedPanel {
           );
           const totDeltaVec = vec2.set(vec2.create(), 0, 0);
           if (mouseState.updateUnconditionally()) {
+            // Pin the hover to the dragged part so it stays highlighted even if
+            // the cursor leaves it mid-drag, and expose the dragged part index so
+            // render layers can show drag-only affordances (gizmo axis guides).
+            const { displayState } = annotationLayer;
+            displayState.hoverState.value = {
+              id: selectedAnnotationId,
+              partIndex: pickedOffset,
+              annotationLayerState: annotationLayer,
+            };
+            displayState.hoverPinned = true;
+            displayState.hoverState.changed.dispatch();
             startRelativeMouseDrag(
               e.detail,
               (_event, deltaX, deltaY) => {
@@ -722,6 +759,11 @@ export abstract class RenderedDataPanel extends RenderedPanel {
               (_event) => {
                 annotationLayer.source.commit(annotationRef);
                 annotationRef.dispose();
+                // Release the hover pin so normal hover resumes, and clear the
+                // drag-only affordances.
+                displayState.hoverPinned = false;
+                displayState.hoverState.changed.dispatch();
+                setGizmoDragStartNdc(null);
               },
             );
           }

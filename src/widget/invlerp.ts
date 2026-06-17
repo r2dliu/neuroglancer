@@ -568,8 +568,14 @@ ${shaderDataType} getInterpolatedDataValue(int dummyChannel) {
       Number.isFinite(legendOffset) ? legendOffset : 0,
     );
 
-    const lutName=(globalThis as any).lutName===undefined ? "Tricolor 1" : (globalThis as any).lutName;
-    gl.uniform4fv(shader.uniform("lut"), new Float32Array((luts as any)[lutName]));
+    const lutName =
+      (globalThis as any).lutName === undefined
+        ? "Tricolor 1"
+        : (globalThis as any).lutName;
+    gl.uniform4fv(
+      shader.uniform("lut"),
+      new Float32Array((luts as any)[lutName]),
+    );
 
     gl.blendFunc(
       WebGL2RenderingContext.SRC_ALPHA,

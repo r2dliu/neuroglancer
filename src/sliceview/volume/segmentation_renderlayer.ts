@@ -57,7 +57,7 @@ import type { ShaderBuilder, ShaderProgram } from "#src/webgl/shader.js";
 export class EquivalencesHashMap {
   generation = Number.NaN;
   hashMap = new HashMapUint64();
-  constructor(public disjointSets: DisjointUint64Sets) { }
+  constructor(public disjointSets: DisjointUint64Sets) {}
   update() {
     const { disjointSets } = this;
     const { generation } = disjointSets;
@@ -74,7 +74,7 @@ export class EquivalencesHashMap {
 
 export interface SliceViewSegmentationDisplayState
   extends SegmentationDisplayState,
-  RenderLayerBaseOptions {
+    RenderLayerBaseOptions {
   selectedAlpha: WatchableValueInterface<number>;
   notSelectedAlpha: WatchableValueInterface<number>;
   hideSegmentZero: WatchableValueInterface<boolean>;
@@ -369,10 +369,12 @@ uint64_t getMappedObjectId(uint64_t value) {
     let fragmentMain = `
   uint64_t baseValue = getUint64DataValue();
   uint64_t value = getMappedObjectId(baseValue);
-  uint64_t valueForColor = ${parameters.baseSegmentColoring ? "baseValue" : "value"
-      };
-  uint64_t valueForHighlight = ${parameters.baseSegmentHighlighting ? "baseValue" : "value"
-      };
+  uint64_t valueForColor = ${
+    parameters.baseSegmentColoring ? "baseValue" : "value"
+  };
+  uint64_t valueForHighlight = ${
+    parameters.baseSegmentHighlighting ? "baseValue" : "value"
+  };
 
   float alpha = uSelectedAlpha;
   float saturation = uSaturation;
@@ -570,7 +572,7 @@ uint64_t getMappedObjectId(uint64_t value) {
       if (
         gpuSegmentStatedColorHashTable === undefined ||
         gpuSegmentStatedColorHashTable.hashTable !==
-        segmentStatedColors.hashTable
+          segmentStatedColors.hashTable
       ) {
         gpuSegmentStatedColorHashTable?.dispose();
         this.gpuSegmentStatedColorHashTable = gpuSegmentStatedColorHashTable =

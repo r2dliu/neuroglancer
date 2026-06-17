@@ -49,34 +49,35 @@ export class BrushTool extends Tool<Viewer> {
     const { content } = makeToolActivationStatusMessage(activation);
     content.classList.add("neuroglancer-brush-tool");
 
-    // Override default viewer input events
+    // Claim left-click/drag for painting only when a paintable segmentation
+    // layer is selected; otherwise the guard declines and the click falls
+    // through to the normal slice-view select/navigate behavior.
+    const canPaint = () => {
+      const layer = this.viewer.selectedLayer?.layer?.layer;
+      return (
+        layer instanceof SegmentationUserLayer &&
+        layer.renderLayers.some((r) => r instanceof SegmentationRenderLayer)
+      );
+    };
     const brushMap = EventActionMap.fromObject({
-      all: {
-        action: "brush-block-default",
-        stopPropagation: true,
-        preventDefault: true,
-      },
       "at:mousedown0": {
         action: "neuroglancer-brush-paint",
+        when: canPaint,
         stopPropagation: true,
         preventDefault: true,
       },
       "at:mouseup0": {
         action: "neuroglancer-brush-release",
+        when: canPaint,
         stopPropagation: true,
         preventDefault: true,
       },
     });
 
-    this.viewer.inputEventBindings.sliceView.addParent(
+    activation.pushInputLayer(
+      this.viewer.inputEventBindings.sliceView,
       brushMap,
-      Number.POSITIVE_INFINITY,
     );
-
-    activation.bindInputEventMap(brushMap);
-    activation.registerDisposer(() => {
-      this.viewer.inputEventBindings.sliceView.removeParent(brushMap);
-    });
 
     const paint = () => {
       if (this.brushValue === -1) return;
@@ -143,7 +144,8 @@ export class BrushTool extends Tool<Viewer> {
       const { canonicalVoxelFactors, displayDimensionIndices } = renderInfo;
 
       // Find which display dimension each in-plane axis maps to
-      let xDisplayDim = 0, yDisplayDim = 0;
+      let xDisplayDim = 0,
+        yDisplayDim = 0;
       for (let i = 0; i < 3; i++) {
         const globalDim = displayDimensionIndices[i];
         if (globalDim === -1) continue;
@@ -181,13 +183,29 @@ export class BrushTool extends Tool<Viewer> {
             const cy = dy * yFactor;
             if (cx * cx + cy * cy > radiusSq) continue;
 
-            const newPosition = vec3.fromValues(center[0], center[1], center[2]);
+            const newPosition = vec3.fromValues(
+              center[0],
+              center[1],
+              center[2],
+            );
             vec3.scaleAndAdd(newPosition, newPosition, xAxis, dx);
             vec3.scaleAndAdd(newPosition, newPosition, yAxis, dy);
 
-            const x = clampAndRoundCoordinateToVoxelCenter(bounds, 0, newPosition[0]);
-            const y = clampAndRoundCoordinateToVoxelCenter(bounds, 1, newPosition[1]);
-            const z = clampAndRoundCoordinateToVoxelCenter(bounds, 2, newPosition[2]);
+            const x = clampAndRoundCoordinateToVoxelCenter(
+              bounds,
+              0,
+              newPosition[0],
+            );
+            const y = clampAndRoundCoordinateToVoxelCenter(
+              bounds,
+              1,
+              newPosition[1],
+            );
+            const z = clampAndRoundCoordinateToVoxelCenter(
+              bounds,
+              2,
+              newPosition[2],
+            );
             brushPoints.push({ x, y, z, value: this.brushValue });
           }
         }

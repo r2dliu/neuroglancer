@@ -4,14 +4,14 @@
  * Licensed under the Apache License, Version 2.0.
  */
 
-import { NullarySignal } from "#src/util/signal.js";
-import type { Trackable } from "#src/util/trackable.js";
 import {
   parseArray,
   verifyFiniteNonNegativeFloat,
   verifyObject,
   verifyObjectProperty,
 } from "#src/util/json.js";
+import { NullarySignal } from "#src/util/signal.js";
+import type { Trackable } from "#src/util/trackable.js";
 
 const DEFAULT_LOWER = [0, 0, 0] as const;
 const DEFAULT_UPPER = [1, 1, 1] as const;

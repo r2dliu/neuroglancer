@@ -72,6 +72,9 @@ export interface AnnotationRenderContext {
   count: number;
   basePickId: number;
   selectedIndex: number;
+  // Instance index of the selected region box (oriented bounding box), or -1.
+  // Only that instance shows its interactive gizmo handles.
+  selectedInstance: number;
   modelViewProjectionMatrix: mat4;
   subspaceMatrix: Float32Array;
   renderSubspaceModelMatrix: mat4;

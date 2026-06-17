@@ -24,10 +24,7 @@ import type {
 import { Chunk, ChunkSource } from "#src/chunk_manager/frontend.js";
 import { applyRenderViewportToProjectionMatrix } from "#src/display_context.js";
 import type { HashMapUint64 } from "#src/gpu_hash/hash_table.js";
-import {
-  GPUHashTable,
-  HashMapShaderManager,
-} from "#src/gpu_hash/shader.js";
+import { GPUHashTable, HashMapShaderManager } from "#src/gpu_hash/shader.js";
 import type { LayerManager } from "#src/layer/index.js";
 import type {
   DisplayDimensionRenderInfo,
@@ -109,7 +106,7 @@ class FrontendSliceViewBase extends SliceViewBase<
   SliceViewChunkSource,
   SliceViewRenderLayer,
   FrontendTransformedSource
-> { }
+> {}
 const Base = withSharedVisibility(FrontendSliceViewBase);
 
 export interface FrontendTransformedSource<
@@ -622,11 +619,12 @@ export interface SliceViewChunkSourceOptions<
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
 export abstract class SliceViewChunkSource<
-  Spec extends SliceViewChunkSpecification = SliceViewChunkSpecification,
-  ChunkType extends SliceViewChunk = SliceViewChunk,
->
+    Spec extends SliceViewChunkSpecification = SliceViewChunkSpecification,
+    ChunkType extends SliceViewChunk = SliceViewChunk,
+  >
   extends ChunkSource
-  implements SliceViewChunkSourceInterface {
+  implements SliceViewChunkSourceInterface
+{
   declare chunks: Map<string, ChunkType>;
 
   declare OPTIONS: SliceViewChunkSourceOptions<Spec>;
@@ -1059,7 +1057,7 @@ export abstract class MultiscaleSliceViewChunkSource<
     options: SourceOptions,
   ): SliceViewSingleResolutionSource<Source>[][];
 
-  constructor(public chunkManager: Borrowed<ChunkManager>) { }
+  constructor(public chunkManager: Borrowed<ChunkManager>) {}
 }
 
 export function getVolumetricTransformedSources(
@@ -1139,11 +1137,11 @@ export function getVolumetricTransformedSources(
         if (chunkDataSize[chunkDim] !== size) {
           throw new Error(
             "Channel dimension " +
-            transform.layerDimensionNames[
-            transform.channelToRenderLayerDimensions[channelDim]
-            ] +
-            ` has extent ${size} but corresponding chunk dimension has extent ` +
-            `${chunkDataSize[chunkDim]}`,
+              transform.layerDimensionNames[
+                transform.channelToRenderLayerDimensions[channelDim]
+              ] +
+              ` has extent ${size} but corresponding chunk dimension has extent ` +
+              `${chunkDataSize[chunkDim]}`,
           );
         }
         nonDisplayLowerClipBound[chunkDim] = Number.NEGATIVE_INFINITY;

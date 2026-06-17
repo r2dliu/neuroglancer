@@ -751,11 +751,11 @@ export class PerspectivePanel extends RenderedDataPanel {
       const glWindowZ = 1.0 - zValue;
       tempVec3[0] =
         (2.0 * (glWindowX + relativeX - pickRadius)) /
-        pickingData.viewportWidth -
+          pickingData.viewportWidth -
         1.0;
       tempVec3[1] =
         (2.0 * (glWindowY + relativeY - pickRadius)) /
-        pickingData.viewportHeight -
+          pickingData.viewportHeight -
         1.0;
       tempVec3[2] = 2.0 * glWindowZ - 1.0;
       vec3.transformMat4(tempVec3, tempVec3, pickingData.invTransform);
@@ -1132,9 +1132,9 @@ export class PerspectivePanel extends RenderedDataPanel {
       }
 
       // Create volume rendering related buffers.
-      let bindMaxProjectionBuffer: () => void = () => { };
-      let bindMaxProjectionPickingBuffer: () => void = () => { };
-      let bindVolumeRenderingBuffer: () => void = () => { };
+      let bindMaxProjectionBuffer: () => void = () => {};
+      let bindMaxProjectionPickingBuffer: () => void = () => {};
+      let bindVolumeRenderingBuffer: () => void = () => {};
       if (this.hasVolumeRendering) {
         // Max projection setup
         renderContext.maxProjectionEmit = maxProjectionEmit;
@@ -1152,7 +1152,7 @@ export class PerspectivePanel extends RenderedDataPanel {
         gl.clearDepth(0.0);
         gl.clear(
           WebGL2RenderingContext.COLOR_BUFFER_BIT |
-          WebGL2RenderingContext.DEPTH_BUFFER_BIT,
+            WebGL2RenderingContext.DEPTH_BUFFER_BIT,
         );
 
         // Max projection picking setup
@@ -1166,7 +1166,7 @@ export class PerspectivePanel extends RenderedDataPanel {
         bindMaxProjectionPickingBuffer();
         gl.clear(
           WebGL2RenderingContext.COLOR_BUFFER_BIT |
-          WebGL2RenderingContext.DEPTH_BUFFER_BIT,
+            WebGL2RenderingContext.DEPTH_BUFFER_BIT,
         );
 
         // Volume rendering setup
@@ -1182,7 +1182,7 @@ export class PerspectivePanel extends RenderedDataPanel {
         gl.clearColor(0.0, 0.0, 0.0, 1.0);
         gl.clear(
           WebGL2RenderingContext.COLOR_BUFFER_BIT |
-          WebGL2RenderingContext.DEPTH_BUFFER_BIT,
+            WebGL2RenderingContext.DEPTH_BUFFER_BIT,
         );
       }
 
@@ -1298,7 +1298,7 @@ export class PerspectivePanel extends RenderedDataPanel {
           gl.clearDepth(0.0);
           gl.clear(
             WebGL2RenderingContext.COLOR_BUFFER_BIT |
-            WebGL2RenderingContext.DEPTH_BUFFER_BIT,
+              WebGL2RenderingContext.DEPTH_BUFFER_BIT,
           );
 
           // Set some values back to non-max projection state
@@ -1436,7 +1436,7 @@ export class PerspectivePanel extends RenderedDataPanel {
         this.navigationState.displayDimensionRenderInfo.value,
         this.navigationState.relativeDisplayScales.value,
         this.navigationState.zoomFactor.value /
-        this.renderViewport.logicalHeight,
+          this.renderViewport.logicalHeight,
         options,
       );
       gl.disable(WebGL2RenderingContext.BLEND);
@@ -1462,8 +1462,7 @@ export class PerspectivePanel extends RenderedDataPanel {
 
     const showSliceViews = this.viewer.showSliceViews.value;
     const brushStrokeLayers = findBrushStrokeLayers(this.viewer);
-    const inlineBrushLayer: BrushStrokeLayer | undefined =
-      brushStrokeLayers[0];
+    const inlineBrushLayer: BrushStrokeLayer | undefined = brushStrokeLayers[0];
     for (const [sliceView, unconditional] of this.sliceViews) {
       if (!unconditional && !showSliceViews) {
         continue;

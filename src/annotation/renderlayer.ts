@@ -17,6 +17,7 @@
 import "#src/annotation/bounding_box.js";
 import "#src/annotation/ellipsoid.js";
 import "#src/annotation/line.js";
+import "#src/annotation/oriented_bounding_box.js";
 import "#src/annotation/point.js";
 
 import type {
@@ -282,11 +283,11 @@ export class AnnotationLayer extends RefCounted {
           return displayState.displayUnfiltered.value
             ? undefined
             : source.relationships.map((relationship) => {
-                const state = relationshipStates.get(relationship);
-                return state.showMatches.value
-                  ? state.segmentationState.value
-                  : undefined;
-              });
+              const state = relationshipStates.get(relationship);
+              return state.showMatches.value
+                ? state.segmentationState.value
+                : undefined;
+            });
         },
         [
           this.state.displayState.relationshipStates,
@@ -348,6 +349,9 @@ export class AnnotationLayer extends RefCounted {
     );
     this.registerDisposer(
       this.hoverState.changed.add(this.redrawNeeded.dispatch),
+    );
+    this.registerDisposer(
+      displayState.selectedAnnotation.changed.add(this.redrawNeeded.dispatch),
     );
     this.registerDisposer(
       this.transform.changed.add(this.redrawNeeded.dispatch),
@@ -652,6 +656,7 @@ function AnnotationRenderLayer<
         annotationLayer: base,
         renderContext,
         selectedIndex: 0,
+        selectedInstance: -1,
         basePickId: pickId,
         buffer: chunk.buffer!,
         bufferOffset: 0,
@@ -678,14 +683,22 @@ function AnnotationRenderLayer<
             const index = idMap.get(hoverValue.id);
             if (index !== undefined) {
               selectedIndex = index * handler.pickIdsPerInstance;
-              // If we wanted to include the partIndex, we would add:
-              // selectedIndex += hoverValue.partIndex;
+              // Highlight the specific hovered sub-part (gizmo handle, corner,
+              // edge, endpoint, ...) rather than the whole annotation.
+              selectedIndex += hoverValue.partIndex;
             }
           }
+          const selectedAnnotationId =
+            base.state.displayState.selectedAnnotation.value;
+          const selectedInstance =
+            selectedAnnotationId !== undefined
+              ? idMap.get(selectedAnnotationId)
+              : undefined;
           count = Math.round(count * drawFraction);
           context.count = count;
           context.bufferOffset = typeToOffset[annotationType];
           context.selectedIndex = selectedIndex;
+          context.selectedInstance = selectedInstance ?? -1;
           const renderHelper = this.renderHelpers[annotationType];
           renderHelper.draw(context);
           if (computeHistograms) {
@@ -753,8 +766,8 @@ function AnnotationRenderLayer<
             chunkPosition,
             mouseState.pickedAnnotationBuffer,
             mouseState.pickedAnnotationBufferBaseOffset +
-              mouseState.pickedAnnotationIndex *
-                propertySerializer.propertyGroupBytes[0],
+            mouseState.pickedAnnotationIndex *
+            propertySerializer.propertyGroupBytes[0],
             partIndex,
           );
           const globalRank = globalToRenderLayerDimensions.length;
@@ -812,7 +825,7 @@ type AnnotationRenderLayer = InstanceType<
 >;
 
 const NonSpatiallyIndexedAnnotationRenderLayer = <
-  TBase extends { new (...args: any[]): AnnotationRenderLayer },
+  TBase extends { new(...args: any[]): AnnotationRenderLayer },
 >(
   Base: TBase,
 ) =>
@@ -922,7 +935,7 @@ const PerspectiveViewAnnotationLayerBase = AnnotationRenderLayer(
 
 export class PerspectiveViewAnnotationLayer extends NonSpatiallyIndexedAnnotationRenderLayer(
   PerspectiveViewAnnotationLayerBase,
-) {}
+) { }
 
 const SpatiallyIndexedAnnotationLayer = <
   TBase extends AnyConstructor<AnnotationRenderLayer>,
@@ -1027,9 +1040,8 @@ const SpatiallyIndexedAnnotationLayer = <
       ShaderModule,
       undefined
     > = parameterizedEmitterDependentShaderGetter(this, this.gl, {
-      memoizeKey: `annotation/wireFrameShader:${
-        this instanceof SliceViewPanelRenderLayer
-      }`,
+      memoizeKey: `annotation/wireFrameShader:${this instanceof SliceViewPanelRenderLayer
+        }`,
       parameters: constantWatchableValue(undefined),
       defineShader: (builder: ShaderBuilder) => {
         this.wireFrameRenderHelper.defineShader(builder);
@@ -1069,7 +1081,7 @@ const SpatiallyIndexedAnnotationLayer = <
         this.base.state.localPosition.value,
         this.renderScaleTarget.value,
         transformedSources[0],
-        () => {},
+        () => { },
         (tsource, index, drawFraction, physicalSpacing, pixelSpacing) => {
           index;
           const chunk = tsource.source.chunks.get(
@@ -1130,7 +1142,7 @@ const SpatiallyIndexedAnnotationLayer = <
         this.base.state.localPosition.value,
         this.renderScaleTarget.value,
         transformedSources[0],
-        () => {},
+        () => { },
         (tsource, index, drawFraction, physicalSpacing, pixelSpacing) => {
           index;
           drawFraction;

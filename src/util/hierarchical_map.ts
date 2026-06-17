@@ -19,7 +19,7 @@
  */
 
 export interface HierarchicalMapInterface<Key, Value> {
-  get(key: Key): Value | undefined;
+  get(key: Key, accept?: (value: Value) => boolean): Value | undefined;
   entries(): IterableIterator<[Key, Value]>;
 }
 
@@ -49,8 +49,7 @@ export class HierarchicalMap<
     Key,
     Value
   > = HierarchicalMapInterface<Key, Value>,
-> implements HierarchicalMapInterface<Key, Value>
-{
+> implements HierarchicalMapInterface<Key, Value> {
   parents = new Array<Parent>();
   private parentPriorities = new Array<number>();
   bindings = new Map<Key, Value>();
@@ -128,8 +127,11 @@ export class HierarchicalMap<
 
   /**
    * Lookup the highest priority value to which the specified key is mapped.
+   *
+   * If `accept` is provided, a value is only returned if `accept(value)` is
+   * true (conditional bindings)
    */
-  get(key: Key): Value | undefined {
+  get(key: Key, accept?: (value: Value) => boolean): Value | undefined {
     const { parents, parentPriorities } = this;
     const numParents = parentPriorities.length;
     let parentIndex = 0;
@@ -139,17 +141,17 @@ export class HierarchicalMap<
       parentIndex < numParents && parentPriorities[parentIndex] > 0;
       ++parentIndex
     ) {
-      value = parents[parentIndex].get(key);
+      value = parents[parentIndex].get(key, accept);
       if (value !== undefined) {
         return value;
       }
     }
     value = this.bindings.get(key);
-    if (value !== undefined) {
+    if (value !== undefined && (accept === undefined || accept(value))) {
       return value;
     }
     for (; parentIndex < numParents; ++parentIndex) {
-      value = parents[parentIndex].get(key);
+      value = parents[parentIndex].get(key, accept);
       if (value !== undefined) {
         return value;
       }

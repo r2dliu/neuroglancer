@@ -55,12 +55,12 @@ import {
 
 export class AnnotationHoverState extends WatchableValue<
   | {
-      id: string;
-      partIndex: number;
-      annotationLayerState: AnnotationLayerState;
-    }
+    id: string;
+    partIndex: number;
+    annotationLayerState: AnnotationLayerState;
+  }
   | undefined
-> {}
+> { }
 
 // null means loading
 // undefined means no attached layer
@@ -182,6 +182,8 @@ export class AnnotationDisplayState extends RefCounted {
     this.ignoreNullSegmentFilter,
   );
   hoverState = new AnnotationHoverState(undefined);
+  selectedAnnotation = new WatchableValue<string | undefined>(undefined);
+  hoverPinned = false;
 }
 
 export class AnnotationLayerState extends RefCounted {
