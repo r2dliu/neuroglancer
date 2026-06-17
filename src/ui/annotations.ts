@@ -1619,8 +1619,10 @@ export function UserLayerWithAnnotationsMixin<
         const layerState = selectionState?.layers.find(
           (s) => s.layer === this,
         )?.state;
-        this.annotationDisplayState.selectedAnnotation.value =
-          layerState?.annotationId;
+        const annotationId = layerState?.annotationId;
+        if (annotationId !== undefined) {
+          this.annotationDisplayState.selectedAnnotation.value = annotationId;
+        }
       };
       this.registerDisposer(
         this.manager.root.selectionState.changed.add(syncSelectedAnnotation),

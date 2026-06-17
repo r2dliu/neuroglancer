@@ -547,6 +547,10 @@ if (gizmoInstanceHidden() || gizmoPartHidden(${ROTATE_RING_PICK_OFFSET} + ring))
 int u = (ring + 1) % 3;
 int v = (ring + 2) % 3;
 vec3 subCenter = obbSubCenter();
+// Keep the extents (Bounds1) attribute referenced: rings use the center and
+// orientation but not the extents, so without this its per-instance binder
+// would be enabled at location -1 (WebGL INVALID_VALUE in enable()).
+subCenter += obbHalfExtents() * 0.0;
 mat3 R = obbRotation();
 // Build a unit circle in the box's rotated axis plane in ISOTROPIC gizmo space
 // (rotate by R first), THEN scale each subspace component by its per-axis world

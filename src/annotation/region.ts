@@ -1,6 +1,7 @@
 /**
  * @file Imperative helpers for region (oriented bounding box) layers.
- *
+ * Each region box is its OWN neuroglancer annotation layer, named
+ * `region:<uuid>` (the box's annotation id is the same uuid)
  */
 
 import { AnnotationType } from "#src/annotation/index.js";
@@ -11,11 +12,26 @@ import {
 import { makeLayer } from "#src/layer/index.js";
 import type { Viewer } from "#src/viewer.js";
 
-export const REGION_LAYER_NAME = "regions";
+export const REGION_LAYER_PREFIX = "region:";
 
-function findRegionLayer(viewer: Viewer) {
-  return viewer.layerManager.managedLayers.find(
-    (l) => l.name === REGION_LAYER_NAME,
+export function regionLayerName(id: string): string {
+  return REGION_LAYER_PREFIX + id;
+}
+
+export function regionIdFromLayerName(name: string): string | null {
+  return name.startsWith(REGION_LAYER_PREFIX)
+    ? name.slice(REGION_LAYER_PREFIX.length)
+    : null;
+}
+
+function findRegionLayer(viewer: Viewer, id: string) {
+  const name = regionLayerName(id);
+  return viewer.layerManager.managedLayers.find((l) => l.name === name);
+}
+
+function listRegionManagedLayers(viewer: Viewer) {
+  return viewer.layerManager.managedLayers.filter((l) =>
+    l.name.startsWith(REGION_LAYER_PREFIX),
   );
 }
 
@@ -65,11 +81,11 @@ const DEFAULT_VIEW_FRACTION = 0.2;
 // Fallback edge length (voxels) for dimensions whose data bounds are unbounded.
 const FALLBACK_EXTENT = 64;
 
-/** Find or create the single shared "regions" annotation layer. */
-export function ensureRegionLayer(viewer: Viewer) {
-  let managed = findRegionLayer(viewer);
+/** Find or create the annotation layer for region `id`. */
+export function ensureRegionLayer(viewer: Viewer, id: string) {
+  let managed = findRegionLayer(viewer, id);
   if (managed === undefined) {
-    managed = makeLayer(viewer.layerSpecification, REGION_LAYER_NAME, {
+    managed = makeLayer(viewer.layerSpecification, regionLayerName(id), {
       type: "annotation",
       source: "local://annotations",
     });
@@ -84,17 +100,18 @@ export function ensureRegionLayer(viewer: Viewer) {
  */
 function withRegionLayer(
   viewer: Viewer,
+  id: string,
   cb: (layer: ReturnType<typeof ensureRegionLayer>) => void,
 ): () => void {
   const coordinateSpace = viewer.navigationState.position.coordinateSpace;
   if (coordinateSpace.value?.valid) {
-    cb(ensureRegionLayer(viewer));
+    cb(ensureRegionLayer(viewer, id));
     return () => { };
   }
   const unsubscribe = coordinateSpace.changed.add(() => {
     if (coordinateSpace.value?.valid) {
       unsubscribe();
-      cb(ensureRegionLayer(viewer));
+      cb(ensureRegionLayer(viewer, id));
     }
   });
   return unsubscribe;
@@ -106,7 +123,9 @@ export interface RegionBoxTransform {
   orientation: number[];
 }
 
-export function computeDefaultRegionTransform(viewer: Viewer): RegionBoxTransform {
+export function computeDefaultRegionTransform(
+  viewer: Viewer,
+): RegionBoxTransform {
   captureRegionDataBounds(viewer);
   const bounds = readDataBounds(viewer);
   const position = viewer.navigationState.position.value;
@@ -134,6 +153,13 @@ export function addRegionBoxWithId(
 ): void {
   const addNow = (source: any): boolean => {
     if (source === undefined) return false;
+    // skip if the box already exists (re-hydration).
+    if (source.getReference) {
+      const ref = source.getReference(id);
+      const exists = ref?.value !== undefined;
+      ref?.dispose?.();
+      if (exists) return true;
+    }
     const rank: number = source.rank;
     const center = new Float32Array(rank);
     const extents = new Float32Array(rank);
@@ -155,7 +181,7 @@ export function addRegionBoxWithId(
     return true;
   };
 
-  withRegionLayer(viewer, (layer) => {
+  withRegionLayer(viewer, id, (layer) => {
     if (addNow(getMutableSource(layer.layer))) return;
 
     // Source not ready yet (layer just created): add once it becomes available.
@@ -177,8 +203,8 @@ export function addRegionBoxWithId(
   });
 }
 
-function regionSource(viewer: Viewer): any | undefined {
-  const layer = findRegionLayer(viewer);
+function regionSourceFor(viewer: Viewer, id: string): any | undefined {
+  const layer = findRegionLayer(viewer, id);
   return layer ? getMutableSource(layer.layer) : undefined;
 }
 
@@ -190,33 +216,35 @@ function readBox(annotation: any): RegionBoxTransform {
   };
 }
 
+function firstBox(source: any): any | undefined {
+  for (const annotation of source) {
+    if (annotation.type === AnnotationType.ORIENTED_BOUNDING_BOX) {
+      return annotation;
+    }
+  }
+  return undefined;
+}
+
 export function getRegionBox(
   viewer: Viewer,
   id: string,
 ): RegionBoxTransform | null {
-  const source = regionSource(viewer);
+  const source = regionSourceFor(viewer, id);
   if (!source) return null;
-  for (const annotation of source) {
-    if (
-      annotation.id === id &&
-      annotation.type === AnnotationType.ORIENTED_BOUNDING_BOX
-    ) {
-      return readBox(annotation);
-    }
-  }
-  return null;
+  const box = firstBox(source);
+  return box ? readBox(box) : null;
 }
 
 export function listRegionBoxes(
   viewer: Viewer,
 ): Array<{ id: string } & RegionBoxTransform> {
-  const source = regionSource(viewer);
-  if (!source) return [];
   const out: Array<{ id: string } & RegionBoxTransform> = [];
-  for (const annotation of source) {
-    if (annotation.type === AnnotationType.ORIENTED_BOUNDING_BOX) {
-      out.push({ id: annotation.id, ...readBox(annotation) });
-    }
+  for (const managed of listRegionManagedLayers(viewer)) {
+    const id = regionIdFromLayerName(managed.name);
+    if (id === null) continue;
+    const source = getMutableSource(managed.layer);
+    const box = source ? firstBox(source) : undefined;
+    if (box) out.push({ id, ...readBox(box) });
   }
   return out;
 }
@@ -226,7 +254,7 @@ export function setRegionBox(
   id: string,
   t: RegionBoxTransform,
 ): void {
-  const source = regionSource(viewer);
+  const source = regionSourceFor(viewer, id);
   if (!source) return;
   const ref = source.getReference(id);
   const existing = ref?.value;
@@ -251,62 +279,59 @@ export function setRegionBox(
   ref.dispose();
 }
 
-/** Remove a box by annotation id. */
 export function removeRegionBox(viewer: Viewer, id: string): void {
-  const source = regionSource(viewer);
-  if (!source) return;
-  const ref = source.getReference(id);
-  if (ref?.value) source.delete(ref);
-  ref?.dispose();
+  const managed = findRegionLayer(viewer, id);
+  if (managed) viewer.layerManager.removeManagedLayer(managed);
 }
 
+/**
+ * Subscribe to any change to any region box (geometry edits via the gizmo, and
+ * layers being added/removed). Re-derives the per-layer source subscriptions
+ * whenever the layer set changes.
+ */
 export function subscribeRegionChanges(
   viewer: Viewer,
   callback: () => void,
 ): () => void {
-  const unsubscribers: (() => void)[] = [];
-  const cancelWait = withRegionLayer(viewer, (layer) => {
-    const subscribeSource = () => {
-      const source = getMutableSource(layer.layer);
-      if (source?.changed?.add)
-        unsubscribers.push(source.changed.add(callback));
-    };
-    subscribeSource();
-    unsubscribers.push(layer.readyStateChanged.add(subscribeSource));
-  });
+  const sourceUnsubs = new Map<string, () => void>();
+
+  const resync = () => {
+    const present = new Set<string>();
+    for (const managed of listRegionManagedLayers(viewer)) {
+      present.add(managed.name);
+      if (sourceUnsubs.has(managed.name)) continue;
+      const source = getMutableSource(managed.layer);
+      if (source?.changed?.add) {
+        sourceUnsubs.set(managed.name, source.changed.add(callback));
+      }
+    }
+    // Drop subscriptions for layers that disappeared.
+    for (const [name, unsub] of [...sourceUnsubs]) {
+      if (!present.has(name)) {
+        unsub();
+        sourceUnsubs.delete(name);
+      }
+    }
+    callback();
+  };
+
+  resync();
+  const unsubLayers = viewer.layerManager.layersChanged.add(resync);
+  const unsubReady = viewer.layerManager.readyStateChanged.add(resync);
   return () => {
-    cancelWait();
-    while (unsubscribers.length) unsubscribers.pop()!();
+    unsubLayers();
+    unsubReady();
+    for (const unsub of sourceUnsubs.values()) unsub();
+    sourceUnsubs.clear();
   };
 }
 
-/**
- * Reflect the (Ichnaea-owned) selected box into neuroglancer's built-in
- * selection state: the gizmo renders only on the selected annotation, and the
- * selection-details panel stays in sync. Passing null clears this layer's
- * annotation selection.
- */
-export function setRegionSelection(
-  viewer: Viewer,
-  id: string | null,
-): void {
-  const managed = findRegionLayer(viewer);
-  const layer: any = managed?.layer;
-  const annotationState = layer?.annotationStates?.states?.find(
-    (s: any) => s.source && !s.source.readonly,
-  );
-  if (!annotationState) return;
-  if (id !== null && typeof layer.selectAnnotation === "function") {
-    layer.selectAnnotation(annotationState, id, false);
-  } else {
-    // Clear this layer's annotation selection.
-    layer.manager.root.selectionState.captureSingleLayerState(
-      layer,
-      (state: any) => {
-        state.annotationId = undefined;
-        return true;
-      },
-      false,
-    );
+export function setRegionSelection(viewer: Viewer, id: string | null): void {
+  for (const managed of listRegionManagedLayers(viewer)) {
+    const layerId = regionIdFromLayerName(managed.name);
+    const displayState = (managed.layer as any)?.annotationDisplayState;
+    if (!displayState?.selectedAnnotation) continue;
+    displayState.selectedAnnotation.value =
+      layerId !== null && layerId === id ? layerId : undefined;
   }
 }
