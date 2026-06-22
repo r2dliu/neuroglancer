@@ -938,23 +938,31 @@ void cullVertex() { gl_Position = vec4(2.0, 0.0, 0.0, 1.0); }
 
   draw(context: AnnotationRenderContext) {
     const { gl } = this;
+    // The box wireframe always draws (every box); only the interactive handles
+    // below are gated to the selected box.
     this.drawEdges(context);
+
+    const dragging = getGizmoDragStartNdc() !== null;
+    const pids = ORIENTED_BBOX_PICK_IDS_PER_INSTANCE;
+    // selectedIndex is 0xffffffff when nothing is hovered/picked; guard against
+    // it so the drag math doesn't turn the sentinel into a garbage instance.
+    const havePick = dragging && context.selectedIndex !== 0xffffffff;
+    const draggedInstance = havePick
+      ? Math.floor(context.selectedIndex / pids)
+      : -1;
+    const draggedPart = havePick ? context.selectedIndex % pids : -1;
+    // Handles render only on the selected box; while dragging, that's the
+    // dragged box and it collapses to just the active part.
+    const selectedInstance = dragging
+      ? draggedInstance
+      : context.selectedInstance;
+    // No selected/dragged box in this chunk: only the wireframe above renders.
+    if (selectedInstance < 0) return;
+
     // Remove depth rendering for gizmo so it is always visible and never occluded
     gl.disable(WebGL2RenderingContext.DEPTH_TEST);
     gl.depthMask(false);
     try {
-      // Handles render only on the selected box (context.selectedInstance);
-      // while dragging, that's the dragged box and it collapses to just the
-      // active part. Every handle draw is issued and the shaders cull per box.
-      const dragging = getGizmoDragStartNdc() !== null;
-      const pids = ORIENTED_BBOX_PICK_IDS_PER_INSTANCE;
-      const draggedInstance = dragging
-        ? Math.floor(context.selectedIndex / pids)
-        : -1;
-      const draggedPart = dragging ? context.selectedIndex % pids : -1;
-      const selectedInstance = dragging
-        ? draggedInstance
-        : context.selectedInstance;
       this.drawRings(context, selectedInstance, draggedInstance, draggedPart);
       this.drawArrow(context, selectedInstance, draggedInstance, draggedPart);
       this.drawCubes(context, selectedInstance, draggedInstance, draggedPart);

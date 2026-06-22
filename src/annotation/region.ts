@@ -322,6 +322,13 @@ export function subscribeRegionChanges(
   };
 }
 
+/**
+ * Reflect layer selection into the gizmo by filling each region layer's native
+ * `selectedAnnotation`: the selected region's box (one box per layer) shows its
+ * handles, all others are cleared. Reuses the upstream render path (the oriented
+ * box render layer reads `selectedAnnotation`); `id` is the selected region's
+ * uuid, or null for none.
+ */
 export function setRegionSelection(viewer: Viewer, id: string | null): void {
   for (const managed of listRegionManagedLayers(viewer)) {
     const layerId = regionIdFromLayerName(managed.name);
