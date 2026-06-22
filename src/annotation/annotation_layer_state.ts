@@ -184,6 +184,11 @@ export class AnnotationDisplayState extends RefCounted {
   hoverState = new AnnotationHoverState(undefined);
   selectedAnnotation = new WatchableValue<string | undefined>(undefined);
   hoverPinned = false;
+  // Not happy with this pattern but fine for the time being; internally neuroglancer
+  // has a built in hover/pick for annotations; we could use a different variable
+  // but for simplicity Ichnaea externally reuses selectedAnnotation, and this variable
+  // acts as a gate to prevent other parts of neuroglancer from mutating on top of it
+  controlledSelection = false;
 }
 
 export class AnnotationLayerState extends RefCounted {

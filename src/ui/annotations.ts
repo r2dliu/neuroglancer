@@ -1615,6 +1615,9 @@ export function UserLayerWithAnnotationsMixin<
       );
 
       const syncSelectedAnnotation = () => {
+        // Ichnaea specific concept; if controlledSelection is set, don't allow
+        // neuroglancer internals to clobber selectedAnnotation's value 
+        if (this.annotationDisplayState.controlledSelection) return;
         const selectionState = this.manager.root.selectionState.value;
         const layerState = selectionState?.layers.find(
           (s) => s.layer === this,

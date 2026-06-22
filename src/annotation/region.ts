@@ -334,6 +334,8 @@ export function setRegionSelection(viewer: Viewer, id: string | null): void {
     const layerId = regionIdFromLayerName(managed.name);
     const displayState = (managed.layer as any)?.annotationDisplayState;
     if (!displayState?.selectedAnnotation) continue;
+    // Region selection is controlled here, not by viewer hover/pick.
+    displayState.controlledSelection = true;
     displayState.selectedAnnotation.value =
       layerId !== null && layerId === id ? layerId : undefined;
   }
