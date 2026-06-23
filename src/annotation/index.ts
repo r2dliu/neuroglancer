@@ -693,11 +693,17 @@ export interface Ellipsoid extends AnnotationBase {
  *   rotation in the 3D display subspace. It is intrinsically 3D, so (unlike the
  *   rank-length geometry vectors) it is not remapped when the coordinate space
  *   is reordered; reordering dimensions of an oriented box is unsupported.
+ * - `visible` is a per-box visibility flag (1 = shown, 0 = hidden). It travels
+ *   with the box and is serialized into the instance buffer so the box-edge /
+ *   cross-section / gizmo shaders can cull a hidden box in-shader (see
+ *   oriented_bounding_box.ts). This lets a single annotation layer hold many
+ *   boxes with independent visibility, with no per-box layer.
  */
 export interface OrientedBoundingBox extends AnnotationBase {
   center: Float32Array;
   extents: Float32Array;
   orientation: Float32Array;
+  visible: number;
   type: AnnotationType.ORIENTED_BOUNDING_BOX;
 }
 
@@ -1040,6 +1046,7 @@ export const annotationTypeHandlers: Record<
         center: Array.from(annotation.center),
         extents: Array.from(annotation.extents),
         orientation: Array.from(annotation.orientation),
+        visible: annotation.visible,
       };
     },
     restoreState: (annotation: OrientedBoundingBox, obj: any, rank: number) => {
@@ -1056,10 +1063,14 @@ export const annotationTypeHandlers: Record<
       annotation.orientation = verifyObjectProperty(obj, "orientation", (x) =>
         parseFixedLengthArray(new Float32Array(4), x, verifyFiniteFloat),
       );
+      // Default to visible: older states (and the common case) omit it.
+      annotation.visible = verifyObjectProperty(obj, "visible", (x) =>
+        x === undefined ? 1 : verifyFiniteFloat(x),
+      );
     },
-    // center + extents (rank each) followed by the orientation quaternion (4
-    // floats, independent of rank).
-    serializedBytes: (rank) => 2 * 4 * rank + 4 * 4,
+    // center + extents (rank each), the orientation quaternion (4 floats,
+    // independent of rank), then the visibility flag (1 float).
+    serializedBytes: (rank) => 2 * 4 * rank + 4 * 4 + 4,
     serialize(
       buffer: DataView,
       offset: number,
@@ -1075,13 +1086,14 @@ export const annotationTypeHandlers: Record<
         annotation.center,
         annotation.extents,
       );
-      serializeFloatVector(
+      offset = serializeFloatVector(
         buffer,
         offset,
         isLittleEndian,
         4,
         annotation.orientation,
       );
+      buffer.setFloat32(offset, annotation.visible, isLittleEndian);
     },
     deserialize: (
       buffer: DataView,
@@ -1101,12 +1113,20 @@ export const annotationTypeHandlers: Record<
         center,
         extents,
       );
-      deserializeFloatVector(buffer, offset, isLittleEndian, 4, orientation);
+      offset = deserializeFloatVector(
+        buffer,
+        offset,
+        isLittleEndian,
+        4,
+        orientation,
+      );
+      const visible = buffer.getFloat32(offset, isLittleEndian);
       return {
         type: AnnotationType.ORIENTED_BOUNDING_BOX,
         center,
         extents,
         orientation,
+        visible,
         id,
         properties: [],
       };

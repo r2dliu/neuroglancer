@@ -38,6 +38,11 @@ export interface GizmoProjection {
   // Per-display-axis world size (uGizmoAxisWorld), so the rotation math can
   // reconstruct the on-screen ring geometry exactly.
   axisWorld: Float32Array;
+  // Orthonormal rotation (column-major 3x3) mapping the render subspace to view
+  // (camera) space. Its transpose maps a camera-space axis back to the subspace,
+  // which the free (edge-drag) trackball uses so its rotation axis follows the
+  // current camera and never reverses.
+  viewRot: Float32Array;
 }
 
 let currentGizmoProjection: GizmoProjection | null = null;
