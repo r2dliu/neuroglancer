@@ -11,11 +11,11 @@
 import type { OrientedBoundingBox } from "#src/annotation/index.js";
 import { AnnotationType } from "#src/annotation/index.js";
 import {
+  getDataBounds,
   getGizmoDragStartNdc,
   getGizmoProjection,
-  getRegionDataBounds,
   setGizmoProjection,
-} from "#src/annotation/region_bounds.js";
+} from "#src/annotation/obb_gizmo_state.js";
 import type {
   AnnotationRenderContext,
   AnnotationShaderGetter,
@@ -238,7 +238,7 @@ const RING_SEGMENTS = 48;
 const N_RING_LINES = 3 * RING_SEGMENTS;
 
 // Alpha multiplier applied to the non-selected boxes' wireframe / cross-section
-// while a region is selected, so the selected box stands out. Matches the
+// while a box is selected, so the selected box stands out. Matches the
 // segmentation layer's focus dim (the app sets `focusDim = 0.6` for instances).
 const NOT_SELECTED_ALPHA = 0.6;
 // Hover highlight strength: how far the hovered box's color is mixed toward white.
@@ -406,7 +406,7 @@ float ng_lineWidth;
 class PerspectiveViewRenderHelper extends RenderHelper {
   // Reused variables
   private scratchViewModelMatrix = mat4.create();
-  private scratchRegionCenter = vec3.create();
+  private scratchBoxCenter = vec3.create();
   private scratchAxisWorld = vec3.create();
 
   // Unit-arrow geometry (positions + normals) for the single handle.
@@ -455,7 +455,7 @@ vec3 endpointA = orientedCornerPosition(aBoxCornerOffset1);
 vec3 endpointB = orientedCornerPosition(aBoxCornerOffset2.xyz);
 ng_lineWidth = 1.0;
 ${this.invokeUserMain}
-vColor = vec4(uColor, 1.0);  // region box: layer annotation color (yellow default)
+vColor = vec4(uColor, 1.0);  // box: layer annotation color (yellow default)
 // Whole-box hover highlight: brighten the entire wireframe when any part of
 // this box is the hovered annotation (uSelectedIndex encodes hovered
 // instance*pids + part; compare just the instance).
@@ -754,7 +754,7 @@ bool gizmoPartHidden(int thisPart) {
 
     // Perspective depth (clip.w) of the box center: handles are scaled by this
     // so they keep a constant on-screen size regardless of distance.
-    const center = this.regionCenterInSubspace(context, this.scratchRegionCenter);
+    const center = this.boxCenterInSubspace(context, this.scratchBoxCenter);
     const clipW =
       Math.abs(
         mvp[3] * center[0] + mvp[7] * center[1] + mvp[11] * center[2] + mvp[15],
@@ -794,11 +794,11 @@ bool gizmoPartHidden(int thisPart) {
     });
   }
 
-  private regionCenterInSubspace(
+  private boxCenterInSubspace(
     context: AnnotationRenderContext,
     out: vec3,
   ): vec3 {
-    const bounds = getRegionDataBounds();
+    const bounds = getDataBounds();
     const sm = context.subspaceMatrix;
     vec3.set(out, 0, 0, 0);
     for (let i = 0; i < this.rank; ++i) {
@@ -988,7 +988,7 @@ bool gizmoPartHidden(int thisPart) {
     draggedInstance: number,
   ) {
     const { gl } = this;
-    const bounds = getRegionDataBounds();
+    const bounds = getDataBounds();
     let lo = -1e6;
     let hi = 1e6;
     if (bounds) {
@@ -1139,7 +1139,7 @@ vec3 p1 = orientedCrossSectionVertex(vertexIndex1);
 vec3 p2 = orientedCrossSectionVertex(vertexIndex2);
 ng_lineWidth = 1.0;
 ${this.invokeUserMain}
-vColor = vec4(uColor, 1.0);  // region box: layer annotation color (yellow default)
+vColor = vec4(uColor, 1.0);  // box: layer annotation color (yellow default)
 // Match the 3-D wireframe: brighten the hovered box, dim the others while one is
 // selected, and keep a hovered box at full alpha.
 uint pids = ${ORIENTED_BBOX_PICK_IDS_PER_INSTANCE}u;
@@ -1154,7 +1154,7 @@ if (uSelectedInstance >= 0 && gl_InstanceID != uSelectedInstance && !hovered) {
 emitLine(uModelViewProjection * vec4(p1, 1.0),
          uModelViewProjection * vec4(p2, 1.0),
          ng_lineWidth);
-// Region gizmo editing is 3-D only: emit a background pick ID so the slice
+// Box gizmo editing is 3-D only: emit a background pick ID so the slice
 // cross-section is purely visual (not hoverable, selectable, or draggable in 2-D).
 vPickID = 0u;
 `);
@@ -1422,7 +1422,7 @@ function freeRotationDelta(
 }
 
 function clampBoxToDataBounds(center: Float32Array, extents: Float32Array) {
-  const bounds = getRegionDataBounds();
+  const bounds = getDataBounds();
   if (bounds === null) return;
   const rank = Math.min(center.length, bounds.lower.length);
   for (let i = 0; i < rank; ++i) {

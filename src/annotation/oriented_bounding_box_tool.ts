@@ -1,11 +1,11 @@
 /**
- * @file Tool for editing oriented bounding box (region) gizmos in the 3-D view.
+ * @file Tool for editing oriented bounding box gizmos in the 3-D view.
  *
  */
 
 import { AnnotationType } from "#src/annotation/index.js";
+import { captureDataBounds } from "#src/annotation/obb_gizmo_state.js";
 import { isInteractiveGizmoPart } from "#src/annotation/oriented_bounding_box.js";
-import { captureRegionDataBounds } from "#src/annotation/region.js";
 import type { ToolActivation } from "#src/ui/tool.js";
 import { registerTool, Tool } from "#src/ui/tool.js";
 import { EventActionMap } from "#src/util/event_action_map.js";
@@ -19,7 +19,7 @@ export class OrientedBoundingBoxTool extends Tool<Viewer> {
   }
 
   activate(activation: ToolActivation<this>) {
-    captureRegionDataBounds(this.viewer);
+    captureDataBounds(this.viewer);
 
     // Conditional left click control; only functions when clicking on a gizmo handle
     const { mouseState } = this.viewer;
@@ -40,7 +40,7 @@ export class OrientedBoundingBoxTool extends Tool<Viewer> {
   }
 
   get description() {
-    return "edit region box";
+    return "edit bounding box";
   }
 
   toJSON() {

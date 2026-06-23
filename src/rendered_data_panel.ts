@@ -18,7 +18,7 @@ import "#src/rendered_data_panel.css";
 import "#src/noselect.css";
 
 import type { Annotation } from "#src/annotation/index.js";
-import { setGizmoDragStartNdc } from "#src/annotation/region_bounds.js";
+import { setGizmoDragStartNdc } from "#src/annotation/obb_gizmo_state.js";
 import { getAnnotationTypeRenderHandler } from "#src/annotation/type_handler.js";
 import type { DisplayContext } from "#src/display_context.js";
 import { RenderedPanel } from "#src/display_context.js";
@@ -501,7 +501,7 @@ export abstract class RenderedDataPanel extends RenderedPanel {
     );
 
     // Show a "move" cursor while hovering (or dragging) a movable annotation
-    // handle, such as a region gizmo handle, so it reads as draggable.
+    // handle, such as a box gizmo handle, so it reads as draggable.
     this.registerDisposer(
       this.viewer.mouseState.changed.add(() => {
         const mouseState = this.viewer.mouseState;
