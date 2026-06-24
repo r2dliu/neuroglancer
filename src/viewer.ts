@@ -260,6 +260,7 @@ class TrackableViewerState extends CompoundTrackable {
     this.add("showDefaultAnnotations", viewer.showDefaultAnnotations);
 
     this.add("showSlices", viewer.showPerspectiveSliceViews);
+    this.add("show3DBox", viewer.show3DBox);
     this.add(
       "hideCrossSectionBackground3D",
       viewer.hideCrossSectionBackground3D,
@@ -432,6 +433,7 @@ export class Viewer extends RefCounted implements ViewerState {
   enableAdaptiveDownsampling = new TrackableBoolean(true, true);
   showScaleBar = new TrackableBoolean(true, true);
   showPerspectiveSliceViews = new TrackableBoolean(true, true);
+  show3DBox = new TrackableBoolean(false, false);
   hideCrossSectionBackground3D = new TrackableBoolean(false, false);
   visibleLayerRoles = allRenderLayerRoles();
   showDefaultAnnotations = new TrackableBoolean(true, true);
