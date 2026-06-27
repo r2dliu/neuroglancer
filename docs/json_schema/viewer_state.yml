@@ -224,6 +224,50 @@ definitions:
         title: "Side-by-side layout with `.xz` and `.3d` panels."
       - const: "yz-3d"
         title: "Side-by-side layout with `.yz` and `.3d` panels."
+  SectionRendering:
+    $id: SectionRendering
+    title: "Specifies projection rendering options for a cross-section."
+    type: object
+    properties:
+      voxelRange:
+        type: number
+        minimum: 0
+        default: 0
+        title: |
+          Half range in voxels, relative to the section plane, over which to
+          render a projection.
+      renderingMode:
+        type: string
+        enum:
+          - "min"
+          - "max"
+        default: "max"
+        title: "Projection rendering mode."
+      interactive:
+        type: boolean
+        default: false
+        title: |
+          Indicates whether the section can be manipulated interactively in 3-d
+          projection views.
+  CrossSection:
+    $id: CrossSection
+    title: "Specifies a custom cross-section view."
+    allOf:
+      - $ref: SectionRendering
+      - type: object
+        properties:
+          width:
+            type: integer
+            default: 1000
+          height:
+            type: integer
+            default: 1000
+          position:
+            title: "Linked cross-section position."
+          orientation:
+            title: "Linked cross-section orientation."
+          scale:
+            title: "Linked cross-section scale."
   DataPanelLayout:
     $id: DataPanelLayout
     title: "Describes the :ref:`data views<data-view>` to display."
@@ -238,6 +282,23 @@ definitions:
           Indicates whether the :ref:`projection views<projection-view>`, if
           present, uses orthographic rather than perspective projection.
         default: false
+      crossSections:
+        type: object
+        additionalProperties:
+          $ref: CrossSection
+        title: "Custom cross-sections to show in 3-d projection views."
+      viewSections:
+        type: object
+        propertyNames:
+          enum:
+            - "xy"
+            - "xz"
+            - "yz"
+        additionalProperties:
+          $ref: SectionRendering
+        title: |
+          Rendering and interaction options for built-in `.xy`, `.xz`, and
+          `.yz` sections.
     required:
       - "type"
   LayerGroupViewer:

@@ -31,7 +31,10 @@ import type {
   NavigationState,
 } from "#src/navigation_state.js";
 import type { PerspectiveViewerState } from "#src/perspective_view/panel.js";
-import { updateProjectionParametersFromInverseViewAndProjection } from "#src/projection_parameters.js";
+import {
+  projectionParametersEqual,
+  updateProjectionParametersFromInverseViewAndProjection,
+} from "#src/projection_parameters.js";
 import type {
   ChunkDisplayTransformParameters,
   ChunkTransformParameters,
@@ -42,6 +45,8 @@ import {
   getChunkTransformParameters,
   getLayerDisplayDimensionMapping,
 } from "#src/render_coordinate_transform.js";
+import type { SectionRenderingOptions } from "#src/section_rendering.js";
+import { defaultSectionRenderingOptionsWatchable } from "#src/section_rendering.js";
 import {
   DerivedProjectionParameters,
   SharedProjectionParameters,
@@ -108,6 +113,17 @@ class FrontendSliceViewBase extends SliceViewBase<
   FrontendTransformedSource
 > {}
 const Base = withSharedVisibility(FrontendSliceViewBase);
+
+function sliceViewProjectionParametersEqual(
+  a: SliceViewProjectionParameters,
+  b: SliceViewProjectionParameters,
+) {
+  return (
+    projectionParametersEqual(a, b) &&
+    a.voxelRange === b.voxelRange &&
+    a.renderingMode === b.renderingMode
+  );
+}
 
 export interface FrontendTransformedSource<
   RLayer extends SliceViewRenderLayer = SliceViewRenderLayer,
@@ -225,12 +241,17 @@ export class SliceView extends Base {
     public layerManager: LayerManager,
     public navigationState: Owned<NavigationState>,
     public wireFrame: WatchableValueInterface<boolean>,
+    public sectionRendering: WatchableValueInterface<SectionRenderingOptions> = defaultSectionRenderingOptionsWatchable,
   ) {
     super(
       new DerivedProjectionParameters({
         parametersConstructor: SliceViewProjectionParameters,
         navigationState,
+        isEqual: sliceViewProjectionParametersEqual,
         update: (out, navigationState) => {
+          const sectionRenderingOptions = sectionRendering.value;
+          out.voxelRange = sectionRenderingOptions.voxelRange;
+          out.renderingMode = sectionRenderingOptions.renderingMode;
           const { invViewMatrix, centerDataPosition } = out;
           navigationState.toMat4(invViewMatrix);
           const { canonicalVoxelFactors, voxelPhysicalScales } =
@@ -322,7 +343,12 @@ export class SliceView extends Base {
       }),
     );
 
-    this.wireFrame.changed.add(this.viewChanged.dispatch);
+    this.registerDisposer(
+      this.wireFrame.changed.add(this.viewChanged.dispatch),
+    );
+    this.registerDisposer(
+      this.sectionRendering.changed.add(this.projectionParameters.update),
+    );
 
     this.viewChanged.add(() => {
       this.renderingStale = true;

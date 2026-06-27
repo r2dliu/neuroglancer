@@ -47,6 +47,7 @@ import {
   DerivedProjectionParameters,
   SharedProjectionParameters,
 } from "#src/renderlayer.js";
+import { SectionRenderingState } from "#src/section_rendering.js";
 import type { SliceView } from "#src/sliceview/frontend.js";
 import { SliceViewRenderHelper } from "#src/sliceview/frontend.js";
 import type { TrackableBoolean } from "#src/trackable_boolean.js";
@@ -182,6 +183,9 @@ void emit(vec4 color, float depth, float intensity, highp uint pickId) {
 }
 
 const tempVec3 = vec3.create();
+const tempVec3b = vec3.create();
+const tempVec3c = vec3.create();
+const tempVec3d = vec3.create();
 const tempVec4 = vec4.create();
 const tempMat4 = mat4.create();
 
@@ -199,6 +203,40 @@ function findBrushStrokeLayers(
     }
   }
   return result;
+}
+
+type SectionWidgetPart = "box" | "shaft" | "head";
+
+interface ActiveSectionWidget {
+  sliceView: SliceView;
+  position: vec3;
+  hoverPart: SectionWidgetPart | undefined;
+  dragPart: SectionWidgetPart | undefined;
+}
+
+function pointSegmentDistance(
+  px: number,
+  py: number,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+) {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const lengthSquared = dx * dx + dy * dy;
+  if (lengthSquared === 0) {
+    return Math.hypot(px - ax, py - ay);
+  }
+  const t = Math.max(
+    0,
+    Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lengthSquared),
+  );
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
+function makeSvgElement<K extends keyof SVGElementTagNameMap>(tagName: K) {
+  return document.createElementNS("http://www.w3.org/2000/svg", tagName);
 }
 
 // Copy the OIT values to the main color buffer
@@ -289,6 +327,11 @@ class PerspectiveViewState extends PerspectiveViewStateBase {
 export class PerspectivePanel extends RenderedDataPanel {
   declare viewer: PerspectiveViewerState;
   sliceViewRenderHelper: SliceViewRenderHelper;
+  private sectionWidgetOverlay = document.createElementNS(
+    "http://www.w3.org/2000/svg",
+    "svg",
+  );
+  private activeSectionWidget: ActiveSectionWidget | undefined;
 
   projectionParameters: Owned<DerivedProjectionParameters>;
 
@@ -335,6 +378,18 @@ export class PerspectivePanel extends RenderedDataPanel {
       (context, _unconditional, sliceView) => {
         context.registerDisposer(sliceView);
         context.registerDisposer(sliceView.visibility.add(this.visibility));
+        context.registerDisposer(
+          sliceView.sectionRendering.changed.add(() => {
+            if (
+              this.activeSectionWidget?.sliceView === sliceView &&
+              !sliceView.sectionRendering.value.interactive
+            ) {
+              this.activeSectionWidget = undefined;
+            }
+            this.updateSectionWidgetOverlay();
+            this.scheduleRedraw();
+          }),
+        );
       },
     ),
   );
@@ -415,6 +470,448 @@ export class PerspectivePanel extends RenderedDataPanel {
     this.sharedObject.sharedProjectionParameters.flush();
   }
 
+  private getPanelMousePosition(event: PointerEvent | MouseEvent) {
+    const rect = this.element.getBoundingClientRect();
+    return {
+      x: ((event.clientX - rect.left) / rect.width) * this.element.clientWidth,
+      y: ((event.clientY - rect.top) / rect.height) * this.element.clientHeight,
+    };
+  }
+
+  private projectPointToOverlay(out: vec3, point: vec3) {
+    const projected = vec3.transformMat4(
+      out,
+      point,
+      this.projectionParameters.value.viewProjectionMat,
+    );
+    if (
+      !Number.isFinite(projected[0]) ||
+      !Number.isFinite(projected[1]) ||
+      !Number.isFinite(projected[2])
+    ) {
+      return undefined;
+    }
+    out[0] = (projected[0] * 0.5 + 0.5) * this.element.clientWidth;
+    out[1] = (0.5 - projected[1] * 0.5) * this.element.clientHeight;
+    return out;
+  }
+
+  private getSectionWidgetScreenGeometry() {
+    const active = this.activeSectionWidget;
+    if (active === undefined) {
+      return undefined;
+    }
+    const center = this.projectPointToOverlay(tempVec3, active.position);
+    if (center === undefined) {
+      return undefined;
+    }
+    const { projectionParameters } = active.sliceView;
+    const sliceProjectionParameters = projectionParameters.value;
+    const normal =
+      sliceProjectionParameters.viewportNormalInCanonicalCoordinates;
+    const normalPoint = vec3.scaleAndAdd(
+      tempVec3b,
+      active.position,
+      normal,
+      Math.max(1, sliceProjectionParameters.pixelSize),
+    );
+    const normalPointProjected = this.projectPointToOverlay(
+      tempVec3b,
+      normalPoint,
+    );
+    let dirX = 0;
+    let dirY = -1;
+    if (normalPointProjected !== undefined) {
+      dirX = normalPointProjected[0] - center[0];
+      dirY = normalPointProjected[1] - center[1];
+      const dirLength = Math.hypot(dirX, dirY);
+      if (dirLength > 1e-3) {
+        dirX /= dirLength;
+        dirY /= dirLength;
+      } else {
+        dirX = 0;
+        dirY = -1;
+      }
+    }
+    const arrowLength = 46;
+    const boxRadius = 8;
+    return {
+      centerX: center[0],
+      centerY: center[1],
+      shaftX: center[0] + dirX * (boxRadius + 3),
+      shaftY: center[1] + dirY * (boxRadius + 3),
+      headX: center[0] + dirX * arrowLength,
+      headY: center[1] + dirY * arrowLength,
+      dirX,
+      dirY,
+      boxRadius,
+    };
+  }
+
+  private pickSectionWidgetPart(event: PointerEvent) {
+    const geometry = this.getSectionWidgetScreenGeometry();
+    if (geometry === undefined) {
+      return undefined;
+    }
+    const { x, y } = this.getPanelMousePosition(event);
+    const { centerX, centerY, shaftX, shaftY, headX, headY, boxRadius } =
+      geometry;
+    if (Math.hypot(x - headX, y - headY) <= 11) {
+      return "head" as const;
+    }
+    if (
+      Math.abs(x - centerX) <= boxRadius &&
+      Math.abs(y - centerY) <= boxRadius
+    ) {
+      return "box" as const;
+    }
+    if (pointSegmentDistance(x, y, shaftX, shaftY, headX, headY) <= 6) {
+      return "shaft" as const;
+    }
+    return undefined;
+  }
+
+  private stopSectionWidgetEvent(event: PointerEvent) {
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+  }
+
+  private getSectionWidgetFixedPoint(active: ActiveSectionWidget) {
+    const fixedPoint = Float32Array.from(
+      active.sliceView.navigationState.position.value,
+    );
+    const {
+      displayDimensions: {
+        value: { displayDimensionIndices, displayRank },
+      },
+    } = active.sliceView.navigationState.pose;
+    for (let i = 0; i < displayRank; ++i) {
+      fixedPoint[displayDimensionIndices[i]] = active.position[i];
+    }
+    return fixedPoint;
+  }
+
+  private handleSectionWidgetPointerMove = (event: PointerEvent) => {
+    const active = this.activeSectionWidget;
+    if (active === undefined || active.dragPart !== undefined) {
+      return;
+    }
+    const hoverPart = this.pickSectionWidgetPart(event);
+    if (hoverPart !== active.hoverPart) {
+      active.hoverPart = hoverPart;
+      this.updateSectionWidgetOverlay();
+    }
+  };
+
+  private handleSectionWidgetPointerDown = (event: PointerEvent) => {
+    if (event.button !== 0) {
+      return;
+    }
+    const widgetPart = this.pickSectionWidgetPart(event);
+    if (widgetPart !== undefined) {
+      this.stopSectionWidgetEvent(event);
+      this.startSectionWidgetDrag(event, widgetPart);
+      return;
+    }
+    const hit = this.findInteractiveSectionAt(event);
+    if (hit === undefined) {
+      return;
+    }
+    this.stopSectionWidgetEvent(event);
+    const active = this.activeSectionWidget;
+    if (active?.sliceView === hit.sliceView) {
+      this.activeSectionWidget = undefined;
+    } else {
+      this.activeSectionWidget = {
+        sliceView: hit.sliceView,
+        position: vec3.clone(hit.position),
+        hoverPart: undefined,
+        dragPart: undefined,
+      };
+    }
+    this.updateSectionWidgetOverlay();
+    this.scheduleRedraw();
+  };
+
+  private startSectionWidgetDrag(
+    initialEvent: PointerEvent,
+    part: SectionWidgetPart,
+  ) {
+    const active = this.activeSectionWidget;
+    if (active === undefined) {
+      return;
+    }
+    const sectionRendering = active.sliceView.sectionRendering;
+    if (!(sectionRendering instanceof SectionRenderingState)) {
+      return;
+    }
+    active.dragPart = part;
+    active.hoverPart = part;
+    const fixedPoint = this.getSectionWidgetFixedPoint(active);
+    startRelativeMouseDrag(
+      initialEvent,
+      (_event, deltaX, deltaY) => {
+        this.context.flagContinuousCameraMotion();
+        if (part === "box") {
+          sectionRendering.voxelRange.value = Math.max(
+            0,
+            sectionRendering.voxelRange.value + (deltaY - deltaX) * 0.25,
+          );
+        } else if (part === "shaft") {
+          const projectionParameters =
+            active.sliceView.projectionParameters.value;
+          const normal =
+            projectionParameters.viewportNormalInCanonicalCoordinates;
+          const amount =
+            -(deltaY + deltaX) *
+            Math.max(1, projectionParameters.pixelSize || 1);
+          active.sliceView.navigationState.pose.updateDisplayPosition((pos) => {
+            vec3.scaleAndAdd(pos, pos, normal, amount);
+          });
+          vec3.scaleAndAdd(active.position, active.position, normal, amount);
+        } else {
+          const {
+            pose: { orientation },
+          } = active.sliceView.navigationState;
+          const xAxis = vec3.transformQuat(
+            tempVec3,
+            kAxes[0],
+            orientation.orientation,
+          );
+          const yAxis = vec3.transformQuat(
+            tempVec3b,
+            kAxes[1],
+            orientation.orientation,
+          );
+          active.sliceView.navigationState.pose.rotateAbsolute(
+            yAxis,
+            (deltaX * Math.PI) / 360,
+            fixedPoint,
+          );
+          active.sliceView.navigationState.pose.rotateAbsolute(
+            xAxis,
+            (-deltaY * Math.PI) / 360,
+            fixedPoint,
+          );
+        }
+        this.updateSectionWidgetOverlay();
+      },
+      () => {
+        if (this.activeSectionWidget === active) {
+          active.dragPart = undefined;
+          active.hoverPart = part;
+          if (part === "box" && sectionRendering.voxelRange.value < 1e-6) {
+            sectionRendering.voxelRange.value = 0;
+          }
+          this.updateSectionWidgetOverlay();
+        }
+      },
+    );
+  }
+
+  private findInteractiveSectionAt(event: PointerEvent) {
+    const showSliceViews = this.viewer.showSliceViews.value;
+    let bestHit:
+      | {
+          sliceView: SliceView;
+          position: vec3;
+          distance: number;
+        }
+      | undefined;
+    for (const [sliceView, unconditional] of this.sliceViews) {
+      if (!unconditional && !showSliceViews) {
+        continue;
+      }
+      if (!sliceView.sectionRendering.value.interactive || !sliceView.valid) {
+        continue;
+      }
+      const hit = this.intersectPointerWithSliceView(event, sliceView);
+      if (
+        hit !== undefined &&
+        (bestHit === undefined || hit.distance < bestHit.distance)
+      ) {
+        bestHit = hit;
+      }
+    }
+    return bestHit;
+  }
+
+  private intersectPointerWithSliceView(
+    event: PointerEvent,
+    sliceView: SliceView,
+  ) {
+    const { x, y } = this.getPanelMousePosition(event);
+    const width = Math.max(1, this.element.clientWidth);
+    const height = Math.max(1, this.element.clientHeight);
+    const nearPoint = vec3.set(
+      tempVec3,
+      (2 * x) / width - 1,
+      1 - (2 * y) / height,
+      -1,
+    );
+    const farPoint = vec3.set(tempVec3b, nearPoint[0], nearPoint[1], 1);
+    const { invViewProjectionMat } = this.projectionParameters.value;
+    vec3.transformMat4(nearPoint, nearPoint, invViewProjectionMat);
+    vec3.transformMat4(farPoint, farPoint, invViewProjectionMat);
+    const rayDirection = vec3.subtract(tempVec3c, farPoint, nearPoint);
+    const sliceProjectionParameters = sliceView.projectionParameters.value;
+    const normal =
+      sliceProjectionParameters.viewportNormalInCanonicalCoordinates;
+    const denominator = vec3.dot(rayDirection, normal);
+    if (Math.abs(denominator) < 1e-6) {
+      return undefined;
+    }
+    const t =
+      vec3.dot(
+        vec3.subtract(
+          tempVec3d,
+          sliceProjectionParameters.centerDataPosition,
+          nearPoint,
+        ),
+        normal,
+      ) / denominator;
+    if (t < 0 || t > 1) {
+      return undefined;
+    }
+    const position = vec3.scaleAndAdd(
+      vec3.create(),
+      nearPoint,
+      rayDirection,
+      t,
+    );
+    const sectionPosition = vec3.transformMat4(
+      tempVec3,
+      position,
+      sliceProjectionParameters.viewMatrix,
+    );
+    if (
+      Math.abs(sectionPosition[0]) > sliceProjectionParameters.width / 2 ||
+      Math.abs(sectionPosition[1]) > sliceProjectionParameters.height / 2
+    ) {
+      return undefined;
+    }
+    return { sliceView, position, distance: t };
+  }
+
+  private updateSectionWidgetOverlay() {
+    const overlay = this.sectionWidgetOverlay;
+    while (overlay.firstChild !== null) {
+      overlay.removeChild(overlay.firstChild);
+    }
+    const active = this.activeSectionWidget;
+    if (active !== undefined && !this.sliceViews.has(active.sliceView)) {
+      this.activeSectionWidget = undefined;
+      return;
+    }
+    if (
+      active === undefined ||
+      !active.sliceView.sectionRendering.value.interactive
+    ) {
+      return;
+    }
+    const geometry = this.getSectionWidgetScreenGeometry();
+    if (geometry === undefined) {
+      return;
+    }
+    const width = Math.max(1, this.element.clientWidth);
+    const height = Math.max(1, this.element.clientHeight);
+    overlay.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    const {
+      centerX,
+      centerY,
+      shaftX,
+      shaftY,
+      headX,
+      headY,
+      dirX,
+      dirY,
+      boxRadius,
+    } = geometry;
+    const blue = "#2f8cff";
+    const highlight = "#9dccff";
+    const highlightedPart = active.dragPart ?? active.hoverPart;
+    const appendLine = (
+      x1: number,
+      y1: number,
+      x2: number,
+      y2: number,
+      stroke: string,
+      width: number,
+      dashArray?: string,
+    ) => {
+      const line = makeSvgElement("line");
+      line.setAttribute("x1", `${x1}`);
+      line.setAttribute("y1", `${y1}`);
+      line.setAttribute("x2", `${x2}`);
+      line.setAttribute("y2", `${y2}`);
+      line.setAttribute("stroke", stroke);
+      line.setAttribute("stroke-width", `${width}`);
+      line.setAttribute("stroke-linecap", "round");
+      if (dashArray !== undefined) {
+        line.setAttribute("stroke-dasharray", dashArray);
+      }
+      overlay.appendChild(line);
+    };
+    if (highlightedPart === "box") {
+      const voxelRange = active.sliceView.sectionRendering.value.voxelRange;
+      const length = Math.max(16, Math.min(140, voxelRange * 4));
+      const rangeX1 = centerX - dirX * length;
+      const rangeY1 = centerY - dirY * length;
+      const rangeX2 = centerX + dirX * length;
+      const rangeY2 = centerY + dirY * length;
+      appendLine(rangeX1, rangeY1, rangeX2, rangeY2, highlight, 1.5, "4 3");
+      for (const [x, y] of [
+        [rangeX1, rangeY1],
+        [rangeX2, rangeY2],
+      ]) {
+        const rangeRect = makeSvgElement("rect");
+        rangeRect.setAttribute("x", `${x - boxRadius}`);
+        rangeRect.setAttribute("y", `${y - boxRadius}`);
+        rangeRect.setAttribute("width", `${boxRadius * 2}`);
+        rangeRect.setAttribute("height", `${boxRadius * 2}`);
+        rangeRect.setAttribute("fill", "none");
+        rangeRect.setAttribute("stroke", highlight);
+        rangeRect.setAttribute("stroke-width", "1.5");
+        overlay.appendChild(rangeRect);
+      }
+    }
+    appendLine(
+      shaftX,
+      shaftY,
+      headX,
+      headY,
+      highlightedPart === "shaft" ? highlight : blue,
+      highlightedPart === "shaft" ? 5 : 3,
+    );
+    const perpX = -dirY;
+    const perpY = dirX;
+    const arrowHead = makeSvgElement("polygon");
+    arrowHead.setAttribute(
+      "points",
+      [
+        `${headX},${headY}`,
+        `${headX - dirX * 14 + perpX * 7},${headY - dirY * 14 + perpY * 7}`,
+        `${headX - dirX * 14 - perpX * 7},${headY - dirY * 14 - perpY * 7}`,
+      ].join(" "),
+    );
+    arrowHead.setAttribute(
+      "fill",
+      highlightedPart === "head" ? highlight : blue,
+    );
+    overlay.appendChild(arrowHead);
+    const box = makeSvgElement("rect");
+    box.setAttribute("x", `${centerX - boxRadius}`);
+    box.setAttribute("y", `${centerY - boxRadius}`);
+    box.setAttribute("width", `${boxRadius * 2}`);
+    box.setAttribute("height", `${boxRadius * 2}`);
+    box.setAttribute("fill", highlightedPart === "box" ? highlight : blue);
+    box.setAttribute("fill-opacity", highlightedPart === "box" ? "0.9" : "0.7");
+    box.setAttribute("stroke", highlightedPart === "box" ? highlight : blue);
+    box.setAttribute("stroke-width", highlightedPart === "box" ? "3" : "1.5");
+    overlay.appendChild(box);
+  }
+
   constructor(
     context: DisplayContext,
     element: HTMLElement,
@@ -429,6 +926,29 @@ export class PerspectivePanel extends RenderedDataPanel {
         true /*perspectivePanel*/,
       ),
     );
+    const { sectionWidgetOverlay } = this;
+    sectionWidgetOverlay.classList.add("perspective-panel-section-widget");
+    this.element.appendChild(sectionWidgetOverlay);
+    this.registerDisposer(() => sectionWidgetOverlay.remove());
+    this.registerEventListener(
+      element,
+      "pointerdown",
+      this.handleSectionWidgetPointerDown,
+      { capture: true },
+    );
+    this.registerEventListener(
+      element,
+      "pointermove",
+      this.handleSectionWidgetPointerMove,
+      { capture: true },
+    );
+    this.registerEventListener(element, "mouseleave", () => {
+      const active = this.activeSectionWidget;
+      if (active !== undefined && active.hoverPart !== undefined) {
+        active.hoverPart = undefined;
+        this.updateSectionWidgetOverlay();
+      }
+    });
 
     this.projectionParameters = this.registerDisposer(
       new DerivedProjectionParameters({
@@ -1448,6 +1968,7 @@ export class PerspectivePanel extends RenderedDataPanel {
     this.offscreenCopyHelper.draw(
       this.offscreenFramebuffer.colorBuffers[OffscreenTextures.COLOR].texture,
     );
+    this.updateSectionWidgetOverlay();
     return true;
   }
 
