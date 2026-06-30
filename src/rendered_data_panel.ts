@@ -305,7 +305,7 @@ export abstract class RenderedDataPanel extends RenderedPanel {
         if (
           block ||
           gl.getSyncParameter(sync, WebGL2RenderingContext.SYNC_STATUS) ===
-            WebGL2RenderingContext.SIGNALED
+          WebGL2RenderingContext.SIGNALED
         ) {
           this.completePickInternal(pickRequest);
           cancelRemaining = true;
@@ -668,16 +668,6 @@ export abstract class RenderedDataPanel extends RenderedPanel {
           selectedAnnotationId !== undefined
         ) {
           e.stopPropagation();
-          // Record where the drag began in NDC so gizmo rotation can anchor its
-          // tangent at the clicked point.
-          {
-            const rect = element.getBoundingClientRect();
-            const ev = e.detail;
-            setGizmoDragStartNdc({
-              x: ((ev.clientX - rect.left) / rect.width) * 2 - 1,
-              y: 1 - ((ev.clientY - rect.top) / rect.height) * 2,
-            });
-          }
           const annotationRef =
             annotationLayer.source.getReference(selectedAnnotationId)!;
           const ann = <Annotation>annotationRef.value;
@@ -708,6 +698,11 @@ export abstract class RenderedDataPanel extends RenderedPanel {
             };
             displayState.hoverPinned = true;
             displayState.hoverState.changed.dispatch();
+            const rect = element.getBoundingClientRect();
+            setGizmoDragStartNdc({
+              x: ((e.detail.clientX - rect.left) / rect.width) * 2 - 1,
+              y: 1 - ((e.detail.clientY - rect.top) / rect.height) * 2,
+            });
             startRelativeMouseDrag(
               e.detail,
               (_event, deltaX, deltaY) => {
