@@ -798,9 +798,17 @@ bool gizmoPartHidden(int thisPart) {
     context: AnnotationRenderContext,
     out: vec3,
   ): vec3 {
-    const bounds = getDataBounds();
     const sm = context.subspaceMatrix;
     vec3.set(out, 0, 0, 0);
+    const selectedCenter = this.selectedBoxCenter(context);
+    if (selectedCenter !== null) {
+      for (let i = 0; i < this.rank; ++i) {
+        const ci = selectedCenter[i] ?? 0;
+        for (let j = 0; j < 3; ++j) out[j] += sm[i * 3 + j] * ci;
+      }
+      return out;
+    }
+    const bounds = getDataBounds();
     for (let i = 0; i < this.rank; ++i) {
       const lo = bounds?.lower[i];
       const hi = bounds?.upper[i];
@@ -816,11 +824,22 @@ bool gizmoPartHidden(int thisPart) {
     return out;
   }
 
+  private selectedBoxCenter(
+    context: AnnotationRenderContext,
+  ): ArrayLike<number> | null {
+    const sel =
+      context.annotationLayer.state.displayState.selectedAnnotation.value;
+    if (sel === undefined) return null;
+    const source = context.annotationLayer.state.source as unknown as {
+      get?: (id: string) => { center?: ArrayLike<number> } | undefined;
+    };
+    const ann = typeof source.get === "function" ? source.get(sel) : undefined;
+    return ann?.center ?? null;
+  }
+
   drawEdges(context: AnnotationRenderContext) {
     const { gl } = this;
     this.enable(this.edgeShaderGetter, context, (shader) => {
-      // The React-selected box (drag-aware not needed here: edges of the
-      // selected box stay interactive while dragging it).
       gl.uniform1i(shader.uniform("uSelectedInstance"), context.selectedInstance);
       const aBoxCornerOffset1 = shader.attribute("aBoxCornerOffset1");
       const aBoxCornerOffset2 = shader.attribute("aBoxCornerOffset2");
