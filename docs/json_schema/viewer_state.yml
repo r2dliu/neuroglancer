@@ -21,6 +21,14 @@ properties:
   crossSectionScale:
     $ref: DisplayScale
     title: "Default display scale (zoom level) for cross-section views."
+  crossSectionVolumeRenderingMode:
+    $ref: CrossSectionVolumeRenderingMode
+    title: "Default min/max projection mode for cross-section slab rendering."
+    default: "max"
+  crossSectionVoxelRange:
+    $ref: VoxelRange
+    title: "Default number of voxels sampled on each side of a cross-section for slab rendering."
+    default: 0
   crossSectionDepth:
     $ref: DepthRange
     title: "Default depth-of-field for cross-section views."
@@ -154,6 +162,30 @@ definitions:
     title: "Specifies the depth-of-field for cross section or 3d projection views."
     type: number
     exclusiveMinimum: 0
+  VoxelRange:
+    $id: VoxelRange
+    title: "Specifies a non-negative voxel range."
+    type: number
+    minimum: 0
+  CrossSectionVolumeRenderingMode:
+    $id: CrossSectionVolumeRenderingMode
+    title: "Specifies the reduction mode for cross-section slab rendering."
+    oneOf:
+      - const: "max"
+      - const: "min"
+  LinkedVoxelRange:
+    $id: LinkedVoxelRange
+    title: "Specifies a voxel range linked to the parent cross-section voxel range."
+    type: object
+    properties:
+      link:
+        oneOf:
+          - const: "linked"
+          - const: "unlinked"
+          - const: "relative"
+        default: "linked"
+      value:
+        $ref: VoxelRange
   HierarchicalLayout:
     $id: HierarchicalLayout
     title: "Specifies a hierarchical grid of layer groups and data views."
@@ -238,8 +270,37 @@ definitions:
           Indicates whether the :ref:`projection views<projection-view>`, if
           present, uses orthographic rather than perspective projection.
         default: false
+      crossSections:
+        type: object
+        additionalProperties:
+          $ref: CrossSection
+        title: "Named cross-section views to include in 3-d projection panels."
     required:
       - "type"
+  CrossSection:
+    $id: CrossSection
+    title: "Specifies a named cross-section view under `DataPanelLayout.crossSections`."
+    type: object
+    properties:
+      width:
+        type: integer
+        minimum: 1
+        default: 1000
+      height:
+        type: integer
+        minimum: 1
+        default: 1000
+      position:
+        title: "Linked position state."
+      orientation:
+        title: "Linked orientation state."
+      scale:
+        title: "Linked cross-section display scale."
+      volumeRenderingMode:
+        $ref: CrossSectionVolumeRenderingMode
+        default: "max"
+      voxelRange:
+        $ref: LinkedVoxelRange
   LayerGroupViewer:
     $id: LayerGroupViewer
     title: "Specifies a :json:schema:`DataPanelLayout` for a subset of the layers."

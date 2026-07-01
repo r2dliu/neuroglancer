@@ -36,6 +36,7 @@ import {
   verifyBoolean,
   verifyEnumString,
   verifyFiniteFloat,
+  verifyFiniteNonNegativeFloat,
   verifyFinitePositiveFloat,
   verifyObject,
   verifyObjectProperty,
@@ -1982,6 +1983,128 @@ export class LinkedZoomState<
       return self;
     })();
   }
+}
+
+export enum CrossSectionVolumeRenderingMode {
+  MAX = 0,
+  MIN = 1,
+}
+
+export class TrackableCrossSectionVolumeRenderingMode
+  extends RefCounted
+  implements
+    Trackable,
+    WatchableValueInterface<CrossSectionVolumeRenderingMode>
+{
+  changed = new NullarySignal();
+  private value_ = CrossSectionVolumeRenderingMode.MAX;
+
+  get value() {
+    return this.value_;
+  }
+
+  set value(value: CrossSectionVolumeRenderingMode) {
+    if (value === this.value_) return;
+    this.value_ = value;
+    this.changed.dispatch();
+  }
+
+  reset() {
+    this.value = CrossSectionVolumeRenderingMode.MAX;
+  }
+
+  restoreState(obj: unknown) {
+    this.value = verifyEnumString(obj, CrossSectionVolumeRenderingMode);
+  }
+
+  toJSON() {
+    if (this.value_ === CrossSectionVolumeRenderingMode.MAX) {
+      return undefined;
+    }
+    return CrossSectionVolumeRenderingMode[this.value_].toLowerCase();
+  }
+
+  assign(other: TrackableCrossSectionVolumeRenderingMode) {
+    this.value = other.value;
+  }
+}
+
+export class LinkedCrossSectionVolumeRenderingMode extends SimpleLinkedBase<
+  TrackableCrossSectionVolumeRenderingMode
+> {
+  value = makeSimpleLinked(
+    new TrackableCrossSectionVolumeRenderingMode(),
+    this.peer,
+    this.link,
+    {
+      assign: (target, source) => target.assign(source),
+      isValid: () => true,
+    },
+  );
+}
+
+export class TrackableCrossSectionVoxelRange
+  extends RefCounted
+  implements Trackable, WatchableValueInterface<number>
+{
+  changed = new NullarySignal();
+  private value_ = 0;
+
+  get value() {
+    return this.value_;
+  }
+
+  set value(value: number) {
+    if (!Number.isFinite(value)) {
+      value = 0;
+    }
+    value = Math.max(0, value);
+    if (value === this.value_) return;
+    this.value_ = value;
+    this.changed.dispatch();
+  }
+
+  reset() {
+    this.value = 0;
+  }
+
+  restoreState(obj: unknown) {
+    if (obj === undefined) {
+      this.reset();
+    } else {
+      this.value = verifyFiniteNonNegativeFloat(obj);
+    }
+  }
+
+  toJSON() {
+    const { value } = this;
+    return value === 0 ? undefined : value;
+  }
+
+  assign(other: TrackableCrossSectionVoxelRange) {
+    this.value = other.value;
+  }
+}
+
+export class LinkedCrossSectionVoxelRange extends LinkedBase<
+  TrackableCrossSectionVoxelRange
+> {
+  value = makeLinked(
+    new TrackableCrossSectionVoxelRange(),
+    this.peer,
+    this.link,
+    {
+      assign: (target, source) => target.assign(source),
+      isValid: () => true,
+      difference: (a, b) => a.value - b.value,
+      add: (target, source, amount: number) => {
+        target.value = source.value + amount;
+      },
+      subtract: (target, source, amount: number) => {
+        target.value = source.value - amount;
+      },
+    },
+  );
 }
 
 export function linkedStateLegacyJsonView<
