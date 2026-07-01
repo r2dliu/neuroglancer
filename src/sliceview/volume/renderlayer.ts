@@ -19,7 +19,10 @@ import type { CoordinateSpace } from "#src/coordinate_transform.js";
 import { emptyInvalidCoordinateSpace } from "#src/coordinate_transform.js";
 import type { ProjectionParameters } from "#src/projection_parameters.js";
 import { getChunkPositionFromCombinedGlobalLocalPositions } from "#src/render_coordinate_transform.js";
-import { getNormalizedChunkLayout } from "#src/sliceview/base.js";
+import {
+  getNormalizedChunkLayout,
+  type SliceViewProjectionParameters,
+} from "#src/sliceview/base.js";
 import {
   computeVertexPositionDebug,
   defineBoundingBoxCrossSectionShader,
@@ -102,6 +105,8 @@ function defineVolumeShader(builder: ShaderBuilder, wireFrame: boolean) {
 
   // Chunk size in voxels.
   builder.addUniform("highp vec3", "uChunkDataSize");
+  builder.addUniform("highp float", "uProjectionVoxelRange");
+  builder.addUniform("highp int", "uProjectionRenderingMode");
 
   builder.addUniform("highp vec3", "uLowerClipBound");
   builder.addUniform("highp vec3", "uUpperClipBound");
@@ -492,7 +497,7 @@ void main() {
   beginChunkFormat(
     sliceView: SliceView,
     chunkFormat: ChunkFormat | null,
-    projectionParameters: ProjectionParameters,
+    projectionParameters: SliceViewProjectionParameters,
   ): ParameterizedShaderGetterResult<ShaderParameters, ShaderContext> {
     const { gl } = this;
     const dataHistogramsEnabled =
@@ -506,6 +511,14 @@ void main() {
       shader.bind();
       initializeShader(shader, projectionParameters, chunkFormat === null);
       if (chunkFormat !== null) {
+        gl.uniform1f(
+          shader.uniform("uProjectionVoxelRange"),
+          projectionParameters.voxelRange,
+        );
+        gl.uniform1i(
+          shader.uniform("uProjectionRenderingMode"),
+          projectionParameters.renderingMode,
+        );
         if (dataHistogramsEnabled) {
           const { dataHistogramChannelSpecifications } =
             shaderResult.extraParameters;

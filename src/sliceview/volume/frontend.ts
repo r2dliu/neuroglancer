@@ -16,10 +16,8 @@
 
 import type { ChunkManager } from "#src/chunk_manager/frontend.js";
 import type { ChunkChannelAccessParameters } from "#src/render_coordinate_transform.js";
-import type {
-  DataType,
-  SliceViewChunkSpecification,
-} from "#src/sliceview/base.js";
+import { DataType } from "#src/sliceview/base.js";
+import type { SliceViewChunkSpecification } from "#src/sliceview/base.js";
 import {
   MultiscaleSliceViewChunkSource,
   SliceViewChunk,
@@ -33,9 +31,16 @@ import type {
 } from "#src/sliceview/volume/base.js";
 import type { SliceViewSegmentationDisplayState } from "#src/sliceview/volume/segmentation_renderlayer.js";
 import type { Disposable } from "#src/util/disposable.js";
+import { SectionRenderingMode } from "#src/section_rendering.js";
 import type { GL } from "#src/webgl/context.js";
 import type { ShaderBuilder, ShaderProgram } from "#src/webgl/shader.js";
 import { getShaderType, glsl_mixLinear } from "#src/webgl/shader_lib.js";
+
+const PROJECTION_MAX_SAMPLES = 512;
+
+function supportsSectionProjection(dataType: DataType) {
+  return dataType !== DataType.UINT64;
+}
 
 export type VolumeChunkKey = string;
 
@@ -99,25 +104,79 @@ export function defineChunkDataShaderAccess(
   chunkFormat.defineShader(builder, numChannelDimensions);
   let dataAccessChannelParams = "";
   let dataAccessChannelArgs = "";
+  let dataAccessFunctionArgs = "";
   if (numChannelDimensions === 0) {
     dataAccessChannelParams += "highp int ignoredChannelIndex";
+    dataAccessFunctionArgs = "ignoredChannelIndex";
   } else {
     for (let channelDim = 0; channelDim < numChannelDimensions; ++channelDim) {
       if (channelDim !== 0) dataAccessChannelParams += ", ";
-      dataAccessChannelParams += `highp int channelIndex${channelDim}`;
+      if (channelDim !== 0) dataAccessFunctionArgs += ", ";
+      const channelIndex = `channelIndex${channelDim}`;
+      dataAccessChannelParams += `highp int ${channelIndex}`;
       dataAccessChannelArgs += `, channelIndex${channelDim}`;
+      dataAccessFunctionArgs += channelIndex;
     }
   }
 
   builder.addFragmentCode(glsl_mixLinear);
+  const shaderType = getShaderType(dataType);
+  let projectionDataAccessCode = `
+${shaderType} getDataValue(${dataAccessChannelParams}) {
+  return getDataValueAtPosition(${getPositionWithinChunkExpr}, ${dataAccessFunctionArgs});
+}
+`;
+  if (supportsSectionProjection(dataType)) {
+    const lessThanExpression =
+      dataType === DataType.FLOAT32
+        ? "candidateValue < bestValue"
+        : "toRaw(candidateValue) < toRaw(bestValue)";
+    const greaterThanExpression =
+      dataType === DataType.FLOAT32
+        ? "candidateValue > bestValue"
+        : "toRaw(candidateValue) > toRaw(bestValue)";
+    projectionDataAccessCode = `
+${shaderType} getDataValue(${dataAccessChannelParams}) {
+  if (uProjectionVoxelRange <= 0.0) {
+    return getDataValueAtPosition(${getPositionWithinChunkExpr}, ${dataAccessFunctionArgs});
+  }
+  highp int projectionSampleCount = int(min(
+      float(${PROJECTION_MAX_SAMPLES}),
+      max(1.0, floor(2.0 * uProjectionVoxelRange) + 1.0)));
+  ${shaderType} bestValue = getDataValueAtPosition(${getPositionWithinChunkExpr}, ${dataAccessFunctionArgs});
+  for (int projectionSampleIndex = 0; projectionSampleIndex < ${PROJECTION_MAX_SAMPLES}; ++projectionSampleIndex) {
+    if (projectionSampleIndex >= projectionSampleCount) {
+      break;
+    }
+    highp float projectionT = projectionSampleCount == 1
+        ? 0.0
+        : float(projectionSampleIndex) / float(projectionSampleCount - 1);
+    highp float projectionOffset =
+        mix(-uProjectionVoxelRange, uProjectionVoxelRange, projectionT);
+    highp vec3 projectionPositionWithinChunk =
+        ${getPositionWithinChunkExpr} + projectionOffset * uPlaneNormal;
+    if (any(lessThan(projectionPositionWithinChunk, vec3(0.0))) ||
+        any(greaterThanEqual(projectionPositionWithinChunk, uChunkDataSize))) {
+      continue;
+    }
+    ${shaderType} candidateValue = getDataValueAtPosition(
+        projectionPositionWithinChunk, ${dataAccessFunctionArgs});
+    if ((uProjectionRenderingMode == ${SectionRenderingMode.MIN} && ${lessThanExpression}) ||
+        (uProjectionRenderingMode == ${SectionRenderingMode.MAX} && ${greaterThanExpression})) {
+      bestValue = candidateValue;
+    }
+  }
+  return bestValue;
+}
+`;
+  }
   const dataAccessCode = `
-${getShaderType(dataType)} getDataValue(${dataAccessChannelParams}) {
-  highp ivec3 p = ivec3(max(vec3(0.0, 0.0, 0.0), min(floor(${getPositionWithinChunkExpr}), uChunkDataSize - 1.0)));
+${shaderType} getDataValueAtPosition(highp vec3 positionWithinChunk, ${dataAccessChannelParams}) {
+  highp ivec3 p = ivec3(max(vec3(0.0, 0.0, 0.0), min(floor(positionWithinChunk), uChunkDataSize - 1.0)));
   return getDataValueAt(p${dataAccessChannelArgs});
 }
-${getShaderType(
-  dataType,
-)} getInterpolatedDataValue(${dataAccessChannelParams}) {
+${projectionDataAccessCode}
+${shaderType} getInterpolatedDataValue(${dataAccessChannelParams}) {
   highp vec3 positionWithinChunk = ${getPositionWithinChunkExpr};
   highp ivec3[2] points;
   points[0] = ivec3(max(vec3(0.0, 0.0, 0.0), min(floor(positionWithinChunk - 0.5), uChunkDataSize - 1.0)));
@@ -142,10 +201,8 @@ ${getShaderType(
   builder.addFragmentCode(dataAccessCode);
   if (numChannelDimensions <= 1) {
     builder.addFragmentCode(`
-${getShaderType(dataType)} getDataValue() { return getDataValue(0); }
-${getShaderType(
-  dataType,
-)} getInterpolatedDataValue() { return getInterpolatedDataValue(0); }
+${shaderType} getDataValue() { return getDataValue(0); }
+${shaderType} getInterpolatedDataValue() { return getInterpolatedDataValue(0); }
 `);
   }
 }

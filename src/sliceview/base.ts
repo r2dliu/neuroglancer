@@ -20,6 +20,7 @@ import {
 } from "#src/navigation_state.js";
 import { ProjectionParameters } from "#src/projection_parameters.js";
 import { getChunkPositionFromCombinedGlobalLocalPositions } from "#src/render_coordinate_transform.js";
+import { SectionRenderingMode } from "#src/section_rendering.js";
 import { ChunkLayout } from "#src/sliceview/chunk_layout.js";
 import type {
   WatchableValueChangeInterface,
@@ -294,6 +295,13 @@ export class SliceViewProjectionParameters extends ProjectionParameters {
    * Size in physical units of a single pixel.
    */
   pixelSize = 0;
+
+  /**
+   * Half range in voxels to project along the section normal.
+   */
+  voxelRange = 0;
+
+  renderingMode = SectionRenderingMode.MAX;
 }
 
 function visibleSourcesInvalidated(
@@ -792,6 +800,7 @@ const tempVisibleVolumetricChunkLower = new Float32Array(3);
 const tempVisibleVolumetricChunkUpper = new Float32Array(3);
 const tempVisibleVolumetricModelViewProjection = mat4.create();
 const tempVisibleVolumetricClippingPlanes = new Float32Array(24);
+let tempVisibleVolumetricSlabVoxelRange = 0;
 
 function forEachVolumetricChunkWithinFrustrum<
   RLayer extends MultiscaleVolumetricDataRenderLayer,
@@ -913,7 +922,7 @@ export function forEachVisibleVolumetricChunk<
 export function forEachPlaneIntersectingVolumetricChunk<
   RLayer extends MultiscaleVolumetricDataRenderLayer,
 >(
-  projectionParameters: ProjectionParameters,
+  projectionParameters: SliceViewProjectionParameters,
   localPosition: Float32Array,
   transformedSource: TransformedSource<RLayer>,
   chunkLayout: ChunkLayout,
@@ -947,6 +956,7 @@ export function forEachPlaneIntersectingVolumetricChunk<
   mat4.invert(invModelViewProjection, modelViewProjection);
   const lower = tempVisibleVolumetricChunkLower;
   const upper = tempVisibleVolumetricChunkUpper;
+  const voxelRange = Math.max(0, projectionParameters.voxelRange);
   const BIAS_EPSILON = 1e-4;
   const BOUND_EPSILON = 1e-3;
   for (let i = 0; i < 3; ++i) {
@@ -965,8 +975,8 @@ export function forEachPlaneIntersectingVolumetricChunk<
     } else {
       lowerValue = Math.floor(lowerValue);
     }
-    lower[i] = lowerValue;
-    upper[i] = Math.floor(c + xCoeff + yCoeff + 1);
+    lower[i] = Math.floor(lowerValue - voxelRange);
+    upper[i] = Math.floor(c + xCoeff + yCoeff + voxelRange + 1);
   }
 
   const clippingPlanes = tempVisibleVolumetricClippingPlanes;
@@ -998,12 +1008,61 @@ export function forEachPlaneIntersectingVolumetricChunk<
     console.log("modelViewProjection", modelViewProjection.join(","));
     console.log(`lower=${lower.join(",")}, upper=${upper.join(",")}`);
   }
+  const predicate =
+    voxelRange === 0 ? isAABBIntersectingPlane : isAABBIntersectingSlab;
+  tempVisibleVolumetricSlabVoxelRange = voxelRange;
   forEachVolumetricChunkWithinFrustrum(
     clippingPlanes,
     transformedSource,
     callback,
-    isAABBIntersectingPlane,
+    predicate,
   );
+}
+
+function isAABBIntersectingSlab(
+  xLower: number,
+  yLower: number,
+  zLower: number,
+  xUpper: number,
+  yUpper: number,
+  zUpper: number,
+  clippingPlanes: Float32Array,
+) {
+  for (let i = 0; i < 4; ++i) {
+    const a = clippingPlanes[i * 4];
+    const b = clippingPlanes[i * 4 + 1];
+    const c = clippingPlanes[i * 4 + 2];
+    const d = clippingPlanes[i * 4 + 3];
+    const sum =
+      Math.max(a * xLower, a * xUpper) +
+      Math.max(b * yLower, b * yUpper) +
+      Math.max(c * zLower, c * zUpper) +
+      d;
+    if (sum < 0) {
+      return false;
+    }
+  }
+  {
+    const i = 5;
+    const a = clippingPlanes[i * 4];
+    const b = clippingPlanes[i * 4 + 1];
+    const c = clippingPlanes[i * 4 + 2];
+    const d = clippingPlanes[i * 4 + 3];
+    const maxSum =
+      Math.max(a * xLower, a * xUpper) +
+      Math.max(b * yLower, b * yUpper) +
+      Math.max(c * zLower, c * zUpper);
+    const minSum =
+      Math.min(a * xLower, a * xUpper) +
+      Math.min(b * yLower, b * yUpper) +
+      Math.min(c * zLower, c * zUpper);
+    const normalMagnitude = Math.hypot(a, b, c);
+    const slabRange = tempVisibleVolumetricSlabVoxelRange * normalMagnitude;
+    const epsilon = Math.max(Math.abs(d), slabRange) * 1e-6;
+    if (minSum > -d + slabRange + epsilon) return false;
+    if (maxSum < -d - slabRange - epsilon) return false;
+  }
+  return true;
 }
 
 /**

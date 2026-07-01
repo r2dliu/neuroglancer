@@ -1515,7 +1515,42 @@ class LinkedOrientationState(_LinkedOrientationStateBase):
 
 
 @export
-class CrossSection(JsonObjectWrapper):
+def section_rendering_mode(value):
+    if value not in ("min", "max"):
+        raise ValueError("section rendering mode must be 'min' or 'max'")
+    return value
+
+
+view_section_names = frozenset(["xy", "xz", "yz"])
+
+
+def view_section_name(value):
+    if value not in view_section_names:
+        raise ValueError("view section name must be one of 'xy', 'xz', or 'yz'")
+    return value
+
+
+@export
+class SectionRendering(JsonObjectWrapper):
+    __slots__ = ()
+    supports_validation = True
+    voxel_range = voxelRange = wrapped_property("voxelRange", optional(float, 0))
+    rendering_mode = renderingMode = wrapped_property(
+        "renderingMode", optional(section_rendering_mode, "max")
+    )
+    interactive = wrapped_property("interactive", optional(bool, False))
+
+    @staticmethod
+    def interpolate(a, b, t):
+        c = copy.deepcopy(a)
+        c.voxel_range = interpolate_linear(a.voxel_range, b.voxel_range, t)
+        c.rendering_mode = a.rendering_mode if t < 0.5 else b.rendering_mode
+        c.interactive = a.interactive if t < 0.5 else b.interactive
+        return c
+
+
+@export
+class CrossSection(SectionRendering):
     __slots__ = ()
     supports_validation = True
     width = wrapped_property("width", optional(int, 1000))
@@ -1534,6 +1569,9 @@ class CrossSection(JsonObjectWrapper):
             a.orientation, b.orientation, t
         )
         c.scale = LinkedZoomFactor.interpolate(a.scale, b.scale, t)
+        c.voxel_range = interpolate_linear(a.voxel_range, b.voxel_range, t)
+        c.rendering_mode = a.rendering_mode if t < 0.5 else b.rendering_mode
+        c.interactive = a.interactive if t < 0.5 else b.interactive
         return c
 
 
@@ -1554,11 +1592,31 @@ class CrossSectionMap(_CrossSectionMapBase):
         return c
 
 
+if typing.TYPE_CHECKING or _BUILDING_DOCS:
+    _ViewSectionMapBase = Map[str, SectionRendering]
+else:
+    _ViewSectionMapBase = typed_map(
+        str, SectionRendering, key_validator=view_section_name
+    )
+
+
+@export
+class ViewSectionMap(_ViewSectionMapBase):
+    @staticmethod
+    def interpolate(a, b, t):
+        c = copy.deepcopy(a)
+        for k in a:
+            if k in b:
+                c[k] = SectionRendering.interpolate(a[k], b[k], t)
+        return c
+
+
 @export
 class DataPanelLayout(JsonObjectWrapper):
     __slots__ = ()
     type = wrapped_property("type", str)
     cross_sections = crossSections = wrapped_property("crossSections", CrossSectionMap)
+    view_sections = viewSections = wrapped_property("viewSections", ViewSectionMap)
     orthographic_projection = orthographicProjection = wrapped_property(
         "orthographicProjection", optional(bool, False)
     )
@@ -1569,17 +1627,27 @@ class DataPanelLayout(JsonObjectWrapper):
         super().__init__(json_data, _readonly=_readonly, **kwargs)
 
     def to_json(self):
-        if len(self.cross_sections) == 0 and not self.orthographic_projection:
+        if (
+            len(self.cross_sections) == 0
+            and len(self.view_sections) == 0
+            and not self.orthographic_projection
+        ):
             return self.type
         return super().to_json()
 
     @staticmethod
     def interpolate(a, b, t):
-        if a.type != b.type or len(a.cross_sections) == 0:
+        if (
+            a.type != b.type
+            or (len(a.cross_sections) == 0 and len(a.view_sections) == 0)
+        ):
             return a
         c = copy.deepcopy(a)
         c.cross_sections = CrossSectionMap.interpolate(
             a.cross_sections, b.cross_sections, t
+        )
+        c.view_sections = ViewSectionMap.interpolate(
+            a.view_sections, b.view_sections, t
         )
         return c
 
