@@ -33,6 +33,7 @@ import {
   isAABBIntersectingPlane,
   isAABBVisible,
   mat4,
+  transformVectorByMat4,
   vec3,
 } from "#src/util/geom.js";
 import * as matrix from "#src/util/matrix.js";
@@ -792,6 +793,16 @@ const tempVisibleVolumetricChunkLower = new Float32Array(3);
 const tempVisibleVolumetricChunkUpper = new Float32Array(3);
 const tempVisibleVolumetricModelViewProjection = mat4.create();
 const tempVisibleVolumetricClippingPlanes = new Float32Array(24);
+const tempVisibleVolumetricPlaneOffset = vec3.create();
+const tempVisibleVolumetricPlaneNormal = vec3.create();
+const tempVisibleVolumetricPlaneCenter = vec3.create();
+
+export function getCrossSectionVolumeRenderingVoxelRange(
+  voxelRange: number,
+) {
+  if (!Number.isFinite(voxelRange)) return 0;
+  return Math.max(0, Math.floor(voxelRange));
+}
 
 function forEachVolumetricChunkWithinFrustrum<
   RLayer extends MultiscaleVolumetricDataRenderLayer,
@@ -913,11 +924,12 @@ export function forEachVisibleVolumetricChunk<
 export function forEachPlaneIntersectingVolumetricChunk<
   RLayer extends MultiscaleVolumetricDataRenderLayer,
 >(
-  projectionParameters: ProjectionParameters,
+  projectionParameters: SliceViewProjectionParameters,
   localPosition: Float32Array,
   transformedSource: TransformedSource<RLayer>,
   chunkLayout: ChunkLayout,
   callback: (positionInChunks: vec3) => void,
+  planeOffset = 0,
 ) {
   if (
     !updateFixedCurPositionInChunks(
@@ -929,6 +941,12 @@ export function forEachPlaneIntersectingVolumetricChunk<
     return;
   }
   const { size: chunkSize } = chunkLayout;
+  const offsetInChunkLayout = transformVectorByMat4(
+    tempVisibleVolumetricPlaneOffset,
+    projectionParameters.viewportNormalInGlobalCoordinates,
+    chunkLayout.invTransform,
+  );
+  vec3.scale(offsetInChunkLayout, offsetInChunkLayout, planeOffset);
   const modelViewProjection = mat4.multiply(
     tempVisibleVolumetricModelViewProjection,
     projectionParameters.viewProjectionMat,
@@ -955,9 +973,10 @@ export function forEachPlaneIntersectingVolumetricChunk<
     const c = invModelViewProjection[12 + i] + BIAS_EPSILON / chunkSize[i];
     const xCoeff = Math.abs(invModelViewProjection[i]);
     const yCoeff = Math.abs(invModelViewProjection[4 + i]);
+    const offset = offsetInChunkLayout[i] / chunkSize[i];
 
     const upperBound = upperChunkDisplayBound[i];
-    let lowerValue = c - xCoeff - yCoeff;
+    let lowerValue = c + offset - xCoeff - yCoeff;
     if (lowerValue >= upperBound && lowerValue < upperBound + BOUND_EPSILON) {
       // Lower bound of the viewport is within `BOUND_EPSILON` of the upper
       // chunk bound. Try to ensure that data is still shown in this case.
@@ -966,7 +985,7 @@ export function forEachPlaneIntersectingVolumetricChunk<
       lowerValue = Math.floor(lowerValue);
     }
     lower[i] = lowerValue;
-    upper[i] = Math.floor(c + xCoeff + yCoeff + 1);
+    upper[i] = Math.floor(c + offset + xCoeff + yCoeff + 1);
   }
 
   const clippingPlanes = tempVisibleVolumetricClippingPlanes;
@@ -979,20 +998,31 @@ export function forEachPlaneIntersectingVolumetricChunk<
     clippingPlanes[8 + i] = +yCoeff;
     clippingPlanes[12 + i] = -yCoeff;
     clippingPlanes[16 + i] = +zCoeff;
-    clippingPlanes[20 + i] = -zCoeff;
   }
   {
     const i = 3;
     const xCoeff = modelViewProjection[4 * i];
     const yCoeff = modelViewProjection[4 * i + 1];
-    const zCoeff = modelViewProjection[4 * i + 2];
     clippingPlanes[i] = 1 + xCoeff;
     clippingPlanes[4 + i] = 1 - xCoeff;
     clippingPlanes[8 + i] = 1 + yCoeff;
     clippingPlanes[12 + i] = 1 - yCoeff;
-    clippingPlanes[16 + i] = zCoeff;
-    clippingPlanes[20 + i] = -zCoeff;
   }
+  const localPlaneNormal = chunkLayout.globalToLocalNormal(
+    tempVisibleVolumetricPlaneNormal,
+    projectionParameters.viewportNormalInGlobalCoordinates,
+  );
+  vec3.normalize(localPlaneNormal, localPlaneNormal);
+  const localPlaneCenter = chunkLayout.globalToLocalSpatial(
+    tempVisibleVolumetricPlaneCenter,
+    projectionParameters.centerDataPosition,
+  );
+  vec3.add(localPlaneCenter, localPlaneCenter, offsetInChunkLayout);
+  const planeDistance = vec3.dot(localPlaneCenter, localPlaneNormal);
+  for (let i = 0; i < 3; ++i) {
+    clippingPlanes[20 + i] = localPlaneNormal[i] * chunkSize[i];
+  }
+  clippingPlanes[23] = -planeDistance;
   if (DEBUG_CHUNK_VISIBILITY) {
     console.log("clippingPlanes", clippingPlanes);
     console.log("modelViewProjection", modelViewProjection.join(","));
