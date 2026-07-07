@@ -95,9 +95,9 @@ export function isInteractiveGizmoPart(partIndex: number): boolean {
 // `axisUnit` returns the corresponding local unit axis vector.
 const glsl_axisColor = `
 vec3 axisColor(int a) {
-  return a == 0 ? vec3(0.0, 0.0, 1.0)
+  return a == 0 ? vec3(1.0, 0.0, 0.0)
        : a == 1 ? vec3(0.0, 1.0, 0.0)
-       :          vec3(1.0, 0.0, 0.0);
+       :          vec3(0.0, 0.0, 1.0);
 }
 vec3 axisUnit(int a) {
   return vec3(a == 0 ? 1.0 : 0.0, a == 1 ? 1.0 : 0.0, a == 2 ? 1.0 : 0.0);
