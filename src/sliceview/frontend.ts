@@ -106,7 +106,7 @@ class FrontendSliceViewBase extends SliceViewBase<
   SliceViewChunkSource,
   SliceViewRenderLayer,
   FrontendTransformedSource
-> {}
+> { }
 const Base = withSharedVisibility(FrontendSliceViewBase);
 
 export interface FrontendTransformedSource<
@@ -619,12 +619,11 @@ export interface SliceViewChunkSourceOptions<
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
 export abstract class SliceViewChunkSource<
-    Spec extends SliceViewChunkSpecification = SliceViewChunkSpecification,
-    ChunkType extends SliceViewChunk = SliceViewChunk,
-  >
+  Spec extends SliceViewChunkSpecification = SliceViewChunkSpecification,
+  ChunkType extends SliceViewChunk = SliceViewChunk,
+>
   extends ChunkSource
-  implements SliceViewChunkSourceInterface
-{
+  implements SliceViewChunkSourceInterface {
   declare chunks: Map<string, ChunkType>;
 
   declare OPTIONS: SliceViewChunkSourceOptions<Spec>;
@@ -821,6 +820,14 @@ else {
 vec4 clipPos = vec4(2.0 * vTexCoord - 1.0, 0.0, 1.0);
 vec4 worldPos4 = uSliceViewInvViewProj * clipPos;
 vec3 worldPos = worldPos4.xyz / worldPos4.w;
+// round: worldPos is in GLOBAL coordinates, where this app's OME
+// datasets put voxel centers at INTEGERS (voxel i spans [i-0.5, i+0.5)), and
+// the CPU brush key truncates those integer center coords. floor() here keys
+// the lower half of every voxel one off -- on an oblique cross-section that
+// renders as diagonal stripes. (The 2D overlay path floors instead because it
+// works in the corner-based chunk grid, whose +0.5 shift is baked into the
+// chunk transform -- two conventions, each correct in its own frame.)
+// Revisit to handle different voxel centers in future if necessary
 ivec3 voxelPos = ivec3(round(worldPos));
 if (voxelPos.x >= 0 && voxelPos.y >= 0 && voxelPos.z >= 0) {
   uint x1 = uint(voxelPos.x);
@@ -1057,7 +1064,7 @@ export abstract class MultiscaleSliceViewChunkSource<
     options: SourceOptions,
   ): SliceViewSingleResolutionSource<Source>[][];
 
-  constructor(public chunkManager: Borrowed<ChunkManager>) {}
+  constructor(public chunkManager: Borrowed<ChunkManager>) { }
 }
 
 export function getVolumetricTransformedSources(
@@ -1137,11 +1144,11 @@ export function getVolumetricTransformedSources(
         if (chunkDataSize[chunkDim] !== size) {
           throw new Error(
             "Channel dimension " +
-              transform.layerDimensionNames[
-                transform.channelToRenderLayerDimensions[channelDim]
-              ] +
-              ` has extent ${size} but corresponding chunk dimension has extent ` +
-              `${chunkDataSize[chunkDim]}`,
+            transform.layerDimensionNames[
+            transform.channelToRenderLayerDimensions[channelDim]
+            ] +
+            ` has extent ${size} but corresponding chunk dimension has extent ` +
+            `${chunkDataSize[chunkDim]}`,
           );
         }
         nonDisplayLowerClipBound[chunkDim] = Number.NEGATIVE_INFINITY;

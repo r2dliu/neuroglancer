@@ -51,8 +51,12 @@ import {
 } from "#src/trackable_value.js";
 import type { Uint64Map } from "#src/uint64_map.js";
 import type { DisjointUint64Sets } from "#src/util/disjoint_sets.js";
+import { kOneVec, vec3 } from "#src/util/geom.js";
 import * as matrix from "#src/util/matrix.js";
 import type { ShaderBuilder, ShaderProgram } from "#src/webgl/shader.js";
+
+// Scratch for setupSourceUniforms' per-source downsample factor.
+const tempBrushSourceScale = vec3.create();
 
 export class EquivalencesHashMap {
   generation = Number.NaN;
@@ -120,9 +124,6 @@ export class SegmentationRenderLayer extends SliceViewVolumeRenderLayer<ShaderPa
   // shares the underlying GPU resource across consumers.
   private brushHashTableManager = new HashMapShaderManager("brushStroke");
   private gpuBrushHashTable: GPUHashTable<HashMapUint64> | undefined;
-  // Running min of per-source physical voxel size (meters) → the finest
-  // (level-0) base, used to derive the brush-overlay downsample factor.
-  private brushFinestVoxelSize: Float32Array | undefined;
 
   constructor(
     multiscaleSource: MultiscaleVolumeChunkSource,
@@ -611,32 +612,33 @@ uint64_t getMappedObjectId(uint64_t value) {
     transformedSource: FrontendTransformedSource,
   ) {
     if (this.gpuBrushHashTable === undefined) return;
-    // `effectiveVoxelSize` is the source's PHYSICAL voxel size (meters), not a
-    // dimensionless factor. The brush hash is keyed in level-0 voxel indices,
-    // so the conversion factor is the RATIO to the finest level:
-    //   factor = effectiveVoxelSize_L / effectiveVoxelSize_0  (1, 2, 4, … 16)
-    // Sources are visited finest-first, so a running min captures the level-0
-    // base on the first source. (Assumes isotropic display axes.)
+    // The brush hash is keyed in full-res (level-0 = global) voxel indices,
+    // while `vBrushWorldPos` is in THIS source's voxel grid, so the shader
+    // needs the source's downsample factor (1, 2, 4, … per axis). Read it
+    // straight off the chunk layout: one source voxel spans
+    // |localSpatialVectorToGlobal(1⃗)| global voxel-index units.
+    //
+    // Deliberately NOT derived from `effectiveVoxelSize`: that value folds in
+    // the physical per-dim scales AND `relativeDisplayScales`, so the previous
+    // cached cross-frame min went stale whenever the app switched display
+    // scale factors (AI Segment's isotropic view), skewing the key per axis
+    // and offsetting the overlay. The chunk-layout factor is display-scale
+    // free and needs no cache — it also works when level 0 isn't visible.
     //
     // No offset is needed: `vBrushWorldPos` is the raw source-voxel position,
     // and the level's OME translation (the pyramid's (f-1)/2) plus
     // neuroglancer's -scale/2 corner correction are already baked into the
     // projection, so `position * factor` points at the same full-res voxel
     // level 0 sees.
-    const v = transformedSource.effectiveVoxelSize;
-    let base = this.brushFinestVoxelSize;
-    if (base === undefined) {
-      base = this.brushFinestVoxelSize = Float32Array.from(v.subarray(0, 3));
-    } else {
-      for (let i = 0; i < 3; i++) {
-        if (v[i] > 0 && v[i] < base[i]) base[i] = v[i];
-      }
-    }
+    const scale = transformedSource.chunkLayout.localSpatialVectorToGlobal(
+      tempBrushSourceScale,
+      kOneVec,
+    );
     gl.uniform3f(
       shader.uniform("uBrushSourceScale"),
-      base[0] > 0 ? v[0] / base[0] : 1,
-      base[1] > 0 ? v[1] / base[1] : 1,
-      base[2] > 0 ? v[2] / base[2] : 1,
+      Math.abs(scale[0]) || 1,
+      Math.abs(scale[1]) || 1,
+      Math.abs(scale[2]) || 1,
     );
   }
 

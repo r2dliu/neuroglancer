@@ -1,5 +1,5 @@
-import { clampAndRoundCoordinateToVoxelCenter } from "#src/coordinate_transform.js";
 import { SegmentationUserLayer } from "#src/layer/segmentation/index.js";
+import { brushPlaneFrame, stampDiskVoxels } from "#src/sliceview/brush_stamp.js";
 import { SegmentationRenderLayer } from "#src/sliceview/volume/segmentation_renderlayer.js";
 import type { ToolActivation } from "#src/ui/tool.js";
 import {
@@ -9,7 +9,7 @@ import {
 } from "#src/ui/tool.js";
 import { createToolCursor, updateCursorPosition } from "#src/util/cursor.js";
 import { EventActionMap } from "#src/util/event_action_map.js";
-import { mat4, vec3 } from "#src/util/geom.js";
+import { vec3 } from "#src/util/geom.js";
 import { startRelativeMouseDrag } from "#src/util/mouse_drag.js";
 import { Signal } from "#src/util/signal.js";
 import type { Viewer } from "#src/viewer.js";
@@ -93,66 +93,7 @@ export class EraserTool extends Tool<Viewer> {
 
       const pose = mouseState.pose;
       if (!pose) return;
-
-      // The plane of the eraser circle will match the current orientation axes
-      const orientation = pose.orientation.orientation;
-      const viewMatrix = mat4.fromQuat(mat4.create(), orientation);
-
-      const viewNormal = vec3.fromValues(
-        viewMatrix[8],
-        viewMatrix[9],
-        viewMatrix[10],
-      );
-      vec3.normalize(viewNormal, viewNormal);
-
-      const absNormal = [
-        Math.abs(viewNormal[0]),
-        Math.abs(viewNormal[1]),
-        Math.abs(viewNormal[2]),
-      ];
-      const mainAxis = absNormal.indexOf(Math.max(...absNormal));
-
-      const xAxis = vec3.create();
-      const yAxis = vec3.create();
-
-      const sign = Math.sign(viewNormal[mainAxis]);
-      if (mainAxis === 0) {
-        vec3.set(xAxis, 0, sign, 0);
-        vec3.set(yAxis, 0, 0, sign);
-      } else if (mainAxis === 1) {
-        vec3.set(xAxis, sign, 0, 0);
-        vec3.set(yAxis, 0, 0, sign);
-      } else {
-        vec3.set(xAxis, sign, 0, 0);
-        vec3.set(yAxis, 0, sign, 0);
-      }
-
-      const erasePoints: ErasePoint[] = [];
-
-      // Use canonicalVoxelFactors to keep the eraser circle on screen
-      // matching its cursor. With anisotropic voxels (e.g. 5×5×30 nm)
-      // a fixed dx/dy step iterates uneven distances per axis, which
-      // is why the eraser looked elliptical on XZ/YZ planes.
-      // canonicalVoxelFactors converts voxel steps to canonical voxel
-      // distances per display dimension; mirror the brush's fix.
-      const renderInfo = pose.displayDimensionRenderInfo.value;
-      const { canonicalVoxelFactors, displayDimensionIndices } = renderInfo;
-
-      let xDisplayDim = 0;
-      let yDisplayDim = 0;
-      for (let i = 0; i < 3; i++) {
-        const globalDim = displayDimensionIndices[i];
-        if (globalDim === -1) continue;
-        if (xAxis[globalDim] !== 0) xDisplayDim = i;
-        if (yAxis[globalDim] !== 0) yDisplayDim = i;
-      }
-      const xFactor = canonicalVoxelFactors[xDisplayDim];
-      const yFactor = canonicalVoxelFactors[yDisplayDim];
-
-      const xRange = Math.ceil(this.eraserRadius / xFactor);
-      const yRange = Math.ceil(this.eraserRadius / yFactor);
-      const radiusSq = this.eraserRadius * this.eraserRadius;
-
+      const frame = brushPlaneFrame(pose);
       const bounds = mouseState.pose?.position.coordinateSpace.value.bounds;
       if (!bounds) return;
 
@@ -168,41 +109,17 @@ export class EraserTool extends Tool<Viewer> {
         }
       }
 
-      // Stamp one filled eraser circle centered at `center` (spatial XYZ).
+      const erasePoints: ErasePoint[] = [];
+      // Overlapping interpolated stamps re-emit voxels; dedupe per erase call
+      // so each voxel is dispatched once.
+      const seen = new Set<string>();
       const stampCircle = (center: vec3) => {
-        for (let dx = -xRange; dx <= xRange; dx++) {
-          for (let dy = -yRange; dy <= yRange; dy++) {
-            const cx = dx * xFactor;
-            const cy = dy * yFactor;
-            if (cx * cx + cy * cy > radiusSq) continue;
-
-            const newPosition = vec3.fromValues(
-              center[0],
-              center[1],
-              center[2],
-            );
-            vec3.scaleAndAdd(newPosition, newPosition, xAxis, dx);
-            vec3.scaleAndAdd(newPosition, newPosition, yAxis, dy);
-
-            // Snap each coordinate to voxel center to avoid offset errors
-            const x = clampAndRoundCoordinateToVoxelCenter(
-              bounds,
-              0,
-              newPosition[0],
-            );
-            const y = clampAndRoundCoordinateToVoxelCenter(
-              bounds,
-              1,
-              newPosition[1],
-            );
-            const z = clampAndRoundCoordinateToVoxelCenter(
-              bounds,
-              2,
-              newPosition[2],
-            );
-            erasePoints.push({ x, y, z });
-          }
-        }
+        stampDiskVoxels(frame, center, this.eraserRadius, bounds, (x, y, z) => {
+          const key = `${x},${y},${z}`;
+          if (seen.has(key)) return;
+          seen.add(key);
+          erasePoints.push({ x, y, z });
+        });
       };
 
       // Interpolate between the previous stamp center and the current one so
@@ -211,8 +128,7 @@ export class EraserTool extends Tool<Viewer> {
       const last = this.lastErasePosition;
       if (last !== null) {
         const delta = vec3.subtract(vec3.create(), current, last);
-        const du = vec3.dot(delta, xAxis) * xFactor;
-        const dv = vec3.dot(delta, yAxis) * yFactor;
+        const [du, dv] = frame.toCanonical(delta);
         const canonicalDist = Math.hypot(du, dv);
         const spacing = Math.max(this.eraserRadius * 0.5, 0.5);
         const steps = Math.max(1, Math.ceil(canonicalDist / spacing));
