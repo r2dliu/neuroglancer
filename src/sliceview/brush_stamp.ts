@@ -90,9 +90,13 @@ const NEIGHBOR_OFFSETS: ReadonlyArray<readonly [number, number, number]> = (() =
 /**
  * Emit the voxel centers of every voxel the slice plane crosses within the
  * radius-`radius` (canonical units) brush circle around `center` (voxel-index
- * coords). Hole-free on oblique planes; identical to the plane's rendered
- * voxel set clipped to the circle. Callers dedupe (overlapping interpolated
- * stamps re-emit).
+ * coords) — the exact voxel set the plane RENDERS, so the painted disk shows
+ * no gaps under the cursor. Deliberate trade-off: a crossed-cube slab on an
+ * oblique plane is thicker than one slice spacing, so partial slivers of the
+ * stroke show on the adjacent slices (the same voxels genuinely span both).
+ * The alternative (claiming each voxel only for its nearest slice) leaves
+ * visible pinholes on the painted slice, which reads as broken.
+ * Callers dedupe (overlapping interpolated stamps re-emit).
  */
 export function stampDiskVoxels(
   frame: BrushPlaneFrame,
@@ -107,7 +111,7 @@ export function stampDiskVoxels(
   // voxelize_slice_mask).
   const halfThickness =
     0.5 *
-    (Math.abs(normal[0]) + Math.abs(normal[1]) + Math.abs(normal[2])) +
+      (Math.abs(normal[0]) + Math.abs(normal[1]) + Math.abs(normal[2])) +
     1e-4;
   const radiusSq = radius * radius;
   const pad = radius + STAMP_STEP;
