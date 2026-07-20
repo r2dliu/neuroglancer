@@ -13,6 +13,7 @@
 # limitations under the License.
 
 
+import neuroglancer
 import numpy as np
 import pytest
 from neuroglancer import viewer_state
@@ -116,3 +117,55 @@ def test_tool():
 
 def test_annotation():
     viewer_state.PointAnnotation(point=[1])
+
+
+def test_cross_section_slab_rendering_state():
+    assert neuroglancer.LinkedVoxelRange is viewer_state.LinkedVoxelRange
+    assert (
+        neuroglancer.LinkedCrossSectionVolumeRenderingMode
+        is viewer_state.LinkedCrossSectionVolumeRenderingMode
+    )
+
+    state = viewer_state.ViewerState()
+    assert state.cross_section_volume_rendering_mode == "max"
+    assert state.cross_section_voxel_range == 0
+
+    state.cross_section_volume_rendering_mode = "MIN"
+    state.cross_section_voxel_range = 3.5
+    assert state.to_json()["crossSectionVolumeRenderingMode"] == "min"
+    assert state.to_json()["crossSectionVoxelRange"] == 3.5
+
+    layout = viewer_state.DataPanelLayout(
+        type="3d",
+        cross_sections={
+            "slab": {
+                "volumeRenderingMode": "min",
+                "voxelRange": {"link": "relative", "value": 5},
+            },
+            "default": {},
+        },
+    )
+    slab = layout.cross_sections["slab"]
+    assert slab.volume_rendering_mode == "min"
+    assert slab.voxel_range.link == "relative"
+    assert slab.voxel_range.value == 5
+    default = layout.cross_sections["default"]
+    assert default.volume_rendering_mode == "max"
+    assert default.voxel_range.link == "linked"
+
+
+@pytest.mark.parametrize("value", [-1, float("inf"), float("-inf"), float("nan")])
+def test_cross_section_voxel_range_rejects_invalid_values(value):
+    with pytest.raises(ValueError):
+        viewer_state.ViewerState(cross_section_voxel_range=value)
+    with pytest.raises(ValueError):
+        viewer_state.LinkedVoxelRange(value=value)
+
+
+def test_cross_section_volume_rendering_mode_rejects_invalid_values():
+    with pytest.raises(ValueError):
+        viewer_state.ViewerState(cross_section_volume_rendering_mode="average")
+    with pytest.raises(ValueError):
+        viewer_state.CrossSection(volume_rendering_mode="average")
+    with pytest.raises(ValueError):
+        viewer_state.LinkedCrossSectionVolumeRenderingMode(link="relative", value="min")

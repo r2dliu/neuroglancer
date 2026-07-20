@@ -37,6 +37,7 @@ import type {
 } from "#src/sliceview/base.js";
 import {
   filterVisibleSources,
+  forEachCrossSectionVolumeRenderingPlane,
   forEachPlaneIntersectingVolumetricChunk,
   getNormalizedChunkLayout,
   SLICEVIEW_ADD_VISIBLE_LAYER_RPC_ID,
@@ -103,8 +104,13 @@ const SliceViewIntermediateBase = withSharedVisibility(
 @registerSharedObject(SLICEVIEW_RPC_ID)
 export class SliceViewBackend extends SliceViewIntermediateBase {
   velocityEstimator = new VelocityEstimator();
+  voxelRange: SharedWatchableValue<number>;
   constructor(rpc: RPC, options: any) {
     super(rpc, options);
+    this.voxelRange = rpc.get(options.voxelRange);
+    this.registerDisposer(
+      this.voxelRange.changed.add(() => this.invalidateVisibleChunks()),
+    );
     this.registerDisposer(
       this.chunkManager.recomputeChunkPriorities.add(() => {
         this.updateVisibleChunks();
@@ -174,29 +180,40 @@ export class SliceViewBackend extends SliceViewIntermediateBase {
           basePriority + SCALE_PRIORITY_MULTIPLIER * priorityIndex;
         curVisibleChunks.length = 0;
         const curMarkGeneration = getNextMarkGeneration();
-        forEachPlaneIntersectingVolumetricChunk(
+        const normalizedChunkLayout = getNormalizedChunkLayout(
           projectionParameters,
-          tsource.renderLayer.localPosition.value,
-          tsource,
-          getNormalizedChunkLayout(projectionParameters, tsource.chunkLayout),
-          (positionInChunks) => {
-            vec3.multiply(tempChunkPosition, positionInChunks, chunkSize);
-            const priority = -vec3.distance(localCenter, tempChunkPosition);
-            const { curPositionInChunks } = tsource;
-            const chunk = tsource.source.getChunk(curPositionInChunks);
-            chunkManager.requestChunk(
-              chunk,
-              priorityTier,
-              sourceBasePriority + priority,
+          tsource.chunkLayout,
+        );
+        forEachCrossSectionVolumeRenderingPlane(
+          this.voxelRange.value,
+          (planeOffset) => {
+            forEachPlaneIntersectingVolumetricChunk(
+              projectionParameters,
+              tsource.renderLayer.localPosition.value,
+              tsource,
+              normalizedChunkLayout,
+              (positionInChunks) => {
+                vec3.multiply(tempChunkPosition, positionInChunks, chunkSize);
+                const priority = -vec3.distance(localCenter, tempChunkPosition);
+                const { curPositionInChunks } = tsource;
+                const chunk = tsource.source.getChunk(curPositionInChunks);
+                if (chunk.markGeneration === curMarkGeneration) return;
+                chunkManager.requestChunk(
+                  chunk,
+                  priorityTier,
+                  sourceBasePriority + priority,
+                );
+                ++layer.numVisibleChunksNeeded;
+                if (chunk.state === ChunkState.GPU_MEMORY) {
+                  ++layer.numVisibleChunksAvailable;
+                }
+                curVisibleChunks.push(chunk);
+                // A chunk may intersect multiple offset planes.  Count/request
+                // it only once and also stop motion-prefetch from duplicating it.
+                chunk.markGeneration = curMarkGeneration;
+              },
+              planeOffset,
             );
-            ++layer.numVisibleChunksNeeded;
-            if (chunk.state === ChunkState.GPU_MEMORY) {
-              ++layer.numVisibleChunksAvailable;
-            }
-            curVisibleChunks.push(chunk);
-            // Mark visible chunks to avoid duplicate work when prefetching.  Once we hit a
-            // visible chunk, we don't continue prefetching in the same direction.
-            chunk.markGeneration = curMarkGeneration;
           },
         );
         if (prefetchOffsets.length !== 0) {

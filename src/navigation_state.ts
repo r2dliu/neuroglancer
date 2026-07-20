@@ -36,6 +36,7 @@ import {
   verifyBoolean,
   verifyEnumString,
   verifyFiniteFloat,
+  verifyFiniteNonNegativeFloat,
   verifyFinitePositiveFloat,
   verifyObject,
   verifyObjectProperty,
@@ -1981,6 +1982,145 @@ export class LinkedZoomState<
       );
       return self;
     })();
+  }
+}
+
+/** Reduction operation used when rendering a slab around a cross section. */
+export enum CrossSectionVolumeRenderingMode {
+  MAX = 0,
+  MIN = 1,
+}
+
+/**
+ * Trackable min/max reduction mode for cross-section slab rendering.
+ *
+ * `MAX` is intentionally omitted from serialized state because it is the
+ * default and preserves the behavior of states created before slab rendering
+ * was supported.
+ */
+export class TrackableCrossSectionVolumeRenderingMode
+  extends RefCounted
+  implements Trackable, WatchableValueInterface<CrossSectionVolumeRenderingMode>
+{
+  changed = new NullarySignal();
+  private value_ = CrossSectionVolumeRenderingMode.MAX;
+
+  get value() {
+    return this.value_;
+  }
+
+  set value(value: CrossSectionVolumeRenderingMode) {
+    if (value === this.value_) return;
+    this.value_ = value;
+    this.changed.dispatch();
+  }
+
+  reset() {
+    this.value = CrossSectionVolumeRenderingMode.MAX;
+  }
+
+  restoreState(obj: unknown) {
+    this.value = verifyEnumString(obj, CrossSectionVolumeRenderingMode);
+  }
+
+  toJSON() {
+    if (this.value_ === CrossSectionVolumeRenderingMode.MAX) {
+      return undefined;
+    }
+    return CrossSectionVolumeRenderingMode[this.value_].toLowerCase();
+  }
+
+  assign(other: TrackableCrossSectionVolumeRenderingMode) {
+    this.value = other.value;
+  }
+}
+
+/** Linkable mode used by nested layer-group viewers. */
+export class LinkedCrossSectionVolumeRenderingMode extends SimpleLinkedBase<TrackableCrossSectionVolumeRenderingMode> {
+  value = makeSimpleLinked(
+    new TrackableCrossSectionVolumeRenderingMode(),
+    this.peer,
+    this.link,
+    {
+      assign: (target, source) => target.assign(source),
+      isValid: () => true,
+    },
+  );
+
+  protected getValueJson() {
+    return CrossSectionVolumeRenderingMode[this.value.value].toLowerCase();
+  }
+}
+
+/** Number of voxels rendered on each side of a cross section. */
+export class TrackableCrossSectionVoxelRange
+  extends RefCounted
+  implements Trackable, WatchableValueInterface<number>
+{
+  changed = new NullarySignal();
+  private value_ = 0;
+
+  get value() {
+    return this.value_;
+  }
+
+  set value(value: number) {
+    // Keep programmatic changes safe as well as JSON restoration.  The JSON
+    // path below rejects invalid values, while direct assignments fall back to
+    // the disabled/default value and clamp negative ranges to zero.
+    if (!Number.isFinite(value)) {
+      value = 0;
+    }
+    value = Math.max(0, value);
+    if (value === this.value_) return;
+    this.value_ = value;
+    this.changed.dispatch();
+  }
+
+  reset() {
+    this.value = 0;
+  }
+
+  restoreState(obj: unknown) {
+    this.value = verifyFiniteNonNegativeFloat(obj);
+  }
+
+  toJSON() {
+    const { value } = this;
+    return value === 0 ? undefined : value;
+  }
+
+  assign(other: TrackableCrossSectionVoxelRange) {
+    this.value = other.value;
+  }
+}
+
+/**
+ * Voxel range linked to a parent range.  `RELATIVE` retains the additive
+ * difference between the local and parent values, matching `LinkedPosition`.
+ */
+export class LinkedCrossSectionVoxelRange extends LinkedBase<TrackableCrossSectionVoxelRange> {
+  value = makeLinked(
+    new TrackableCrossSectionVoxelRange(),
+    this.peer,
+    this.link,
+    {
+      assign: (target, source) => target.assign(source),
+      isValid: () => true,
+      difference: (a, b) => a.value - b.value,
+      add: (target, source, amount: number) => {
+        target.value = source.value + amount;
+      },
+      subtract: (target, source, amount: number) => {
+        target.value = source.value - amount;
+      },
+    },
+  );
+
+  protected getValueJson() {
+    // Unlike the root trackable, a linked-state object must retain an
+    // explicit zero: it may differ from a non-zero parent value.
+    return this.value.value;
   }
 }
 

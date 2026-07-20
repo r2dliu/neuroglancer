@@ -418,6 +418,9 @@ function getCommonViewerState(viewer: Viewer) {
     navigationState: viewer.navigationState.addRef(),
     perspectiveNavigationState: viewer.perspectiveNavigationState.addRef(),
     velocity: viewer.velocity.addRef(),
+    crossSectionVolumeRenderingMode:
+      viewer.crossSectionVolumeRenderingMode.addRef(),
+    crossSectionVoxelRange: viewer.crossSectionVoxelRange.addRef(),
     crossSectionBackgroundColor: viewer.crossSectionBackgroundColor,
     perspectiveViewBackgroundColor: viewer.perspectiveViewBackgroundColor,
     hideCrossSectionBackground3D: viewer.hideCrossSectionBackground3D,
