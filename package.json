@@ -86,6 +86,7 @@
     "yauzl": "^3.2.0"
   },
   "dependencies": {
+    "@types/yauzl": "^2.10.3",
     "codemirror": "^5.61.1",
     "core-js": "^3.40.0",
     "crc-32": "^1.2.2",
