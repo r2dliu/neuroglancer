@@ -154,6 +154,38 @@ def test_cross_section_slab_rendering_state():
     assert default.voxel_range.link == "linked"
 
 
+def test_slice_layer_cross_sections():
+    assert neuroglancer.SliceLayer is viewer_state.SliceLayer
+
+    layer = neuroglancer.SliceLayer(
+        cross_sections={
+            "slab": {
+                "width": 320,
+                "height": 240,
+                "volumeRenderingMode": "min",
+                "voxelRange": {"link": "relative", "value": 5},
+            },
+            "default": {},
+        }
+    )
+    assert layer.type == "slice"
+    assert layer.cross_sections["slab"].width == 320
+    assert layer.cross_sections["slab"].height == 240
+    assert layer.cross_sections["slab"].volume_rendering_mode == "min"
+    assert layer.cross_sections["slab"].voxel_range.link == "relative"
+    assert layer.cross_sections["default"].width == 1000
+    assert layer.cross_sections["default"].volume_rendering_mode == "max"
+    assert layer.cross_sections["default"].voxel_range.link == "linked"
+
+    layer_json = layer.to_json()
+    assert "source" not in layer_json
+    layers = viewer_state.Layers([{"name": "slices", **layer_json}], _readonly=True)
+    restored = layers["slices"].layer
+    assert isinstance(restored, viewer_state.SliceLayer)
+    assert isinstance(restored.cross_sections["slab"], viewer_state.CrossSection)
+    assert layers.to_json() == [{"name": "slices", **layer_json}]
+
+
 @pytest.mark.parametrize("value", [-1, float("inf"), float("-inf"), float("nan")])
 def test_cross_section_voxel_range_rejects_invalid_values(value):
     with pytest.raises(ValueError):

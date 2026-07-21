@@ -1625,6 +1625,27 @@ class CrossSectionMap(_CrossSectionMapBase):
 
 
 @export
+class SliceLayer(Layer):
+    __slots__ = ()
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, type="slice", **kwargs)
+
+    cross_sections = crossSections = wrapped_property("crossSections", CrossSectionMap)
+
+    @staticmethod
+    def interpolate(a, b, t):
+        c = copy.deepcopy(a)
+        c.cross_sections = CrossSectionMap.interpolate(
+            a.cross_sections, b.cross_sections, t
+        )
+        return c
+
+
+layer_types["slice"] = SliceLayer
+
+
+@export
 class DataPanelLayout(JsonObjectWrapper):
     __slots__ = ()
     type = wrapped_property("type", str)

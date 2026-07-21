@@ -283,7 +283,7 @@ definitions:
       - "type"
   CrossSection:
     $id: CrossSection
-    title: "Specifies a named cross-section view under `DataPanelLayout.crossSections`."
+    title: "Specifies a named cross-section view."
     type: object
     properties:
       width:
@@ -305,6 +305,22 @@ definitions:
         default: "max"
       voxelRange:
         $ref: LinkedVoxelRange
+  SliceLayer:
+    $id: SliceLayer
+    title: "Specifies cross-section views controlled as a layer."
+    allOf:
+      - $ref: Layer
+      - type: object
+        properties:
+          type:
+            const: "slice"
+          crossSections:
+            type: object
+            additionalProperties:
+              $ref: CrossSection
+            title: "Named cross-section views to include in 3-d projection panels."
+        required:
+          - "type"
   LayerGroupViewer:
     $id: LayerGroupViewer
     title: "Specifies a :json:schema:`DataPanelLayout` for a subset of the layers."
