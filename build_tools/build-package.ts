@@ -27,6 +27,7 @@ function buildDeclarationFiles(
     ...options,
     declaration: true,
     emitDeclarationOnly: true,
+    noEmit: false,
   };
   const program = ts.createProgram(fileNames, options);
   program.emit();

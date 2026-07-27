@@ -54,7 +54,10 @@ import {
   SegmentationLayerSharedObject,
 } from "#src/segmentation_display_state/frontend.js";
 import type { WatchableValueInterface } from "#src/trackable_value.js";
-import { makeCachedDerivedWatchableValue } from "#src/trackable_value.js";
+import {
+  makeCachedDerivedWatchableValue,
+  WatchableValue,
+} from "#src/trackable_value.js";
 import type { Borrowed, RefCounted } from "#src/util/disposable.js";
 import type { vec4 } from "#src/util/geom.js";
 import {
@@ -259,6 +262,15 @@ export class MeshShaderManager {
     vec3.scale(lightVec, lightDirection, directionalLighting);
     lightVec[3] = ambientLighting;
     gl.uniform4fv(shader.uniform("uLightDirection"), lightVec);
+    const clip = meshClipBounds.value;
+    gl.uniform3fv(
+      shader.uniform("uClipLower"),
+      clip ? clip.lower : NO_CLIP_LOWER,
+    );
+    gl.uniform3fv(
+      shader.uniform("uClipUpper"),
+      clip ? clip.upper : NO_CLIP_UPPER,
+    );
     const silhouetteRendering = displayState.silhouetteRendering.value;
     if (silhouetteRendering > 0) {
       gl.uniform1f(shader.uniform("uSilhouettePower"), silhouetteRendering);
@@ -367,6 +379,12 @@ export class MeshShaderManager {
         builder.addUniform("highp mat3", "uNormalMatrix");
         builder.addUniform("highp mat4", "uModelViewProjection");
         builder.addUniform("highp uint", "uPickID");
+        // Per-axis clip box in the mesh's model (nm) space; fragments outside
+        // are discarded. Set to +/-1e30 when clipping is off, so no branch flag
+        // or shader variant is needed. Mirrors the volume clip (§ clipBounds).
+        builder.addUniform("highp vec3", "uClipLower");
+        builder.addUniform("highp vec3", "uClipUpper");
+        builder.addVarying("highp vec3", "vModelPosition");
         if (silhouetteRenderingEnabled) {
           builder.addUniform("highp float", "uSilhouettePower");
         }
@@ -389,6 +407,7 @@ highp vec3 normalMultiplier = vec3(1.0, 1.0, 1.0);
         }
         vertexMain += `
 gl_Position = uModelViewProjection * vec4(vertexPosition, 1.0);
+vModelPosition = vertexPosition;
 vec3 origNormal = decodeNormalOctahedronSnorm8(aVertexNormal);
 vec3 normal = normalize(uNormalMatrix * (normalMultiplier * origNormal));
 float absCosAngle = abs(dot(normal, uLightDirection.xyz));
@@ -401,7 +420,13 @@ vColor *= pow(1.0 - absCosAngle, uSilhouettePower);
 `;
         }
         builder.setVertexMain(vertexMain);
-        builder.setFragmentMain("emit(vColor, uPickID);");
+        builder.setFragmentMain(`
+if (any(lessThan(vModelPosition, uClipLower)) ||
+    any(greaterThan(vModelPosition, uClipUpper))) {
+  discard;
+}
+emit(vColor, uPickID);
+`);
       },
     });
   }
@@ -410,6 +435,24 @@ vColor *= pow(1.0 - absCosAngle, uSilhouettePower);
 export interface MeshDisplayState extends SegmentationDisplayState3D {
   silhouetteRendering: WatchableValueInterface<number>;
 }
+
+// Viewer-global "show meshes" switch, read each frame by both mesh draw paths.
+// One toggle for all meshes (not per-layer); the app sets `.value` and each
+// mesh layer registers a redraw on `.changed`.
+export const meshesVisible = new WatchableValue<boolean>(true);
+
+export interface MeshClipBounds {
+  lower: Float32Array;
+  upper: Float32Array;
+}
+
+// Viewer-global mesh clip box, in the mesh's model (nm) space. `null` = no clip
+// (the shader receives the ±NO_CLIP sentinel bounds). Driven from the app's 3D
+// clipBounds; one box for all meshes, like `meshesVisible`.
+export const meshClipBounds = new WatchableValue<MeshClipBounds | null>(null);
+
+const NO_CLIP_LOWER = new Float32Array([-1e30, -1e30, -1e30]);
+const NO_CLIP_UPPER = new Float32Array([1e30, 1e30, 1e30]);
 
 export class MeshLayer extends PerspectiveViewRenderLayer<ThreeDimensionalRenderLayerAttachmentState> {
   protected meshShaderManager;
@@ -431,6 +474,12 @@ export class MeshLayer extends PerspectiveViewRenderLayer<ThreeDimensionalRender
     registerRedrawWhenSegmentationDisplayState3DChanged(displayState, this);
     this.registerDisposer(
       displayState.silhouetteRendering.changed.add(this.redrawNeeded.dispatch),
+    );
+    this.registerDisposer(
+      meshesVisible.changed.add(this.redrawNeeded.dispatch),
+    );
+    this.registerDisposer(
+      meshClipBounds.changed.add(this.redrawNeeded.dispatch),
     );
 
     const sharedObject = (this.backend = this.registerDisposer(
@@ -480,6 +529,10 @@ export class MeshLayer extends PerspectiveViewRenderLayer<ThreeDimensionalRender
     const { gl, displayState, meshShaderManager } = this;
     if (displayState.objectAlpha.value <= 0.0) {
       // Skip drawing.
+      return;
+    }
+    if (!meshesVisible.value) {
+      // Global "show meshes" toggle is off.
       return;
     }
     const modelMatrix = update3dRenderLayerAttachment(
@@ -773,6 +826,12 @@ export class MultiscaleMeshLayer extends PerspectiveViewRenderLayer<ThreeDimensi
     this.registerDisposer(
       displayState.silhouetteRendering.changed.add(this.redrawNeeded.dispatch),
     );
+    this.registerDisposer(
+      meshesVisible.changed.add(this.redrawNeeded.dispatch),
+    );
+    this.registerDisposer(
+      meshClipBounds.changed.add(this.redrawNeeded.dispatch),
+    );
 
     const sharedObject = (this.backend = this.registerDisposer(
       new SegmentationLayerSharedObject(
@@ -821,6 +880,10 @@ export class MultiscaleMeshLayer extends PerspectiveViewRenderLayer<ThreeDimensi
     const { gl, displayState, meshShaderManager } = this;
     if (displayState.objectAlpha.value <= 0.0) {
       // Skip drawing.
+      return;
+    }
+    if (!meshesVisible.value) {
+      // Global "show meshes" toggle is off.
       return;
     }
     const modelMatrix = update3dRenderLayerAttachment(
