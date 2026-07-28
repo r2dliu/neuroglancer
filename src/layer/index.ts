@@ -355,7 +355,7 @@ export class UserLayer extends RefCounted {
   readyStateChanged = new NullarySignal();
   specificationChanged = new NullarySignal();
   renderLayers = new Array<RenderLayer>();
-  private loadingCounter = 1;
+  loadingCounter = 1;
   get isReady() {
     return this.loadingCounter === 0;
   }
@@ -439,7 +439,7 @@ export class UserLayer extends RefCounted {
     this.activateDataSubsources(getDataSubsources.call(this));
   }
 
-  private decrementLoadingCounter() {
+  decrementLoadingCounter() {
     if (--this.loadingCounter === 0) {
       this.readyStateChanged.dispatch();
     }

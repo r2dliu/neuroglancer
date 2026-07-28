@@ -8,20 +8,28 @@
  * use them.
  */
 
+import type { AnnotationLayerState } from "#src/annotation/annotation_layer_state.js";
+import type { MultiscaleAnnotationSource } from "#src/annotation/frontend_source.js";
+import type { AnnotationSource } from "#src/annotation/index.js";
+import type { UserLayerWithAnnotations } from "#src/ui/annotations.js";
 import type { Viewer } from "#src/viewer.js";
 
+type AnnotationLayer = UserLayerWithAnnotations | null | undefined;
+
 /** The layer's first writable annotation source, or undefined. */
-export function getMutableAnnotationSource(userLayer: any): any | undefined {
-  const states = userLayer?.annotationStates?.states;
-  if (!states) return undefined;
-  const state = states.find((s: any) => s.source && !s.source.readonly);
-  return state?.source;
+export function getMutableAnnotationSource(
+  userLayer: AnnotationLayer,
+): AnnotationSource | MultiscaleAnnotationSource | undefined {
+  return userLayer?.annotationStates.states.find((s) => !s.source.readonly)
+    ?.source;
 }
 
-function writableAnnotationState(userLayer: any): any | undefined {
-  const states = userLayer?.annotationStates?.states;
-  if (!states) return undefined;
-  return states.find((s: any) => s.source && !s.source.readonly) ?? states[0];
+function writableAnnotationState(
+  userLayer: AnnotationLayer,
+): AnnotationLayerState | undefined {
+  const states = userLayer?.annotationStates.states;
+  if (states === undefined) return undefined;
+  return states.find((s) => !s.source.readonly) ?? states[0];
 }
 
 /**
@@ -31,12 +39,12 @@ function writableAnnotationState(userLayer: any): any | undefined {
  */
 export function setAnnotationHover(
   viewer: Viewer,
-  userLayer: any,
+  userLayer: AnnotationLayer,
   id: string | null,
   partIndex = 0,
 ): void {
   const displayState = userLayer?.annotationDisplayState;
-  if (!displayState?.hoverState) return;
+  if (displayState === undefined) return;
   if (id === null) {
     displayState.hoverState.value = undefined;
   } else {
@@ -48,7 +56,7 @@ export function setAnnotationHover(
       annotationLayerState: state,
     };
   }
-  (viewer as any).display?.scheduleRedraw?.();
+  viewer.display.scheduleRedraw();
 }
 
 /**
@@ -57,11 +65,11 @@ export function setAnnotationHover(
  * it can't clobber the externally-owned value. Pass null to deselect.
  */
 export function setAnnotationSelection(
-  userLayer: any,
+  userLayer: AnnotationLayer,
   id: string | null,
 ): void {
   const displayState = userLayer?.annotationDisplayState;
-  if (!displayState?.selectedAnnotation) return;
+  if (displayState === undefined) return;
   displayState.controlledSelection = true;
   displayState.selectedAnnotation.value = id ?? undefined;
 }
