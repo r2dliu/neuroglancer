@@ -62,6 +62,12 @@ def interpolate_linear(a, b, t):
     return a * (1 - t) + b * t
 
 
+def interpolate_linear_optional(a, b, t):
+    if a is None or b is None:
+        return a
+    return interpolate_linear(a, b, t)
+
+
 def interpolate_linear_optional_vectors(a, b, t):
     if a is not None and b is not None and len(a) == len(b):
         return a * (1 - t) + b * t
@@ -1425,6 +1431,38 @@ _set_type_annotation(
 )
 
 
+def navigation_simple_link_type(x):
+    x = str(x).lower()
+    if x not in ["linked", "unlinked"]:
+        raise ValueError(f"Invalid simple navigation link type: {x!r}")
+    return x
+
+
+_set_type_annotation(navigation_simple_link_type, typing.Literal["linked", "unlinked"])
+
+
+def cross_section_volume_rendering_mode(x):
+    x = str(x).lower()
+    if x not in ["min", "max"]:
+        raise ValueError(f"Invalid cross-section volume rendering mode: {x!r}")
+    return x
+
+
+_set_type_annotation(cross_section_volume_rendering_mode, typing.Literal["min", "max"])
+
+
+def cross_section_voxel_range(x):
+    x = float(x)
+    if not math.isfinite(x) or x < 0:
+        raise ValueError(
+            f"Invalid cross-section voxel range (expected a finite, non-negative number): {x!r}"
+        )
+    return x
+
+
+_set_type_annotation(cross_section_voxel_range, float)
+
+
 @export
 class LinkedType(typing.Generic[T], JsonObjectWrapper):
     """Value linked to another value in the viewer state.
@@ -1502,6 +1540,33 @@ class LinkedDepthRange(_LinkedDepthRangeBase):
 
 
 if typing.TYPE_CHECKING or _BUILDING_DOCS:
+    _LinkedVoxelRangeBase = LinkedType[float]
+else:
+    _LinkedVoxelRangeBase = make_linked_navigation_type(
+        cross_section_voxel_range, interpolate_linear_optional
+    )
+
+
+@export
+class LinkedVoxelRange(_LinkedVoxelRangeBase):
+    __slots__ = ()
+
+
+if typing.TYPE_CHECKING or _BUILDING_DOCS:
+    _LinkedCrossSectionVolumeRenderingModeBase = LinkedType[str]
+else:
+    _LinkedCrossSectionVolumeRenderingModeBase = make_linked_navigation_type(
+        cross_section_volume_rendering_mode, lambda a, b, t: a
+    )
+
+
+@export
+class LinkedCrossSectionVolumeRenderingMode(_LinkedCrossSectionVolumeRenderingModeBase):
+    __slots__ = ()
+    link = wrapped_property("link", optional(navigation_simple_link_type, "linked"))
+
+
+if typing.TYPE_CHECKING or _BUILDING_DOCS:
     _LinkedOrientationStateBase = LinkedType[np.typing.NDArray[np.float32]]
 else:
     _LinkedOrientationStateBase = make_linked_navigation_type(
@@ -1523,6 +1588,10 @@ class CrossSection(JsonObjectWrapper):
     position = wrapped_property("position", LinkedPosition)
     orientation = wrapped_property("orientation", LinkedOrientationState)
     scale = wrapped_property("scale", LinkedZoomFactor)
+    volume_rendering_mode = volumeRenderingMode = wrapped_property(
+        "volumeRenderingMode", optional(cross_section_volume_rendering_mode, "max")
+    )
+    voxel_range = voxelRange = wrapped_property("voxelRange", LinkedVoxelRange)
 
     @staticmethod
     def interpolate(a, b, t):
@@ -1534,6 +1603,7 @@ class CrossSection(JsonObjectWrapper):
             a.orientation, b.orientation, t
         )
         c.scale = LinkedZoomFactor.interpolate(a.scale, b.scale, t)
+        c.voxel_range = LinkedVoxelRange.interpolate(a.voxel_range, b.voxel_range, t)
         return c
 
 
@@ -1702,6 +1772,15 @@ class LayerGroupViewer(JsonObjectWrapper):
     cross_section_scale = crossSectionScale = wrapped_property(
         "crossSectionScale", LinkedZoomFactor
     )
+    cross_section_volume_rendering_mode = crossSectionVolumeRenderingMode = (
+        wrapped_property(
+            "crossSectionVolumeRenderingMode",
+            LinkedCrossSectionVolumeRenderingMode,
+        )
+    )
+    cross_section_voxel_range = crossSectionVoxelRange = wrapped_property(
+        "crossSectionVoxelRange", LinkedVoxelRange
+    )
     cross_section_depth = crossSectionDepth = wrapped_property(
         "crossSectionDepth", LinkedDepthRange
     )
@@ -1781,6 +1860,15 @@ class ViewerState(JsonObjectWrapper):
     )
     cross_section_scale = crossSectionScale = wrapped_property(
         "crossSectionScale", optional(float)
+    )
+    cross_section_volume_rendering_mode = crossSectionVolumeRenderingMode = (
+        wrapped_property(
+            "crossSectionVolumeRenderingMode",
+            optional(cross_section_volume_rendering_mode, "max"),
+        )
+    )
+    cross_section_voxel_range = crossSectionVoxelRange = wrapped_property(
+        "crossSectionVoxelRange", optional(cross_section_voxel_range, 0)
     )
     cross_section_depth = crossSectionDepth = wrapped_property(
         "crossSectionDepth", optional(float)
@@ -1862,6 +1950,9 @@ class ViewerState(JsonObjectWrapper):
         )
         c.cross_section_scale = interpolate_zoom(
             a.cross_section_scale, b.cross_section_scale, t
+        )
+        c.cross_section_voxel_range = interpolate_linear(
+            a.cross_section_voxel_range, b.cross_section_voxel_range, t
         )
         c.cross_section_orientation = quaternion_slerp(
             a.cross_section_orientation, b.cross_section_orientation, t

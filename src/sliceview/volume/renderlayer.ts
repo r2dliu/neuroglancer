@@ -17,9 +17,15 @@
 import { ChunkState } from "#src/chunk_manager/base.js";
 import type { CoordinateSpace } from "#src/coordinate_transform.js";
 import { emptyInvalidCoordinateSpace } from "#src/coordinate_transform.js";
+import { CrossSectionVolumeRenderingMode } from "#src/navigation_state.js";
 import type { ProjectionParameters } from "#src/projection_parameters.js";
 import { getChunkPositionFromCombinedGlobalLocalPositions } from "#src/render_coordinate_transform.js";
-import { getNormalizedChunkLayout } from "#src/sliceview/base.js";
+import {
+  forEachCrossSectionVolumeRenderingPlane,
+  getCrossSectionVolumeRenderingDepth,
+  getCrossSectionVolumeRenderingVoxelRange,
+  getNormalizedChunkLayout,
+} from "#src/sliceview/base.js";
 import {
   computeVertexPositionDebug,
   defineBoundingBoxCrossSectionShader,
@@ -89,6 +95,7 @@ const DEBUG_VERTICES = false;
 export const CHUNK_POSITION_EPSILON = 1e-3;
 
 const tempMat4 = mat4.create();
+const tempPlaneCenter = vec3.create();
 
 function defineVolumeShader(builder: ShaderBuilder, wireFrame: boolean) {
   defineVertexId(builder);
@@ -205,22 +212,10 @@ function initializeShader(
 function beginSource(
   gl: GL,
   shader: ShaderProgram,
-  sliceView: SliceView,
   dataToDeviceMatrix: mat4,
   tsource: FrontendTransformedSource,
   chunkLayout: ChunkLayout,
 ) {
-  const projectionParameters = sliceView.projectionParameters.value;
-  const { centerDataPosition } = projectionParameters;
-
-  setBoundingBoxCrossSectionShaderViewportPlane(
-    shader,
-    projectionParameters.viewportNormalInGlobalCoordinates,
-    centerDataPosition,
-    chunkLayout.transform,
-    chunkLayout.invTransform,
-  );
-
   // Compute projection matrix that transforms chunk layout coordinates to device coordinates.
   gl.uniformMatrix4fv(
     shader.uniform("uProjectionMatrix"),
@@ -241,10 +236,62 @@ function beginSource(
       tsource.lowerClipDisplayBound;
     (<any>window).debug_sliceView_uUpperClipBound =
       tsource.upperClipDisplayBound;
-    (<any>window).debug_sliceView = sliceView;
     (<any>window).debug_sliceView_dataToDevice = mat4.clone(tempMat4);
     (<any>window).debug_sliceView_chunkLayout = chunkLayout;
   }
+}
+
+function setSourcePlane(
+  shader: ShaderProgram,
+  sliceView: SliceView,
+  chunkLayout: ChunkLayout,
+  planeOffset: number,
+) {
+  const projectionParameters = sliceView.projectionParameters.value;
+  const centerDataPosition = tempPlaneCenter;
+  vec3.scaleAndAdd(
+    centerDataPosition,
+    projectionParameters.centerDataPosition,
+    projectionParameters.viewportNormalInGlobalCoordinates,
+    planeOffset,
+  );
+  setBoundingBoxCrossSectionShaderViewportPlane(
+    shader,
+    projectionParameters.viewportNormalInGlobalCoordinates,
+    centerDataPosition,
+    chunkLayout.transform,
+    chunkLayout.invTransform,
+  );
+  if (DEBUG_VERTICES) {
+    (<any>window).debug_sliceView = sliceView;
+  }
+}
+
+function beginCrossSectionVolumeRendering(
+  gl: GL,
+  mode: CrossSectionVolumeRenderingMode,
+) {
+  gl.enable(gl.BLEND);
+  // Blend factors are ignored by the MIN/MAX equations, so retain the
+  // layer's configured blend function and avoid querying/restoring GL state.
+  gl.blendEquationSeparate(
+    mode === CrossSectionVolumeRenderingMode.MIN ? gl.MIN : gl.MAX,
+    gl.MAX,
+  );
+  // Each plane is assigned its own depth band, with finer sources preceding
+  // coarser sources within the band.  Normal LESS testing therefore provides
+  // per-plane multiscale fallback while every plane still contributes to the
+  // MIN/MAX reduction.
+  gl.depthFunc(gl.LESS);
+}
+
+function endCrossSectionVolumeRendering(gl: GL) {
+  // These are the states established by SliceView.updateRendering before a
+  // layer is drawn.  The next layer restores its own blend enable/function,
+  // and updateRendering disables blending after all layers.
+  gl.blendEquationSeparate(gl.FUNC_ADD, gl.FUNC_ADD);
+  gl.depthFunc(gl.LESS);
+  gl.depthRange(0, 1);
 }
 
 function setupChunkDataSize(
@@ -401,9 +448,19 @@ export abstract class SliceViewVolumeRenderLayer<
         const { dataHistogramChannelSpecifications, numChannelDimensions } =
           extraParameters;
         defineVolumeShader(builder, chunkFormat === null);
+        builder.addUniform("highp int", "uCrossSectionMinProjectionEnabled");
         builder.addOutputBuffer("vec4", "v4f_fragData0", 0);
         builder.addFragmentCode(`
 void emit(vec4 color) {
+  // MIN/MAX blend equations ignore alpha and blend factors.  Fully transparent
+  // fragments must therefore use the neutral RGB value for the reduction:
+  // white for MIN and black for MAX.  Black is also harmless for the normal
+  // alpha-blended path, where a zero-alpha fragment contributes nothing.
+  if (color.a == 0.0) {
+    color.rgb = uCrossSectionMinProjectionEnabled != 0
+        ? vec3(1.0)
+        : vec3(0.0);
+  }
   v4f_fragData0 = color;
 }
 `);
@@ -505,6 +562,15 @@ void main() {
     if (shader !== null) {
       shader.bind();
       initializeShader(shader, projectionParameters, chunkFormat === null);
+      gl.uniform1i(
+        shader.uniform("uCrossSectionMinProjectionEnabled"),
+        getCrossSectionVolumeRenderingVoxelRange(sliceView.voxelRange.value) >
+          0 &&
+          sliceView.volumeRenderingMode.value ===
+            CrossSectionVolumeRenderingMode.MIN
+          ? 1
+          : 0,
+      );
       if (chunkFormat !== null) {
         if (dataHistogramsEnabled) {
           const { dataHistogramChannelSpecifications } =
@@ -574,6 +640,14 @@ void main() {
     const { projectionParameters, wireFrame } = renderContext;
 
     const { gl } = this;
+    const volumeRenderingVoxelRange = getCrossSectionVolumeRenderingVoxelRange(
+      sliceView.voxelRange.value,
+    );
+    const enableCrossSectionVolumeRendering =
+      volumeRenderingVoxelRange > 0 && !wireFrame;
+    if (enableCrossSectionVolumeRendering) {
+      beginCrossSectionVolumeRendering(gl, sliceView.volumeRenderingMode.value);
+    }
 
     this.vertexIdHelper.enable();
 
@@ -604,104 +678,138 @@ void main() {
       }
       this.endSlice(sliceView, shader, shaderResult.parameters);
     };
-    let newSource = true;
-    for (const transformedSource of visibleSources) {
-      const chunkLayout = getNormalizedChunkLayout(
-        projectionParameters,
-        transformedSource.chunkLayout,
-      );
-      const {
-        chunkTransform: { channelToChunkDimensionIndices },
-      } = transformedSource;
-      const source = transformedSource.source as VolumeChunkSource;
-      const { fixedPositionWithinChunk, chunkDisplayDimensionIndices } =
-        transformedSource;
-      for (const chunkDim of chunkDisplayDimensionIndices) {
-        fixedPositionWithinChunk[chunkDim] = 0;
-      }
-      const chunkFormat = wireFrame ? null : source.chunkFormat;
-      if (chunkFormat !== prevChunkFormat) {
-        prevChunkFormat = chunkFormat;
-        endShader();
-        shaderResult = this.beginChunkFormat(
-          sliceView,
-          chunkFormat,
-          projectionParameters,
-        );
-        shader = shaderResult.shader;
-      }
-      if (shader === null) continue;
-      const chunks = source.chunks;
-
-      chunkDataDisplaySize.fill(1);
-
-      const originalChunkSize = chunkLayout.size;
-
-      let chunkDataSize: Uint32Array | undefined;
-      const chunkRank = source.spec.rank;
-
-      beginSource(
-        gl,
-        shader,
-        sliceView,
-        projectionParameters.viewProjectionMat,
-        transformedSource,
-        chunkLayout,
-      );
-      this.setupSourceUniforms(gl, shader, transformedSource);
-      if (chunkFormat !== null) {
-        chunkFormat.beginSource(gl, shader);
-      }
-      newSource = true;
-      let presentCount = 0;
-      let notPresentCount = 0;
-      sliceView.forEachVisibleChunk(transformedSource, chunkLayout, (key) => {
-        const chunk = chunks.get(key);
-        if (chunk && chunk.state === ChunkState.GPU_MEMORY) {
-          const newChunkDataSize = chunk.chunkDataSize;
-          if (newChunkDataSize !== chunkDataSize) {
-            chunkDataSize = newChunkDataSize;
-            for (let i = 0; i < 3; ++i) {
-              const chunkDim = chunkDisplayDimensionIndices[i];
-              chunkDataDisplaySize[i] =
-                chunkDim === -1 || chunkDim >= chunkRank
-                  ? 1
-                  : chunkDataSize[chunkDim];
-            }
-            setupChunkDataSize(gl, shader!, chunkDataDisplaySize);
-          }
-          const { chunkGridPosition } = chunk;
-          for (let i = 0; i < 3; ++i) {
-            const chunkDim = chunkDisplayDimensionIndices[i];
-            chunkPosition[i] =
-              chunkDim === -1 || chunkDim >= chunkRank
-                ? 0
-                : originalChunkSize[i] * chunkGridPosition[chunkDim];
-          }
-          if (chunkFormat !== null) {
-            chunkFormat.bindChunk(
-              gl,
-              shader!,
-              chunk,
-              fixedPositionWithinChunk,
-              chunkDisplayDimensionIndices,
-              channelToChunkDimensionIndices,
-              newSource,
+    const presentCounts = visibleSources.map(() => 0);
+    const notPresentCounts = visibleSources.map(() => 0);
+    const planeCount = 2 * volumeRenderingVoxelRange + 1;
+    let planeIndex = 0;
+    forEachCrossSectionVolumeRenderingPlane(
+      volumeRenderingVoxelRange,
+      (planeOffset) => {
+        // Plane depth bands descend as planes are rendered.  Therefore this
+        // plane passes over every prior plane and participates in the color
+        // reduction.  Within this plane, increasing source depth means a
+        // coarser source passes only where no finer source wrote depth.
+        for (
+          let transformedSourceIndex = 0;
+          transformedSourceIndex < visibleSources.length;
+          ++transformedSourceIndex
+        ) {
+          const transformedSource = visibleSources[transformedSourceIndex];
+          if (enableCrossSectionVolumeRendering) {
+            const sourceDepth = getCrossSectionVolumeRenderingDepth(
+              planeIndex,
+              planeCount,
+              transformedSourceIndex,
+              visibleSources.length,
             );
+            gl.depthRange(sourceDepth, sourceDepth);
           }
-          newSource = false;
-          drawChunk(gl, shader!, chunkPosition, wireFrame);
-          ++presentCount;
-        } else {
-          ++notPresentCount;
-        }
-      });
+          const chunkLayout = getNormalizedChunkLayout(
+            projectionParameters,
+            transformedSource.chunkLayout,
+          );
+          const {
+            chunkTransform: { channelToChunkDimensionIndices },
+          } = transformedSource;
+          const source = transformedSource.source as VolumeChunkSource;
+          const { fixedPositionWithinChunk, chunkDisplayDimensionIndices } =
+            transformedSource;
+          for (const chunkDim of chunkDisplayDimensionIndices) {
+            fixedPositionWithinChunk[chunkDim] = 0;
+          }
+          const chunkFormat = wireFrame ? null : source.chunkFormat;
+          if (chunkFormat !== prevChunkFormat) {
+            endShader();
+            prevChunkFormat = chunkFormat;
+            shaderResult = this.beginChunkFormat(
+              sliceView,
+              chunkFormat,
+              projectionParameters,
+            );
+            shader = shaderResult.shader;
+          }
+          if (shader === null) continue;
+          const chunks = source.chunks;
 
-      if (
-        (presentCount !== 0 || notPresentCount !== 0) &&
-        renderScaleHistogram !== undefined
+          chunkDataDisplaySize.fill(1);
+          const originalChunkSize = chunkLayout.size;
+          let chunkDataSize: Uint32Array | undefined;
+          const chunkRank = source.spec.rank;
+
+          beginSource(
+            gl,
+            shader,
+            projectionParameters.viewProjectionMat,
+            transformedSource,
+            chunkLayout,
+          );
+          setSourcePlane(shader, sliceView, chunkLayout, planeOffset);
+          this.setupSourceUniforms(gl, shader, transformedSource);
+          if (chunkFormat !== null) {
+            chunkFormat.beginSource(gl, shader);
+          }
+          let newSource = true;
+          sliceView.forEachVisibleChunkAtPlane(
+            transformedSource,
+            chunkLayout,
+            planeOffset,
+            (key) => {
+              const chunk = chunks.get(key);
+              if (chunk && chunk.state === ChunkState.GPU_MEMORY) {
+                const newChunkDataSize = chunk.chunkDataSize;
+                if (newChunkDataSize !== chunkDataSize) {
+                  chunkDataSize = newChunkDataSize;
+                  for (let i = 0; i < 3; ++i) {
+                    const chunkDim = chunkDisplayDimensionIndices[i];
+                    chunkDataDisplaySize[i] =
+                      chunkDim === -1 || chunkDim >= chunkRank
+                        ? 1
+                        : chunkDataSize[chunkDim];
+                  }
+                  setupChunkDataSize(gl, shader!, chunkDataDisplaySize);
+                }
+                const { chunkGridPosition } = chunk;
+                for (let i = 0; i < 3; ++i) {
+                  const chunkDim = chunkDisplayDimensionIndices[i];
+                  chunkPosition[i] =
+                    chunkDim === -1 || chunkDim >= chunkRank
+                      ? 0
+                      : originalChunkSize[i] * chunkGridPosition[chunkDim];
+                }
+                if (chunkFormat !== null) {
+                  chunkFormat.bindChunk(
+                    gl,
+                    shader!,
+                    chunk,
+                    fixedPositionWithinChunk,
+                    chunkDisplayDimensionIndices,
+                    channelToChunkDimensionIndices,
+                    newSource,
+                  );
+                }
+                newSource = false;
+                drawChunk(gl, shader!, chunkPosition, wireFrame);
+                ++presentCounts[transformedSourceIndex];
+              } else {
+                ++notPresentCounts[transformedSourceIndex];
+              }
+            },
+          );
+        }
+        ++planeIndex;
+      },
+    );
+
+    if (renderScaleHistogram !== undefined) {
+      for (
+        let transformedSourceIndex = 0;
+        transformedSourceIndex < visibleSources.length;
+        ++transformedSourceIndex
       ) {
-        const { effectiveVoxelSize } = transformedSource;
+        const presentCount = presentCounts[transformedSourceIndex];
+        const notPresentCount = notPresentCounts[transformedSourceIndex];
+        if (presentCount === 0 && notPresentCount === 0) continue;
+        const { effectiveVoxelSize } = visibleSources[transformedSourceIndex];
         // TODO(jbms): replace median hack with more accurate estimate, e.g. based on ellipsoid
         // cross section.
         const medianVoxelSize = medianOf3(
@@ -718,7 +826,8 @@ void main() {
               )
             : Infinity;
           if (medianVoxelSize <= medianStoredVoxelSize) {
-            this.highestResolutionLoadedVoxelSize = effectiveVoxelSize;
+            this.highestResolutionLoadedVoxelSize =
+              visibleSources[transformedSourceIndex].effectiveVoxelSize;
           }
         }
         renderScaleHistogram.add(
@@ -731,6 +840,9 @@ void main() {
     }
     endShader();
     this.vertexIdHelper.disable();
+    if (enableCrossSectionVolumeRendering) {
+      endCrossSectionVolumeRendering(gl);
+    }
     if (!renderContext.wireFrame) {
       const dataHistogramCount = this.getDataHistogramCount();
       if (dataHistogramCount > 0) {
