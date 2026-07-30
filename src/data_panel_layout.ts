@@ -271,8 +271,13 @@ function registerRelatedLayouts(
   panel.element.appendChild(controls);
 }
 
-function makeSliceViewFromSpecification(
-  viewer: SliceViewViewerState,
+export type CrossSectionSliceViewViewerState = Pick<
+  SliceViewViewerState,
+  "chunkManager" | "layerManager" | "wireFrame"
+>;
+
+export function makeSliceViewFromSpecification(
+  viewer: CrossSectionSliceViewViewerState,
   specification: Borrowed<CrossSectionSpecification>,
 ) {
   const voxelRange = specification.voxelRange.value.addRef();
@@ -311,10 +316,11 @@ function makeSliceViewFromSpecification(
   return sliceView;
 }
 
-function addUnconditionalSliceViews(
-  viewer: SliceViewViewerState,
+export function addUnconditionalSliceViews(
+  viewer: CrossSectionSliceViewViewerState,
   panel: PerspectivePanel,
   crossSections: Borrowed<CrossSectionSpecificationMap>,
+  context: RefCounted = panel,
 ) {
   const previouslyAdded = new Map<
     Borrowed<CrossSectionSpecification>,
@@ -338,8 +344,21 @@ function addUnconditionalSliceViews(
         continue;
       }
       panel.sliceViews.delete(sliceView);
+      previouslyAdded.delete(crossSection);
     }
   };
+  context.registerDisposer(
+    crossSections.changed.add(() => {
+      update();
+      panel.scheduleRedraw();
+    }),
+  );
+  context.registerDisposer(() => {
+    for (const sliceView of previouslyAdded.values()) {
+      panel.sliceViews.delete(sliceView);
+    }
+    previouslyAdded.clear();
+  });
   update();
 }
 

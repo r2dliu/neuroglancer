@@ -113,6 +113,7 @@ from .viewer_state import (
     LinkedOrientationState,  # noqa: F401
     CrossSection,  # noqa: F401
     CrossSectionMap,  # noqa: F401
+    SliceLayer,  # noqa: F401
     DataPanelLayout,  # noqa: F401
     StackLayout,  # noqa: F401
     row_layout,  # noqa: F401

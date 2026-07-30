@@ -610,6 +610,8 @@ export class Viewer extends RefCounted implements ViewerState {
       this.selectedLayer,
       this.navigationState.coordinateSpace,
       this.navigationState.pose.position,
+      this.navigationState,
+      this.crossSectionVoxelRange,
       this.globalToolBinder,
     );
 
