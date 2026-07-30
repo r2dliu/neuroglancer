@@ -816,6 +816,7 @@ export class SliceViewRenderHelper extends RefCounted {
     builder.addTextureSampler("sampler2D", "uSampler", "uSamplerUnit");
     builder.addUniform("vec4", "uColorFactor");
     builder.addUniform("vec4", "uBackgroundColor");
+    builder.addUniform("highp uint", "uPickId");
     builder.addUniform("mat4", "uProjectionMatrix");
     builder.addUniform("vec4", "uTextureCoordinateAdjustment");
     if (isProjection) {
@@ -837,7 +838,7 @@ if (sampledColor.a == 0.0) {`;
   discard;
 }
 else {
-  emit(sampledColor * uColorFactor, 0u);
+  emit(sampledColor * uColorFactor, uPickId);
 }
 `;
     } else if (isProjection && hasBrush) {
@@ -864,7 +865,7 @@ else {
       //     subsequent segmentation layers on the same cross-section.
       const missEmit = brushOverlayOnly
         ? "discard;"
-        : "emit(sampledColor * uColorFactor, 0u);";
+        : "emit(sampledColor * uColorFactor, uPickId);";
       glsl_fragmentMainEnd = `
   sampledColor = uBackgroundColor;
 }
@@ -901,7 +902,7 @@ if (voxelPos.x >= 0 && voxelPos.y >= 0 && voxelPos.z >= 0) {
         segmentColor = segmentColorHash(brushValue);
       }
       vec3 baseColor = mix(vec3(1.0, 1.0, 1.0), segmentColor, uSaturation);
-      emit(vec4(baseColor, 1.0), 0u);
+      emit(vec4(baseColor, 1.0), uPickId);
       return;
     }
   }
@@ -912,7 +913,7 @@ ${missEmit}
       glsl_fragmentMainEnd = `
   sampledColor = uBackgroundColor;
 }
-emit(sampledColor * uColorFactor, 0u);
+emit(sampledColor * uColorFactor, uPickId);
 `;
     }
     builder.setFragmentMain(`${glsl_fragmentMainStart}${glsl_fragmentMainEnd}`);
@@ -971,6 +972,7 @@ gl_Position = uProjectionMatrix * aVertexPosition;
     sliceViewInvViewProj?: mat4,
     brushStrokeLayer?: BrushStrokeLayer,
     brushOverlayOnly = false,
+    pickId = 0,
   ) {
     const { gl, textureCoordinateAdjustment } = this;
     textureCoordinateAdjustment[0] = xStart;
@@ -1000,6 +1002,7 @@ gl_Position = uProjectionMatrix * aVertexPosition;
     );
     gl.uniform4fv(shader.uniform("uColorFactor"), colorFactor);
     gl.uniform4fv(shader.uniform("uBackgroundColor"), backgroundColor);
+    gl.uniform1ui(shader.uniform("uPickId"), pickId);
     gl.uniform4fv(
       shader.uniform("uTextureCoordinateAdjustment"),
       textureCoordinateAdjustment,
