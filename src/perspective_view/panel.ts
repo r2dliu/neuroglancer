@@ -25,6 +25,7 @@ import { applyRenderViewportToProjectionMatrix } from "#src/display_context.js";
 import type { VisibleRenderLayerTracker } from "#src/layer/index.js";
 import { makeRenderedPanelVisibleLayerTracker } from "#src/layer/index.js";
 import { PERSPECTIVE_VIEW_RPC_ID } from "#src/perspective_view/base.js";
+import { CrossSectionWidget } from "#src/perspective_view/cross_section_widget.js";
 import type {
   PerspectiveViewReadyRenderContext,
   PerspectiveViewRenderContext,
@@ -289,6 +290,7 @@ class PerspectiveViewState extends PerspectiveViewStateBase {
 export class PerspectivePanel extends RenderedDataPanel {
   declare viewer: PerspectiveViewerState;
   sliceViewRenderHelper: SliceViewRenderHelper;
+  private crossSectionWidget: CrossSectionWidget;
 
   projectionParameters: Owned<DerivedProjectionParameters>;
 
@@ -482,6 +484,9 @@ export class PerspectivePanel extends RenderedDataPanel {
       }),
     );
     this.projectionParameters.changed.add(() => this.context.scheduleRedraw());
+    this.crossSectionWidget = this.registerDisposer(
+      new CrossSectionWidget(this, perspectivePanelEmit),
+    );
 
     const sharedObject = (this.sharedObject = this.registerDisposer(
       new PerspectiveViewState(this),
@@ -516,6 +521,10 @@ export class PerspectivePanel extends RenderedDataPanel {
       element,
       "rotate-via-mouse-drag",
       (e: ActionEvent<MouseEvent>) => {
+        if (this.crossSectionWidget.handleMouseDown(e.detail)) {
+          e.detail.preventDefault();
+          return;
+        }
         startRelativeMouseDrag(e.detail, (_event, deltaX, deltaY) => {
           this.context.flagContinuousCameraMotion();
           this.navigationState.pose.rotateRelative(
@@ -1066,6 +1075,7 @@ export class PerspectivePanel extends RenderedDataPanel {
     }
     this.hasVolumeRendering = hasVolumeRendering;
     this.drawSliceViews(renderContext);
+    this.crossSectionWidget.draw(renderContext);
 
     if (hasAnnotation) {
       // Render annotations with blending enabled.
@@ -1496,6 +1506,10 @@ export class PerspectivePanel extends RenderedDataPanel {
       backgroundColor[3] = 1;
       const invViewProj =
         sliceView.projectionParameters.value.invViewProjectionMat;
+      const pickId = this.crossSectionWidget.registerSliceViewPickId(
+        renderContext.pickIDs,
+        sliceView,
+      );
       // Inline draw: sampled slice-view framebuffer + first
       // segmentation layer's brush (if any).
       sliceViewRenderHelper.draw(
@@ -1509,6 +1523,8 @@ export class PerspectivePanel extends RenderedDataPanel {
         1,
         invViewProj,
         inlineBrushLayer,
+        /*brushOverlayOnly=*/ false,
+        pickId,
       );
       // Overlay pass per additional segmentation layer — brush hits
       // emit, misses `discard`, so each layer's brush composites on
@@ -1535,6 +1551,7 @@ export class PerspectivePanel extends RenderedDataPanel {
             invViewProj,
             brushStrokeLayers[i],
             /*brushOverlayOnly=*/ true,
+            pickId,
           );
         }
         this.gl.depthFunc(WebGL2RenderingContext.LESS);

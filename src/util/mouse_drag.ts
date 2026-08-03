@@ -35,9 +35,13 @@ export function startRelativeMouseDrag(
     handler(e, deltaX, deltaY);
   };
   const button = initialEvent.button;
+  let finished = false;
   const cancel = (e: PointerEvent) => {
+    if (finished) return;
+    finished = true;
     document.removeEventListener("pointermove", mouseMoveHandler, true);
     document.removeEventListener("pointerup", mouseUpHandler, false);
+    document.removeEventListener("pointercancel", cancel, false);
 
     if (finishDragHandler !== undefined) {
       finishDragHandler(e, e.clientX - prevClientX, e.clientY - prevClientY);

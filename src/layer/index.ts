@@ -47,6 +47,8 @@ import { createImageLayerAsMultiChannel } from "#src/layer/multi_channel_setup.j
 import type {
   DisplayDimensions,
   DisplayPose,
+  NavigationState,
+  TrackableCrossSectionVoxelRange,
   WatchableDisplayDimensionRenderInfo,
 } from "#src/navigation_state.js";
 import {
@@ -2156,6 +2158,8 @@ export class TopLevelLayerListSpecification extends LayerListSpecification {
     public selectedLayer: Borrowed<SelectedLayerState>,
     public coordinateSpace: WatchableValueInterface<CoordinateSpace>,
     public globalPosition: Borrowed<Position>,
+    public navigationState: Borrowed<NavigationState>,
+    public crossSectionVoxelRange: Borrowed<TrackableCrossSectionVoxelRange>,
     public toolBinder: Borrowed<GlobalToolBinder>,
   ) {
     super();

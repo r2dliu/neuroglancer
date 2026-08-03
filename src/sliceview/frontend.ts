@@ -30,6 +30,7 @@ import type {
   DisplayDimensionRenderInfo,
   NavigationState,
 } from "#src/navigation_state.js";
+import { CrossSectionVolumeRenderingMode } from "#src/navigation_state.js";
 import type { PerspectiveViewerState } from "#src/perspective_view/panel.js";
 import { updateProjectionParametersFromInverseViewAndProjection } from "#src/projection_parameters.js";
 import type {
@@ -50,6 +51,7 @@ import {
   SegmentColorShaderManager,
   SegmentStatedColorShaderManager,
 } from "#src/segment_color.js";
+import { SharedWatchableValue } from "#src/shared_watchable_value.js";
 import type {
   SliceViewChunkSource as SliceViewChunkSourceInterface,
   SliceViewChunkSpecification,
@@ -58,7 +60,9 @@ import type {
   VisibleLayerSources,
 } from "#src/sliceview/base.js";
 import {
+  forEachCrossSectionVolumeRenderingPlane,
   forEachPlaneIntersectingVolumetricChunk,
+  getCrossSectionVolumeRenderingVoxelRange,
   getNormalizedChunkLayout,
   SLICEVIEW_ADD_VISIBLE_LAYER_RPC_ID,
   SLICEVIEW_REMOVE_VISIBLE_LAYER_RPC_ID,
@@ -102,11 +106,13 @@ import { registerSharedObjectOwner } from "#src/worker_rpc.js";
 
 export type GenericChunkKey = string;
 
+const kOneVec4 = new Float32Array([1, 1, 1, 1]);
+
 class FrontendSliceViewBase extends SliceViewBase<
   SliceViewChunkSource,
   SliceViewRenderLayer,
   FrontendTransformedSource
-> { }
+> {}
 const Base = withSharedVisibility(FrontendSliceViewBase);
 
 export interface FrontendTransformedSource<
@@ -224,6 +230,8 @@ export class SliceView extends Base {
     public chunkManager: ChunkManager,
     public layerManager: LayerManager,
     public navigationState: Owned<NavigationState>,
+    public volumeRenderingMode: WatchableValueInterface<CrossSectionVolumeRenderingMode>,
+    public voxelRange: WatchableValueInterface<number>,
     public wireFrame: WatchableValueInterface<boolean>,
   ) {
     super(
@@ -298,6 +306,12 @@ export class SliceView extends Base {
     this.registerDisposer(navigationState);
     this.registerDisposer(this.projectionParameters);
     this.registerDisposer(
+      volumeRenderingMode.changed.add(this.viewChanged.dispatch),
+    );
+    this.registerDisposer(
+      voxelRange.changed.add(() => this.invalidateVisibleChunks()),
+    );
+    this.registerDisposer(
       this.projectionParameters.changed.add((oldValue, newValue) => {
         if (
           oldValue.displayDimensionRenderInfo !==
@@ -315,6 +329,9 @@ export class SliceView extends Base {
     this.initializeCounterpart(rpc, {
       chunkManager: chunkManager.rpcId,
       projectionParameters: sharedProjectionParameters.rpcId,
+      voxelRange: this.registerDisposer(
+        SharedWatchableValue.makeFromExisting(rpc, this.voxelRange),
+      ).rpcId,
     });
     this.registerDisposer(
       layerManager.layersChanged.add(() => {
@@ -338,6 +355,25 @@ export class SliceView extends Base {
   forEachVisibleChunk(
     tsource: FrontendTransformedSource,
     chunkLayout: ChunkLayout,
+    callback: (key: string, planeOffset: number) => void,
+  ) {
+    forEachCrossSectionVolumeRenderingPlane(
+      this.voxelRange.value,
+      (planeOffset) => {
+        this.forEachVisibleChunkAtPlane(
+          tsource,
+          chunkLayout,
+          planeOffset,
+          (key) => callback(key, planeOffset),
+        );
+      },
+    );
+  }
+
+  forEachVisibleChunkAtPlane(
+    tsource: FrontendTransformedSource,
+    chunkLayout: ChunkLayout,
+    planeOffset: number,
     callback: (key: string) => void,
   ) {
     forEachPlaneIntersectingVolumetricChunk(
@@ -345,9 +381,8 @@ export class SliceView extends Base {
       tsource.renderLayer.localPosition.value,
       tsource,
       chunkLayout,
-      () => {
-        callback(tsource.curPositionInChunks.join());
-      },
+      () => callback(tsource.curPositionInChunks.join()),
+      planeOffset,
     );
   }
 
@@ -552,7 +587,15 @@ export class SliceView extends Base {
     offscreenFramebuffer.bind(width, height);
     gl.disable(gl.SCISSOR_TEST);
 
-    gl.clearColor(0, 0, 0, 0);
+    const clearForMinProjection =
+      getCrossSectionVolumeRenderingVoxelRange(this.voxelRange.value) > 0 &&
+      this.volumeRenderingMode.value === CrossSectionVolumeRenderingMode.MIN;
+    gl.clearColor(
+      clearForMinProjection ? 1 : 0,
+      clearForMinProjection ? 1 : 0,
+      clearForMinProjection ? 1 : 0,
+      0,
+    );
     gl.colorMask(true, true, true, true);
     gl.clear(WebGL2RenderingContext.COLOR_BUFFER_BIT);
     let renderLayerNum = 0;
@@ -566,7 +609,14 @@ export class SliceView extends Base {
         this.getOffscreenFramebufferWithHistograms(histogramCount);
       framebuffer.bind(width, height);
       for (let i = 0; i < histogramCount; ++i) {
-        gl.clearBufferfv(WebGL2RenderingContext.COLOR, 1 + i, kZeroVec4);
+        // Histogram values are reduced by the same MIN/MAX blend equation as
+        // the displayed color, so a minimum projection needs the neutral
+        // value 1 rather than the normal zero clear value.
+        gl.clearBufferfv(
+          WebGL2RenderingContext.COLOR,
+          1 + i,
+          clearForMinProjection ? kOneVec4 : kZeroVec4,
+        );
       }
       gl.enable(WebGL2RenderingContext.DEPTH_TEST);
       gl.depthFunc(WebGL2RenderingContext.LESS);
@@ -619,11 +669,12 @@ export interface SliceViewChunkSourceOptions<
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
 export abstract class SliceViewChunkSource<
-  Spec extends SliceViewChunkSpecification = SliceViewChunkSpecification,
-  ChunkType extends SliceViewChunk = SliceViewChunk,
->
+    Spec extends SliceViewChunkSpecification = SliceViewChunkSpecification,
+    ChunkType extends SliceViewChunk = SliceViewChunk,
+  >
   extends ChunkSource
-  implements SliceViewChunkSourceInterface {
+  implements SliceViewChunkSourceInterface
+{
   declare chunks: Map<string, ChunkType>;
 
   declare OPTIONS: SliceViewChunkSourceOptions<Spec>;
@@ -765,6 +816,7 @@ export class SliceViewRenderHelper extends RefCounted {
     builder.addTextureSampler("sampler2D", "uSampler", "uSamplerUnit");
     builder.addUniform("vec4", "uColorFactor");
     builder.addUniform("vec4", "uBackgroundColor");
+    builder.addUniform("highp uint", "uPickId");
     builder.addUniform("mat4", "uProjectionMatrix");
     builder.addUniform("vec4", "uTextureCoordinateAdjustment");
     if (isProjection) {
@@ -786,7 +838,7 @@ if (sampledColor.a == 0.0) {`;
   discard;
 }
 else {
-  emit(sampledColor * uColorFactor, 0u);
+  emit(sampledColor * uColorFactor, uPickId);
 }
 `;
     } else if (isProjection && hasBrush) {
@@ -813,7 +865,7 @@ else {
       //     subsequent segmentation layers on the same cross-section.
       const missEmit = brushOverlayOnly
         ? "discard;"
-        : "emit(sampledColor * uColorFactor, 0u);";
+        : "emit(sampledColor * uColorFactor, uPickId);";
       glsl_fragmentMainEnd = `
   sampledColor = uBackgroundColor;
 }
@@ -850,7 +902,7 @@ if (voxelPos.x >= 0 && voxelPos.y >= 0 && voxelPos.z >= 0) {
         segmentColor = segmentColorHash(brushValue);
       }
       vec3 baseColor = mix(vec3(1.0, 1.0, 1.0), segmentColor, uSaturation);
-      emit(vec4(baseColor, 1.0), 0u);
+      emit(vec4(baseColor, 1.0), uPickId);
       return;
     }
   }
@@ -861,7 +913,7 @@ ${missEmit}
       glsl_fragmentMainEnd = `
   sampledColor = uBackgroundColor;
 }
-emit(sampledColor * uColorFactor, 0u);
+emit(sampledColor * uColorFactor, uPickId);
 `;
     }
     builder.setFragmentMain(`${glsl_fragmentMainStart}${glsl_fragmentMainEnd}`);
@@ -920,6 +972,7 @@ gl_Position = uProjectionMatrix * aVertexPosition;
     sliceViewInvViewProj?: mat4,
     brushStrokeLayer?: BrushStrokeLayer,
     brushOverlayOnly = false,
+    pickId = 0,
   ) {
     const { gl, textureCoordinateAdjustment } = this;
     textureCoordinateAdjustment[0] = xStart;
@@ -949,6 +1002,7 @@ gl_Position = uProjectionMatrix * aVertexPosition;
     );
     gl.uniform4fv(shader.uniform("uColorFactor"), colorFactor);
     gl.uniform4fv(shader.uniform("uBackgroundColor"), backgroundColor);
+    gl.uniform1ui(shader.uniform("uPickId"), pickId);
     gl.uniform4fv(
       shader.uniform("uTextureCoordinateAdjustment"),
       textureCoordinateAdjustment,
@@ -1064,7 +1118,7 @@ export abstract class MultiscaleSliceViewChunkSource<
     options: SourceOptions,
   ): SliceViewSingleResolutionSource<Source>[][];
 
-  constructor(public chunkManager: Borrowed<ChunkManager>) { }
+  constructor(public chunkManager: Borrowed<ChunkManager>) {}
 }
 
 export function getVolumetricTransformedSources(
@@ -1144,11 +1198,11 @@ export function getVolumetricTransformedSources(
         if (chunkDataSize[chunkDim] !== size) {
           throw new Error(
             "Channel dimension " +
-            transform.layerDimensionNames[
-            transform.channelToRenderLayerDimensions[channelDim]
-            ] +
-            ` has extent ${size} but corresponding chunk dimension has extent ` +
-            `${chunkDataSize[chunkDim]}`,
+              transform.layerDimensionNames[
+                transform.channelToRenderLayerDimensions[channelDim]
+              ] +
+              ` has extent ${size} but corresponding chunk dimension has extent ` +
+              `${chunkDataSize[chunkDim]}`,
           );
         }
         nonDisplayLowerClipBound[chunkDim] = Number.NEGATIVE_INFINITY;

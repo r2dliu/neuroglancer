@@ -26,15 +26,20 @@ import type {
   TrackableDataSelectionState,
 } from "#src/layer/index.js";
 import * as L from "#src/layout.js";
-import type { TrackableZoomInterface } from "#src/navigation_state.js";
+import type {
+  TrackableCrossSectionVoxelRange,
+  TrackableZoomInterface,
+} from "#src/navigation_state.js";
 import {
   DisplayPose,
+  LinkedCrossSectionVoxelRange,
   LinkedOrientationState,
   LinkedPosition,
   linkedStateLegacyJsonView,
   LinkedZoomState,
   NavigationState,
   OrientationState,
+  TrackableCrossSectionVolumeRenderingMode,
 } from "#src/navigation_state.js";
 import { PerspectivePanel } from "#src/perspective_view/panel.js";
 import type { RenderedDataPanel } from "#src/rendered_data_panel.js";
@@ -73,6 +78,8 @@ import type { ScaleBarOptions } from "#src/widget/scale_bar.js";
 export interface SliceViewViewerState {
   chunkManager: ChunkManager;
   navigationState: NavigationState;
+  crossSectionVolumeRenderingMode: TrackableCrossSectionVolumeRenderingMode;
+  crossSectionVoxelRange: TrackableCrossSectionVoxelRange;
   layerManager: LayerManager;
   wireFrame: WatchableValueInterface<boolean>;
 }
@@ -149,6 +156,8 @@ export function makeSliceView(
     viewerState.chunkManager,
     viewerState.layerManager,
     navigationState,
+    viewerState.crossSectionVolumeRenderingMode,
+    viewerState.crossSectionVoxelRange,
     viewerState.wireFrame,
   );
 }
@@ -262,16 +271,25 @@ function registerRelatedLayouts(
   panel.element.appendChild(controls);
 }
 
-function makeSliceViewFromSpecification(
-  viewer: SliceViewViewerState,
+export type CrossSectionSliceViewViewerState = Pick<
+  SliceViewViewerState,
+  "chunkManager" | "layerManager" | "wireFrame"
+>;
+
+export function makeSliceViewFromSpecification(
+  viewer: CrossSectionSliceViewViewerState,
   specification: Borrowed<CrossSectionSpecification>,
 ) {
+  const voxelRange = specification.voxelRange.value.addRef();
   const sliceView = new SliceView(
     viewer.chunkManager,
     viewer.layerManager,
     specification.navigationState.addRef(),
+    specification.volumeRenderingMode,
+    voxelRange,
     viewer.wireFrame,
   );
+  sliceView.registerDisposer(voxelRange);
   const updateViewportSize = () => {
     const {
       width: { value: width },
@@ -298,10 +316,11 @@ function makeSliceViewFromSpecification(
   return sliceView;
 }
 
-function addUnconditionalSliceViews(
-  viewer: SliceViewViewerState,
+export function addUnconditionalSliceViews(
+  viewer: CrossSectionSliceViewViewerState,
   panel: PerspectivePanel,
   crossSections: Borrowed<CrossSectionSpecificationMap>,
+  context: RefCounted = panel,
 ) {
   const previouslyAdded = new Map<
     Borrowed<CrossSectionSpecification>,
@@ -325,8 +344,21 @@ function addUnconditionalSliceViews(
         continue;
       }
       panel.sliceViews.delete(sliceView);
+      previouslyAdded.delete(crossSection);
     }
   };
+  context.registerDisposer(
+    crossSections.changed.add(() => {
+      update();
+      panel.scheduleRedraw();
+    }),
+  );
+  context.registerDisposer(() => {
+    for (const sliceView of previouslyAdded.values()) {
+      panel.sliceViews.delete(sliceView);
+    }
+    previouslyAdded.clear();
+  });
   update();
 }
 
@@ -731,9 +763,14 @@ export class CrossSectionSpecification extends RefCounted implements Trackable {
   position: LinkedPosition;
   orientation: LinkedOrientationState;
   scale: LinkedZoomState<TrackableZoomInterface>;
+  volumeRenderingMode = new TrackableCrossSectionVolumeRenderingMode();
+  voxelRange: LinkedCrossSectionVoxelRange;
   navigationState: NavigationState;
   changed = new NullarySignal();
-  constructor(parent: Borrowed<NavigationState>) {
+  constructor(
+    parent: Borrowed<NavigationState>,
+    parentVoxelRange: Borrowed<TrackableCrossSectionVoxelRange>,
+  ) {
     super();
     this.position = new LinkedPosition(parent.position.addRef());
     this.position.changed.add(this.changed.dispatch);
@@ -748,6 +785,13 @@ export class CrossSectionSpecification extends RefCounted implements Trackable {
       parent.zoomFactor.displayDimensionRenderInfo.addRef(),
     );
     this.scale.changed.add(this.changed.dispatch);
+    this.registerDisposer(this.volumeRenderingMode);
+    this.volumeRenderingMode.changed.add(this.changed.dispatch);
+    this.voxelRange = new LinkedCrossSectionVoxelRange(
+      parentVoxelRange.addRef(),
+    );
+    this.registerDisposer(this.voxelRange.value);
+    this.voxelRange.changed.add(this.changed.dispatch);
     this.navigationState = this.registerDisposer(
       new NavigationState(
         new DisplayPose(
@@ -774,6 +818,12 @@ export class CrossSectionSpecification extends RefCounted implements Trackable {
     optionallyRestoreFromJsonMember(obj, "scale", this.scale);
     optionallyRestoreFromJsonMember(
       obj,
+      "volumeRenderingMode",
+      this.volumeRenderingMode,
+    );
+    optionallyRestoreFromJsonMember(obj, "voxelRange", this.voxelRange);
+    optionallyRestoreFromJsonMember(
+      obj,
       "zoom",
       linkedStateLegacyJsonView(this.scale),
     );
@@ -785,6 +835,8 @@ export class CrossSectionSpecification extends RefCounted implements Trackable {
     this.position.reset();
     this.orientation.reset();
     this.scale.reset();
+    this.volumeRenderingMode.reset();
+    this.voxelRange.reset();
   }
 
   toJSON() {
@@ -794,6 +846,8 @@ export class CrossSectionSpecification extends RefCounted implements Trackable {
       position: this.position.toJSON(),
       orientation: this.orientation.toJSON(),
       scale: this.scale.toJSON(),
+      volumeRenderingMode: this.volumeRenderingMode.toJSON(),
+      voxelRange: this.voxelRange.toJSON(),
     };
   }
 }
@@ -802,19 +856,26 @@ export class CrossSectionSpecificationMap extends WatchableMap<
   string,
   CrossSectionSpecification
 > {
-  constructor(private parentNavigationState: Owned<NavigationState>) {
+  constructor(
+    private parentNavigationState: Owned<NavigationState>,
+    private parentVoxelRange: Owned<TrackableCrossSectionVoxelRange>,
+  ) {
     super((context, spec) =>
       context.registerDisposer(
         context.registerDisposer(spec).changed.add(this.changed.dispatch),
       ),
     );
     this.registerDisposer(parentNavigationState);
+    this.registerDisposer(parentVoxelRange);
   }
 
   restoreState(obj: any) {
     verifyObject(obj);
     for (const key of Object.keys(obj)) {
-      const state = new CrossSectionSpecification(this.parentNavigationState);
+      const state = new CrossSectionSpecification(
+        this.parentNavigationState,
+        this.parentVoxelRange,
+      );
       try {
         this.set(key, state.addRef());
         state.restoreState(obj[key]);
@@ -849,17 +910,22 @@ export class DataPanelLayoutSpecification
 
   constructor(
     parentNavigationState: Owned<NavigationState>,
+    parentVoxelRange: Owned<TrackableCrossSectionVoxelRange>,
     defaultLayout: string,
   ) {
     super();
     this.type = new TrackableValue<string>(defaultLayout, validateLayoutName);
     this.type.changed.add(this.changed.dispatch);
     this.crossSections = this.registerDisposer(
-      new CrossSectionSpecificationMap(parentNavigationState.addRef()),
+      new CrossSectionSpecificationMap(
+        parentNavigationState.addRef(),
+        parentVoxelRange.addRef(),
+      ),
     );
     this.crossSections.changed.add(this.changed.dispatch);
     this.orthographicProjection.changed.add(this.changed.dispatch);
     this.registerDisposer(parentNavigationState);
+    this.registerDisposer(parentVoxelRange);
   }
 
   reset() {
@@ -922,6 +988,7 @@ export class DataPanelLayoutContainer extends RefCounted {
     this.specification = this.registerDisposer(
       new DataPanelLayoutSpecification(
         this.viewer.navigationState.addRef(),
+        this.viewer.crossSectionVoxelRange.addRef(),
         defaultLayout,
       ),
     );
