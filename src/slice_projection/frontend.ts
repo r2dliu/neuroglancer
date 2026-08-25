@@ -694,7 +694,8 @@ void main() {
           }
         },
       );
+      if (missing) return false;
     }
-    return !missing;
+    return true;
   }
 }
