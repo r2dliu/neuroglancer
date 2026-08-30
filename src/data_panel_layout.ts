@@ -39,6 +39,10 @@ import {
 import { PerspectivePanel } from "#src/perspective_view/panel.js";
 import type { RenderedDataPanel } from "#src/rendered_data_panel.js";
 import type { RenderLayerRole } from "#src/renderlayer.js";
+import {
+  defaultSectionRenderingOptionsWatchable,
+  SectionRenderingState,
+} from "#src/section_rendering.js";
 import { SliceView } from "#src/sliceview/frontend.js";
 import type { SliceViewerState } from "#src/sliceview/panel.js";
 import { SliceViewPanel } from "#src/sliceview/panel.js";
@@ -108,7 +112,7 @@ export interface DataDisplayLayout extends RefCounted {
   container: DataPanelLayoutContainer;
 }
 
-type NamedAxes = "xy" | "xz" | "yz";
+export type NamedAxes = "xy" | "xz" | "yz";
 
 const AXES_RELATIVE_ORIENTATION = new Map<NamedAxes, quat | undefined>([
   ["xy", undefined],
@@ -127,6 +131,7 @@ const LAYOUT_SYMBOLS = new Map<string, string>([
 export function makeSliceView(
   viewerState: SliceViewViewerState,
   baseToSelf?: quat,
+  sectionRendering = defaultSectionRenderingOptionsWatchable,
 ) {
   let navigationState: NavigationState;
   if (baseToSelf === undefined) {
@@ -150,21 +155,30 @@ export function makeSliceView(
     viewerState.layerManager,
     navigationState,
     viewerState.wireFrame,
+    sectionRendering,
   );
 }
 
 export function makeNamedSliceView(
   viewerState: SliceViewViewerState,
   axes: NamedAxes,
+  sectionRendering = defaultSectionRenderingOptionsWatchable,
 ) {
-  return makeSliceView(viewerState, AXES_RELATIVE_ORIENTATION.get(axes)!);
+  return makeSliceView(
+    viewerState,
+    AXES_RELATIVE_ORIENTATION.get(axes)!,
+    sectionRendering,
+  );
 }
 
-export function makeOrthogonalSliceViews(viewerState: SliceViewViewerState) {
+export function makeOrthogonalSliceViews(
+  viewerState: SliceViewViewerState,
+  viewSections: Borrowed<ViewSectionSpecificationMap>,
+) {
   return new Map<NamedAxes, SliceView>([
-    ["xy", makeNamedSliceView(viewerState, "xy")],
-    ["xz", makeNamedSliceView(viewerState, "xz")],
-    ["yz", makeNamedSliceView(viewerState, "yz")],
+    ["xy", makeNamedSliceView(viewerState, "xy", viewSections.get("xy"))],
+    ["xz", makeNamedSliceView(viewerState, "xz", viewSections.get("xz"))],
+    ["yz", makeNamedSliceView(viewerState, "yz", viewSections.get("yz"))],
   ]);
 }
 
@@ -271,6 +285,7 @@ function makeSliceViewFromSpecification(
     viewer.layerManager,
     specification.navigationState.addRef(),
     viewer.wireFrame,
+    specification.sectionRendering,
   );
   const updateViewportSize = () => {
     const {
@@ -336,10 +351,11 @@ export class FourPanelLayout extends RefCounted {
     public rootElement: HTMLElement,
     public viewer: ViewerUIState,
     crossSections: Borrowed<CrossSectionSpecificationMap>,
+    viewSections: Borrowed<ViewSectionSpecificationMap>,
   ) {
     super();
 
-    const sliceViews = makeOrthogonalSliceViews(viewer);
+    const sliceViews = makeOrthogonalSliceViews(viewer, viewSections);
     const { display } = viewer;
 
     const perspectiveViewerState = {
@@ -439,10 +455,11 @@ export class FourPanelAltLayout extends RefCounted {
     public rootElement: HTMLElement,
     public viewer: ViewerUIState,
     crossSections: Borrowed<CrossSectionSpecificationMap>,
+    viewSections: Borrowed<ViewSectionSpecificationMap>,
   ) {
     super();
 
-    const sliceViews = makeOrthogonalSliceViews(viewer);
+    const sliceViews = makeOrthogonalSliceViews(viewer, viewSections);
     const { display } = viewer;
 
     const perspectiveViewerState = {
@@ -544,10 +561,11 @@ export class SliceViewPerspectiveTwoPanelLayout extends RefCounted {
     public direction: "row" | "column",
     axes: NamedAxes,
     crossSections: Borrowed<CrossSectionSpecificationMap>,
+    viewSections: Borrowed<ViewSectionSpecificationMap>,
   ) {
     super();
 
-    const sliceView = makeNamedSliceView(viewer, axes);
+    const sliceView = makeNamedSliceView(viewer, axes, viewSections.get(axes));
     const { display } = viewer;
 
     const perspectiveViewerState = {
@@ -596,9 +614,10 @@ export class SinglePanelLayout extends RefCounted {
     public rootElement: HTMLElement,
     public viewer: ViewerUIState,
     axes: NamedAxes,
+    viewSections: Borrowed<ViewSectionSpecificationMap>,
   ) {
     super();
-    const sliceView = makeNamedSliceView(viewer, axes);
+    const sliceView = makeNamedSliceView(viewer, axes, viewSections.get(axes));
     const sliceViewerState = {
       ...getCommonSliceViewerState(viewer),
       showScaleBar: viewer.showScaleBar,
@@ -665,21 +684,34 @@ export const LAYOUTS = new Map<
       element: HTMLElement,
       viewer: ViewerUIState,
       crossSections: Borrowed<CrossSectionSpecificationMap>,
+      viewSections: Borrowed<ViewSectionSpecificationMap>,
     ) => DataDisplayLayout;
   }
 >([
   [
     "4panel",
     {
-      factory: (container, element, viewer, crossSections) =>
-        new FourPanelLayout(container, element, viewer, crossSections),
+      factory: (container, element, viewer, crossSections, viewSections) =>
+        new FourPanelLayout(
+          container,
+          element,
+          viewer,
+          crossSections,
+          viewSections,
+        ),
     },
   ],
   [
     "4panel-alt",
     {
-      factory: (container, element, viewer, crossSections) =>
-        new FourPanelAltLayout(container, element, viewer, crossSections),
+      factory: (container, element, viewer, crossSections, viewSections) =>
+        new FourPanelAltLayout(
+          container,
+          element,
+          viewer,
+          crossSections,
+          viewSections,
+        ),
     },
   ],
   [
@@ -693,14 +725,20 @@ export const LAYOUTS = new Map<
 
 for (const axes of AXES_RELATIVE_ORIENTATION.keys()) {
   LAYOUTS.set(axes, {
-    factory: (container, element, viewer) =>
-      new SinglePanelLayout(container, element, viewer, <NamedAxes>axes),
+    factory: (container, element, viewer, _crossSections, viewSections) =>
+      new SinglePanelLayout(
+        container,
+        element,
+        viewer,
+        <NamedAxes>axes,
+        viewSections,
+      ),
   });
   const splitLayout = `${axes}-3d`;
   LAYOUT_SYMBOLS.set(axes, oneSquareSymbol);
   LAYOUT_SYMBOLS.set(splitLayout, "◫");
   LAYOUTS.set(splitLayout, {
-    factory: (container, element, viewer, crossSections) =>
+    factory: (container, element, viewer, crossSections, viewSections) =>
       new SliceViewPerspectiveTwoPanelLayout(
         container,
         element,
@@ -708,6 +746,7 @@ for (const axes of AXES_RELATIVE_ORIENTATION.keys()) {
         "row",
         <NamedAxes>axes,
         crossSections,
+        viewSections,
       ),
   });
 }
@@ -728,6 +767,16 @@ export function validateLayoutName(obj: any) {
 export class CrossSectionSpecification extends RefCounted implements Trackable {
   width = new TrackableValue<number>(1000, verifyPositiveInt);
   height = new TrackableValue<number>(1000, verifyPositiveInt);
+  sectionRendering = this.registerDisposer(new SectionRenderingState());
+  get voxelRange() {
+    return this.sectionRendering.voxelRange;
+  }
+  get renderingMode() {
+    return this.sectionRendering.renderingMode;
+  }
+  get interactive() {
+    return this.sectionRendering.interactive;
+  }
   position: LinkedPosition;
   orientation: LinkedOrientationState;
   scale: LinkedZoomState<TrackableZoomInterface>;
@@ -743,6 +792,7 @@ export class CrossSectionSpecification extends RefCounted implements Trackable {
     this.orientation.changed.add(this.changed.dispatch);
     this.width.changed.add(this.changed.dispatch);
     this.height.changed.add(this.changed.dispatch);
+    this.sectionRendering.changed.add(this.changed.dispatch);
     this.scale = new LinkedZoomState(
       parent.zoomFactor.addRef(),
       parent.zoomFactor.displayDimensionRenderInfo.addRef(),
@@ -772,6 +822,7 @@ export class CrossSectionSpecification extends RefCounted implements Trackable {
     );
     optionallyRestoreFromJsonMember(obj, "orientation", this.orientation);
     optionallyRestoreFromJsonMember(obj, "scale", this.scale);
+    this.sectionRendering.restoreState(obj);
     optionallyRestoreFromJsonMember(
       obj,
       "zoom",
@@ -785,15 +836,18 @@ export class CrossSectionSpecification extends RefCounted implements Trackable {
     this.position.reset();
     this.orientation.reset();
     this.scale.reset();
+    this.sectionRendering.reset();
   }
 
   toJSON() {
+    const sectionRendering = this.sectionRendering.toJSON() ?? {};
     return {
       width: this.width.toJSON(),
       height: this.height.toJSON(),
       position: this.position.toJSON(),
       orientation: this.orientation.toJSON(),
       scale: this.scale.toJSON(),
+      ...sectionRendering,
     };
   }
 }
@@ -838,6 +892,61 @@ export class CrossSectionSpecificationMap extends WatchableMap<
   }
 }
 
+function validateNamedAxes(key: string): NamedAxes {
+  if (AXES_RELATIVE_ORIENTATION.has(key as NamedAxes)) {
+    return key as NamedAxes;
+  }
+  throw new Error(`Invalid view section name: ${JSON.stringify(key)}.`);
+}
+
+export class ViewSectionSpecificationMap
+  extends RefCounted
+  implements Trackable
+{
+  changed = new NullarySignal();
+  private sections = new Map<NamedAxes, SectionRenderingState>();
+
+  constructor() {
+    super();
+    for (const axes of AXES_RELATIVE_ORIENTATION.keys()) {
+      const section = this.registerDisposer(new SectionRenderingState());
+      section.changed.add(this.changed.dispatch);
+      this.sections.set(axes, section);
+    }
+  }
+
+  get(axes: NamedAxes) {
+    return this.sections.get(axes)!;
+  }
+
+  restoreState(obj: any) {
+    verifyObject(obj);
+    this.reset();
+    for (const key of Object.keys(obj)) {
+      this.get(validateNamedAxes(key)).restoreState(obj[key]);
+    }
+  }
+
+  reset() {
+    for (const section of this.sections.values()) {
+      section.reset();
+    }
+  }
+
+  toJSON() {
+    const obj: { [key: string]: any } = {};
+    let hasValue = false;
+    for (const [key, section] of this.sections) {
+      const value = section.toJSON();
+      if (value !== undefined) {
+        obj[key] = value;
+        hasValue = true;
+      }
+    }
+    return hasValue ? obj : undefined;
+  }
+}
+
 export class DataPanelLayoutSpecification
   extends RefCounted
   implements Trackable
@@ -845,6 +954,7 @@ export class DataPanelLayoutSpecification
   changed = new NullarySignal();
   type: TrackableValue<string>;
   crossSections: CrossSectionSpecificationMap;
+  viewSections = this.registerDisposer(new ViewSectionSpecificationMap());
   orthographicProjection = new TrackableBoolean(false);
 
   constructor(
@@ -858,18 +968,21 @@ export class DataPanelLayoutSpecification
       new CrossSectionSpecificationMap(parentNavigationState.addRef()),
     );
     this.crossSections.changed.add(this.changed.dispatch);
+    this.viewSections.changed.add(this.changed.dispatch);
     this.orthographicProjection.changed.add(this.changed.dispatch);
     this.registerDisposer(parentNavigationState);
   }
 
   reset() {
     this.crossSections.clear();
+    this.viewSections.reset();
     this.orthographicProjection.reset();
     this.type.reset();
   }
 
   restoreState(obj: any) {
     this.crossSections.clear();
+    this.viewSections.reset();
     this.orthographicProjection.reset();
     if (typeof obj === "string") {
       this.type.restoreState(obj);
@@ -884,18 +997,29 @@ export class DataPanelLayoutSpecification
         "crossSections",
         (x) => x !== undefined && this.crossSections.restoreState(x),
       );
+      verifyObjectProperty(
+        obj,
+        "viewSections",
+        (x) => x !== undefined && this.viewSections.restoreState(x),
+      );
     }
   }
 
   toJSON() {
-    const { type, crossSections, orthographicProjection } = this;
+    const { type, crossSections, viewSections, orthographicProjection } = this;
     const orthographicProjectionJson = orthographicProjection.toJSON();
-    if (crossSections.size === 0 && orthographicProjectionJson === undefined) {
+    const viewSectionsJson = viewSections.toJSON();
+    if (
+      crossSections.size === 0 &&
+      viewSectionsJson === undefined &&
+      orthographicProjectionJson === undefined
+    ) {
       return type.value;
     }
     return {
       type: type.value,
       crossSections: crossSections.toJSON(),
+      viewSections: viewSectionsJson,
       orthographicProjection: orthographicProjectionJson,
     };
   }
@@ -967,6 +1091,7 @@ export class DataPanelLayoutContainer extends RefCounted {
       this.element,
       this.viewer,
       this.specification.crossSections,
+      this.specification.viewSections,
     );
   }
   disposed() {
