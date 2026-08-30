@@ -25,6 +25,7 @@ import { applyRenderViewportToProjectionMatrix } from "#src/display_context.js";
 import type { VisibleRenderLayerTracker } from "#src/layer/index.js";
 import { makeRenderedPanelVisibleLayerTracker } from "#src/layer/index.js";
 import { PERSPECTIVE_VIEW_RPC_ID } from "#src/perspective_view/base.js";
+import { PerspectiveViewBoxOverlay } from "#src/perspective_view/interactive_box.js";
 import type {
   PerspectiveViewReadyRenderContext,
   PerspectiveViewRenderContext,
@@ -93,6 +94,7 @@ export interface PerspectiveViewerState extends RenderedDataViewerState {
   showSliceViews: TrackableBoolean;
   showScaleBar: TrackableBoolean;
   scaleBarOptions: TrackableValue<ScaleBarOptions>;
+  show3DBox: TrackableBoolean;
   showSliceViewsCheckbox?: boolean;
   crossSectionBackgroundColor: TrackableRGB;
   perspectiveViewBackgroundColor: TrackableRGB;
@@ -340,6 +342,9 @@ export class PerspectivePanel extends RenderedDataPanel {
   );
 
   private axesLineHelper = this.registerDisposer(AxesLineHelper.get(this.gl));
+  private boxOverlay = this.registerDisposer(
+    new PerspectiveViewBoxOverlay(this.gl),
+  );
   protected offscreenFramebuffer = this.registerDisposer(
     new FramebufferConfiguration(this.gl, {
       colorBuffers: [
@@ -589,6 +594,14 @@ export class PerspectivePanel extends RenderedDataPanel {
       viewer.showSliceViews.changed.add(() => this.scheduleRedraw()),
     );
     this.registerDisposer(
+      viewer.show3DBox.changed.add(() => {
+        if (!viewer.show3DBox.value) {
+          this.boxOverlay.clearInteraction();
+        }
+        this.scheduleRedraw();
+      }),
+    );
+    this.registerDisposer(
       viewer.showAxisLines.changed.add(() => this.scheduleRedraw()),
     );
     this.registerDisposer(
@@ -610,6 +623,83 @@ export class PerspectivePanel extends RenderedDataPanel {
       ),
     );
     this.sliceViews.changed.add(() => this.scheduleRedraw());
+    this.registerEventListener(element, "mousemove", (event: MouseEvent) => {
+      this.updateBoxOverlayHover(event);
+    });
+    this.registerEventListener(element, "mouseleave", () => {
+      if (this.boxOverlay.clearHover()) {
+        this.scheduleRedraw();
+      }
+    });
+    this.registerEventListener(
+      element,
+      "mousedown",
+      (event: MouseEvent) => {
+        this.startBoxOverlayDrag(event);
+      },
+      { capture: true },
+    );
+  }
+
+  private updateBoxOverlayHover(event: MouseEvent) {
+    if (!this.viewer.show3DBox.value || event.target !== this.element) return;
+    if (
+      this.boxOverlay.updateHover(
+        event,
+        this.element,
+        this.sliceViews,
+        this.viewer.showSliceViews.value,
+        this.projectionParameters.value,
+      )
+    ) {
+      this.scheduleRedraw();
+    }
+  }
+
+  private startBoxOverlayDrag(event: MouseEvent) {
+    if (
+      !this.viewer.show3DBox.value ||
+      event.button !== 0 ||
+      event.target !== this.element
+    ) {
+      return;
+    }
+    this.boxOverlay.updateHover(
+      event,
+      this.element,
+      this.sliceViews,
+      this.viewer.showSliceViews.value,
+      this.projectionParameters.value,
+    );
+    if (
+      !this.boxOverlay.startDrag(
+        event,
+        this.element,
+        this.projectionParameters.value,
+      )
+    ) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+    startRelativeMouseDrag(
+      event,
+      (dragEvent) => {
+        if (
+          this.boxOverlay.dragTo(
+            dragEvent,
+            this.element,
+            this.projectionParameters.value,
+          )
+        ) {
+          this.scheduleRedraw();
+        }
+      },
+      () => {
+        this.boxOverlay.endDrag();
+      },
+    );
   }
 
   translateByViewportPixels(deltaX: number, deltaY: number): void {
@@ -1416,6 +1506,8 @@ export class PerspectivePanel extends RenderedDataPanel {
     gl.stencilMask(0xffffffff);
     gl.disable(WebGL2RenderingContext.STENCIL_TEST);
 
+    this.drawBoxOverlay(projectionParameters);
+
     if (
       this.viewer.showScaleBar.value &&
       this.viewer.orthographicProjection.value
@@ -1449,6 +1541,28 @@ export class PerspectivePanel extends RenderedDataPanel {
       this.offscreenFramebuffer.colorBuffers[OffscreenTextures.COLOR].texture,
     );
     return true;
+  }
+
+  private drawBoxOverlay(projectionParameters: ProjectionParameters) {
+    if (!this.viewer.show3DBox.value) return;
+    const gl = this.gl;
+    this.boxOverlay.ensureInitialized(
+      this.sliceViews,
+      this.viewer.showSliceViews.value,
+      projectionParameters,
+    );
+    gl.drawBuffers([WebGL2RenderingContext.COLOR_ATTACHMENT0]);
+    gl.disable(WebGL2RenderingContext.DEPTH_TEST);
+    gl.depthMask(false);
+    gl.enable(WebGL2RenderingContext.BLEND);
+    gl.blendFunc(
+      WebGL2RenderingContext.SRC_ALPHA,
+      WebGL2RenderingContext.ONE_MINUS_SRC_ALPHA,
+    );
+    this.boxOverlay.draw(projectionParameters);
+    gl.disable(WebGL2RenderingContext.BLEND);
+    gl.depthMask(true);
+    gl.enable(WebGL2RenderingContext.DEPTH_TEST);
   }
 
   protected drawSliceViews(renderContext: PerspectiveViewRenderContext) {

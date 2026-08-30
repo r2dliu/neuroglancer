@@ -51,7 +51,10 @@ import {
   WatchableDisplayDimensionRenderInfo,
 } from "#src/navigation_state.js";
 import type { RenderLayerRole } from "#src/renderlayer.js";
-import { TrackableBoolean } from "#src/trackable_boolean.js";
+import {
+  TrackableBoolean,
+  TrackableBooleanCheckbox,
+} from "#src/trackable_boolean.js";
 import type {
   WatchableSet,
   WatchableValueInterface,
@@ -95,6 +98,7 @@ export interface LayerGroupViewerState {
   showScaleBar: TrackableBoolean;
   scaleBarOptions: TrackableScaleBarOptions;
   showPerspectiveSliceViews: TrackableBoolean;
+  show3DBox: TrackableBoolean;
   layerSpecification: Owned<LayerListSpecification>;
   inputEventBindings: DataPanelInputEventBindings;
   visibility: WatchableVisibilityPriority;
@@ -282,6 +286,17 @@ function makeViewerMenu(parent: HTMLElement, viewer: LayerGroupViewer) {
   contextMenu.registerEventListener(closeButton, "click", () => {
     viewer.layerSpecification.layerManager.clear();
   });
+  for (const [name, model] of <[string, TrackableBoolean][]>[
+    ["Show 3-D box", viewer.show3DBox],
+  ]) {
+    const checkbox = contextMenu.registerDisposer(
+      new TrackableBooleanCheckbox(model),
+    );
+    const label = document.createElement("label");
+    label.textContent = name;
+    label.appendChild(checkbox.element);
+    menu.appendChild(label);
+  }
   const { viewerNavigationState } = viewer;
   for (const [name, model] of <[string, TrackableNavigationLink][]>[
     ["Render scale factors", viewerNavigationState.relativeDisplayScales.link],
@@ -366,6 +381,9 @@ export class LayerGroupViewer extends RefCounted {
   }
   get showPerspectiveSliceViews() {
     return this.viewerState.showPerspectiveSliceViews;
+  }
+  get show3DBox() {
+    return this.viewerState.show3DBox;
   }
   get inputEventBindings() {
     return this.viewerState.inputEventBindings;
