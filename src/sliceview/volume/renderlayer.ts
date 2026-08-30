@@ -19,7 +19,11 @@ import type { CoordinateSpace } from "#src/coordinate_transform.js";
 import { emptyInvalidCoordinateSpace } from "#src/coordinate_transform.js";
 import type { ProjectionParameters } from "#src/projection_parameters.js";
 import { getChunkPositionFromCombinedGlobalLocalPositions } from "#src/render_coordinate_transform.js";
-import { getNormalizedChunkLayout } from "#src/sliceview/base.js";
+import { CrossSectionVolumeRenderingMode } from "#src/navigation_state.js";
+import {
+  getCrossSectionVolumeRenderingVoxelRange,
+  getNormalizedChunkLayout,
+} from "#src/sliceview/base.js";
 import {
   computeVertexPositionDebug,
   defineBoundingBoxCrossSectionShader,
@@ -89,6 +93,7 @@ const DEBUG_VERTICES = false;
 export const CHUNK_POSITION_EPSILON = 1e-3;
 
 const tempMat4 = mat4.create();
+const tempPlaneCenter = vec3.create();
 
 function defineVolumeShader(builder: ShaderBuilder, wireFrame: boolean) {
   defineVertexId(builder);
@@ -205,22 +210,10 @@ function initializeShader(
 function beginSource(
   gl: GL,
   shader: ShaderProgram,
-  sliceView: SliceView,
   dataToDeviceMatrix: mat4,
   tsource: FrontendTransformedSource,
   chunkLayout: ChunkLayout,
 ) {
-  const projectionParameters = sliceView.projectionParameters.value;
-  const { centerDataPosition } = projectionParameters;
-
-  setBoundingBoxCrossSectionShaderViewportPlane(
-    shader,
-    projectionParameters.viewportNormalInGlobalCoordinates,
-    centerDataPosition,
-    chunkLayout.transform,
-    chunkLayout.invTransform,
-  );
-
   // Compute projection matrix that transforms chunk layout coordinates to device coordinates.
   gl.uniformMatrix4fv(
     shader.uniform("uProjectionMatrix"),
@@ -241,10 +234,32 @@ function beginSource(
       tsource.lowerClipDisplayBound;
     (<any>window).debug_sliceView_uUpperClipBound =
       tsource.upperClipDisplayBound;
-    (<any>window).debug_sliceView = sliceView;
     (<any>window).debug_sliceView_dataToDevice = mat4.clone(tempMat4);
     (<any>window).debug_sliceView_chunkLayout = chunkLayout;
   }
+}
+
+function setSourcePlane(
+  shader: ShaderProgram,
+  sliceView: SliceView,
+  chunkLayout: ChunkLayout,
+  planeOffset: number,
+) {
+  const projectionParameters = sliceView.projectionParameters.value;
+  const centerDataPosition = tempPlaneCenter;
+  vec3.scaleAndAdd(
+    centerDataPosition,
+    projectionParameters.centerDataPosition,
+    projectionParameters.viewportNormalInGlobalCoordinates,
+    planeOffset,
+  );
+  setBoundingBoxCrossSectionShaderViewportPlane(
+    shader,
+    projectionParameters.viewportNormalInGlobalCoordinates,
+    centerDataPosition,
+    chunkLayout.transform,
+    chunkLayout.invTransform,
+  );
 }
 
 function setupChunkDataSize(
@@ -574,6 +589,26 @@ void main() {
     const { projectionParameters, wireFrame } = renderContext;
 
     const { gl } = this;
+    const volumeRenderingVoxelRange =
+      getCrossSectionVolumeRenderingVoxelRange(sliceView.voxelRange.value);
+    const enableCrossSectionVolumeRendering =
+      volumeRenderingVoxelRange > 0 && !wireFrame;
+    if (enableCrossSectionVolumeRendering) {
+      gl.enable(WebGL2RenderingContext.BLEND);
+      gl.blendFunc(WebGL2RenderingContext.ONE, WebGL2RenderingContext.ONE);
+      if (
+        sliceView.volumeRenderingMode.value ===
+        CrossSectionVolumeRenderingMode.MIN
+      ) {
+        gl.blendEquationSeparate(
+          WebGL2RenderingContext.MIN,
+          WebGL2RenderingContext.MAX,
+        );
+      } else {
+        gl.blendEquation(WebGL2RenderingContext.MAX);
+      }
+      gl.depthFunc(WebGL2RenderingContext.LEQUAL);
+    }
 
     this.vertexIdHelper.enable();
 
@@ -643,7 +678,6 @@ void main() {
       beginSource(
         gl,
         shader,
-        sliceView,
         projectionParameters.viewProjectionMat,
         transformedSource,
         chunkLayout,
@@ -655,47 +689,56 @@ void main() {
       newSource = true;
       let presentCount = 0;
       let notPresentCount = 0;
-      sliceView.forEachVisibleChunk(transformedSource, chunkLayout, (key) => {
-        const chunk = chunks.get(key);
-        if (chunk && chunk.state === ChunkState.GPU_MEMORY) {
-          const newChunkDataSize = chunk.chunkDataSize;
-          if (newChunkDataSize !== chunkDataSize) {
-            chunkDataSize = newChunkDataSize;
+      let prevPlaneOffset = Number.NaN;
+      sliceView.forEachVisibleChunk(
+        transformedSource,
+        chunkLayout,
+        (key, planeOffset) => {
+          const chunk = chunks.get(key);
+          if (chunk && chunk.state === ChunkState.GPU_MEMORY) {
+            if (planeOffset !== prevPlaneOffset) {
+              prevPlaneOffset = planeOffset;
+              setSourcePlane(shader!, sliceView, chunkLayout, planeOffset);
+            }
+            const newChunkDataSize = chunk.chunkDataSize;
+            if (newChunkDataSize !== chunkDataSize) {
+              chunkDataSize = newChunkDataSize;
+              for (let i = 0; i < 3; ++i) {
+                const chunkDim = chunkDisplayDimensionIndices[i];
+                chunkDataDisplaySize[i] =
+                  chunkDim === -1 || chunkDim >= chunkRank
+                    ? 1
+                    : chunkDataSize[chunkDim];
+              }
+              setupChunkDataSize(gl, shader!, chunkDataDisplaySize);
+            }
+            const { chunkGridPosition } = chunk;
             for (let i = 0; i < 3; ++i) {
               const chunkDim = chunkDisplayDimensionIndices[i];
-              chunkDataDisplaySize[i] =
+              chunkPosition[i] =
                 chunkDim === -1 || chunkDim >= chunkRank
-                  ? 1
-                  : chunkDataSize[chunkDim];
+                  ? 0
+                  : originalChunkSize[i] * chunkGridPosition[chunkDim];
             }
-            setupChunkDataSize(gl, shader!, chunkDataDisplaySize);
+            if (chunkFormat !== null) {
+              chunkFormat.bindChunk(
+                gl,
+                shader!,
+                chunk,
+                fixedPositionWithinChunk,
+                chunkDisplayDimensionIndices,
+                channelToChunkDimensionIndices,
+                newSource,
+              );
+            }
+            newSource = false;
+            drawChunk(gl, shader!, chunkPosition, wireFrame);
+            ++presentCount;
+          } else {
+            ++notPresentCount;
           }
-          const { chunkGridPosition } = chunk;
-          for (let i = 0; i < 3; ++i) {
-            const chunkDim = chunkDisplayDimensionIndices[i];
-            chunkPosition[i] =
-              chunkDim === -1 || chunkDim >= chunkRank
-                ? 0
-                : originalChunkSize[i] * chunkGridPosition[chunkDim];
-          }
-          if (chunkFormat !== null) {
-            chunkFormat.bindChunk(
-              gl,
-              shader!,
-              chunk,
-              fixedPositionWithinChunk,
-              chunkDisplayDimensionIndices,
-              channelToChunkDimensionIndices,
-              newSource,
-            );
-          }
-          newSource = false;
-          drawChunk(gl, shader!, chunkPosition, wireFrame);
-          ++presentCount;
-        } else {
-          ++notPresentCount;
-        }
-      });
+        },
+      );
 
       if (
         (presentCount !== 0 || notPresentCount !== 0) &&
@@ -731,6 +774,10 @@ void main() {
     }
     endShader();
     this.vertexIdHelper.disable();
+    if (enableCrossSectionVolumeRendering) {
+      gl.blendEquation(WebGL2RenderingContext.FUNC_ADD);
+      gl.depthFunc(WebGL2RenderingContext.LESS);
+    }
     if (!renderContext.wireFrame) {
       const dataHistogramCount = this.getDataHistogramCount();
       if (dataHistogramCount > 0) {

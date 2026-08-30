@@ -62,6 +62,8 @@ import {
   OrientationState,
   PlaybackManager,
   Position,
+  TrackableCrossSectionVolumeRenderingMode,
+  TrackableCrossSectionVoxelRange,
   TrackableCrossSectionZoom,
   TrackableDepthRange,
   TrackableDisplayDimensions,
@@ -248,6 +250,11 @@ class TrackableViewerState extends CompoundTrackable {
     this.add("velocity", viewer.velocity);
     this.add("crossSectionOrientation", viewer.crossSectionOrientation);
     this.add("crossSectionScale", viewer.crossSectionScale);
+    this.add(
+      "crossSectionVolumeRenderingMode",
+      viewer.crossSectionVolumeRenderingMode,
+    );
+    this.add("crossSectionVoxelRange", viewer.crossSectionVoxelRange);
     this.add("crossSectionDepth", viewer.crossSectionDepthRange);
     this.add("projectionOrientation", viewer.projectionOrientation);
     this.add("projectionScale", viewer.projectionScale);
@@ -389,6 +396,12 @@ export class Viewer extends RefCounted implements ViewerState {
   crossSectionOrientation = this.registerDisposer(new OrientationState());
   crossSectionScale = this.registerDisposer(
     new TrackableCrossSectionZoom(this.displayDimensionRenderInfo.addRef()),
+  );
+  crossSectionVolumeRenderingMode = this.registerDisposer(
+    new TrackableCrossSectionVolumeRenderingMode(),
+  );
+  crossSectionVoxelRange = this.registerDisposer(
+    new TrackableCrossSectionVoxelRange(),
   );
   projectionOrientation = this.registerDisposer(new OrientationState());
   crossSectionDepthRange = this.registerDisposer(

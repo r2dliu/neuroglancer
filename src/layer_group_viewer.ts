@@ -32,11 +32,15 @@ import { LayerSubsetSpecification } from "#src/layer/index.js";
 import type {
   CoordinateSpacePlaybackVelocity,
   TrackableCrossSectionZoom,
+  TrackableCrossSectionVolumeRenderingMode,
+  TrackableCrossSectionVoxelRange,
   TrackableNavigationLink,
   TrackableProjectionZoom,
 } from "#src/navigation_state.js";
 import {
   DisplayPose,
+  LinkedCrossSectionVolumeRenderingMode,
+  LinkedCrossSectionVoxelRange,
   LinkedCoordinateSpacePlaybackVelocity,
   LinkedDepthRange,
   LinkedDisplayDimensions,
@@ -88,6 +92,10 @@ export interface LayerGroupViewerState {
   navigationState: Owned<NavigationState>;
   perspectiveNavigationState: Owned<NavigationState>;
   velocity: Owned<CoordinateSpacePlaybackVelocity>;
+  crossSectionVolumeRenderingMode: Owned<
+    TrackableCrossSectionVolumeRenderingMode
+  >;
+  crossSectionVoxelRange: Owned<TrackableCrossSectionVoxelRange>;
   mouseState: MouseSelectionState;
   showAxisLines: TrackableBoolean;
   wireFrame: TrackableBoolean;
@@ -162,6 +170,8 @@ export class LinkedViewerNavigationState extends RefCounted {
   displayDimensionRenderInfo: WatchableDisplayDimensionRenderInfo;
   crossSectionOrientation: LinkedOrientationState;
   crossSectionScale: LinkedZoomState<TrackableCrossSectionZoom>;
+  crossSectionVolumeRenderingMode: LinkedCrossSectionVolumeRenderingMode;
+  crossSectionVoxelRange: LinkedCrossSectionVoxelRange;
   projectionOrientation: LinkedOrientationState;
   projectionScale: LinkedZoomState<TrackableProjectionZoom>;
   crossSectionDepthRange: LinkedDepthRange;
@@ -174,6 +184,8 @@ export class LinkedViewerNavigationState extends RefCounted {
     navigationState: Borrowed<NavigationState>;
     velocity: Borrowed<CoordinateSpacePlaybackVelocity>;
     perspectiveNavigationState: Borrowed<NavigationState>;
+    crossSectionVolumeRenderingMode: Borrowed<TrackableCrossSectionVolumeRenderingMode>;
+    crossSectionVoxelRange: Borrowed<TrackableCrossSectionVoxelRange>;
   }) {
     super();
     this.relativeDisplayScales = new LinkedRelativeDisplayScales(
@@ -204,6 +216,15 @@ export class LinkedViewerNavigationState extends RefCounted {
       parent.navigationState.zoomFactor.addRef() as TrackableCrossSectionZoom,
       this.displayDimensionRenderInfo.addRef(),
     );
+    this.crossSectionVolumeRenderingMode =
+      new LinkedCrossSectionVolumeRenderingMode(
+        parent.crossSectionVolumeRenderingMode.addRef(),
+      );
+    this.registerDisposer(this.crossSectionVolumeRenderingMode.value);
+    this.crossSectionVoxelRange = new LinkedCrossSectionVoxelRange(
+      parent.crossSectionVoxelRange.addRef(),
+    );
+    this.registerDisposer(this.crossSectionVoxelRange.value);
     this.crossSectionDepthRange = new LinkedDepthRange(
       parent.navigationState.depthRange.addRef(),
       this.displayDimensionRenderInfo,
@@ -251,6 +272,8 @@ export class LinkedViewerNavigationState extends RefCounted {
       this.velocity,
       this.crossSectionOrientation,
       this.crossSectionScale,
+      this.crossSectionVolumeRenderingMode,
+      this.crossSectionVoxelRange,
       this.projectionOrientation,
       this.projectionScale,
     ]) {
@@ -265,6 +288,11 @@ export class LinkedViewerNavigationState extends RefCounted {
     state.add("velocity", this.velocity);
     state.add("crossSectionOrientation", this.crossSectionOrientation);
     state.add("crossSectionScale", this.crossSectionScale);
+    state.add(
+      "crossSectionVolumeRenderingMode",
+      this.crossSectionVolumeRenderingMode,
+    );
+    state.add("crossSectionVoxelRange", this.crossSectionVoxelRange);
     state.add("crossSectionDepth", this.crossSectionDepthRange);
     state.add("projectionOrientation", this.projectionOrientation);
     state.add("projectionScale", this.projectionScale);
@@ -326,6 +354,12 @@ export class LayerGroupViewer extends RefCounted {
   }
   get navigationState() {
     return this.viewerNavigationState.navigationState;
+  }
+  get crossSectionVolumeRenderingMode() {
+    return this.viewerNavigationState.crossSectionVolumeRenderingMode.value;
+  }
+  get crossSectionVoxelRange() {
+    return this.viewerNavigationState.crossSectionVoxelRange.value;
   }
 
   get selectionDetailsState() {

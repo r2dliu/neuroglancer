@@ -30,6 +30,7 @@ import type {
   DisplayDimensionRenderInfo,
   NavigationState,
 } from "#src/navigation_state.js";
+import { CrossSectionVolumeRenderingMode } from "#src/navigation_state.js";
 import type { PerspectiveViewerState } from "#src/perspective_view/panel.js";
 import { updateProjectionParametersFromInverseViewAndProjection } from "#src/projection_parameters.js";
 import type {
@@ -59,6 +60,7 @@ import type {
 } from "#src/sliceview/base.js";
 import {
   forEachPlaneIntersectingVolumetricChunk,
+  getCrossSectionVolumeRenderingVoxelRange,
   getNormalizedChunkLayout,
   SLICEVIEW_ADD_VISIBLE_LAYER_RPC_ID,
   SLICEVIEW_REMOVE_VISIBLE_LAYER_RPC_ID,
@@ -70,6 +72,7 @@ import {
 import { ChunkLayout } from "#src/sliceview/chunk_layout.js";
 import type { SliceViewerState } from "#src/sliceview/panel.js";
 import { SliceViewRenderLayer } from "#src/sliceview/renderlayer.js";
+import { SharedWatchableValue } from "#src/shared_watchable_value.js";
 import type { WatchableValueInterface } from "#src/trackable_value.js";
 import type { Borrowed, Disposer, Owned } from "#src/util/disposable.js";
 import { invokeDisposers, RefCounted } from "#src/util/disposable.js";
@@ -224,6 +227,10 @@ export class SliceView extends Base {
     public chunkManager: ChunkManager,
     public layerManager: LayerManager,
     public navigationState: Owned<NavigationState>,
+    public volumeRenderingMode: WatchableValueInterface<
+      CrossSectionVolumeRenderingMode
+    >,
+    public voxelRange: WatchableValueInterface<number>,
     public wireFrame: WatchableValueInterface<boolean>,
   ) {
     super(
@@ -298,6 +305,12 @@ export class SliceView extends Base {
     this.registerDisposer(navigationState);
     this.registerDisposer(this.projectionParameters);
     this.registerDisposer(
+      volumeRenderingMode.changed.add(this.viewChanged.dispatch),
+    );
+    this.registerDisposer(
+      voxelRange.changed.add(() => this.invalidateVisibleChunks()),
+    );
+    this.registerDisposer(
       this.projectionParameters.changed.add((oldValue, newValue) => {
         if (
           oldValue.displayDimensionRenderInfo !==
@@ -315,6 +328,9 @@ export class SliceView extends Base {
     this.initializeCounterpart(rpc, {
       chunkManager: chunkManager.rpcId,
       projectionParameters: sharedProjectionParameters.rpcId,
+      voxelRange: this.registerDisposer(
+        SharedWatchableValue.makeFromExisting(rpc, this.voxelRange),
+      ).rpcId,
     });
     this.registerDisposer(
       layerManager.layersChanged.add(() => {
@@ -338,17 +354,27 @@ export class SliceView extends Base {
   forEachVisibleChunk(
     tsource: FrontendTransformedSource,
     chunkLayout: ChunkLayout,
-    callback: (key: string) => void,
+    callback: (key: string, planeOffset: number) => void,
   ) {
-    forEachPlaneIntersectingVolumetricChunk(
-      this.projectionParameters.value,
-      tsource.renderLayer.localPosition.value,
-      tsource,
-      chunkLayout,
-      () => {
-        callback(tsource.curPositionInChunks.join());
-      },
+    const voxelRange = getCrossSectionVolumeRenderingVoxelRange(
+      this.voxelRange.value,
     );
+    for (
+      let planeOffset = -voxelRange;
+      planeOffset <= voxelRange;
+      ++planeOffset
+    ) {
+      forEachPlaneIntersectingVolumetricChunk(
+        this.projectionParameters.value,
+        tsource.renderLayer.localPosition.value,
+        tsource,
+        chunkLayout,
+        () => {
+          callback(tsource.curPositionInChunks.join(), planeOffset);
+        },
+        planeOffset,
+      );
+    }
   }
 
   isReady() {
@@ -552,7 +578,15 @@ export class SliceView extends Base {
     offscreenFramebuffer.bind(width, height);
     gl.disable(gl.SCISSOR_TEST);
 
-    gl.clearColor(0, 0, 0, 0);
+    const clearForMinProjection =
+      getCrossSectionVolumeRenderingVoxelRange(this.voxelRange.value) > 0 &&
+      this.volumeRenderingMode.value === CrossSectionVolumeRenderingMode.MIN;
+    gl.clearColor(
+      clearForMinProjection ? 1 : 0,
+      clearForMinProjection ? 1 : 0,
+      clearForMinProjection ? 1 : 0,
+      0,
+    );
     gl.colorMask(true, true, true, true);
     gl.clear(WebGL2RenderingContext.COLOR_BUFFER_BIT);
     let renderLayerNum = 0;
