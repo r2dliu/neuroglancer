@@ -6,9 +6,11 @@ import { SliceProjectionRenderLayer } from "#src/slice_projection/frontend.js";
 import { ImageRenderLayer } from "#src/sliceview/volume/image_renderlayer.js";
 import type { WatchableValueInterface } from "#src/trackable_value.js";
 import { WatchableValue } from "#src/trackable_value.js";
-import { parseRGBColorSpecification, serializeColor } from "#src/util/color.js";
+import {
+  parseRGBAColorSpecification,
+  serializeColor,
+} from "#src/util/color.js";
 import type { Borrowed } from "#src/util/disposable.js";
-import type { vec3 } from "#src/util/geom.js";
 import { quat } from "#src/util/geom.js";
 import {
   parseFixedLengthArray,
@@ -39,7 +41,7 @@ function defaultSliceParameters(): SliceParameters {
     orientation: Float32Array.from(DEFAULT_ORIENTATION),
     voxelRange: DEFAULT_VOXEL_RANGE,
     projectionMode: DEFAULT_PROJECTION_MODE,
-    backgroundColor: parseRGBColorSpecification(DEFAULT_BACKGROUND_COLOR),
+    backgroundColor: parseRGBAColorSpecification(DEFAULT_BACKGROUND_COLOR),
     width: DEFAULT_WIDTH,
     height: DEFAULT_HEIGHT,
   };
@@ -84,7 +86,7 @@ export class TrackableSliceParameters
         );
       });
       verifyOptionalObjectProperty(x, "backgroundColor", (backgroundColor) => {
-        value.backgroundColor = parseRGBColorSpecification(backgroundColor);
+        value.backgroundColor = parseRGBAColorSpecification(backgroundColor);
       });
       verifyOptionalObjectProperty(x, "size", (size) => {
         verifyObject(size);
@@ -107,7 +109,7 @@ export class TrackableSliceParameters
       orientation: Array.from(value.orientation),
       voxelRange: value.voxelRange,
       projectionMode: SliceProjectionMode[value.projectionMode].toLowerCase(),
-      backgroundColor: serializeColor(value.backgroundColor as vec3),
+      backgroundColor: serializeColor(value.backgroundColor),
       size: { width: value.width, height: value.height },
     };
   }

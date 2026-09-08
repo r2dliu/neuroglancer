@@ -41,22 +41,17 @@ import type {
   WatchableValueInterface,
 } from "#src/trackable_value.js";
 import {
-  constantWatchableValue,
   makeCachedDerivedWatchableValue,
   registerNested,
   WatchableValue,
 } from "#src/trackable_value.js";
 import type { RefCounted } from "#src/util/disposable.js";
-import { mat4, vec3 } from "#src/util/geom.js";
+import { mat4, vec3, vec4 } from "#src/util/geom.js";
 import { glsl_COLORMAPS } from "#src/webgl/colormaps.js";
 import type { GL } from "#src/webgl/context.js";
-import type {
-  ParameterizedContextDependentShaderGetter,
-  ParameterizedEmitterDependentShaderGetter,
-} from "#src/webgl/dynamic_shader.js";
+import type { ParameterizedContextDependentShaderGetter } from "#src/webgl/dynamic_shader.js";
 import {
   parameterizedContextDependentShaderGetter,
-  parameterizedEmitterDependentShaderGetter,
   shaderCodeWithLineDirective,
 } from "#src/webgl/dynamic_shader.js";
 import type { TextureBuffer } from "#src/webgl/offscreen.js";
@@ -121,7 +116,7 @@ interface SliceProjectionAttachmentState {
   sources: NestedStateManager<AttachedSource[]>;
 }
 
-const projectionSamplerTextureUnit = Symbol("sliceProjectionSampler");
+const kIdentityColorFactor = vec4.fromValues(1, 1, 1, 1);
 
 const tempMat4 = mat4.create();
 const tempChunkToSlice = mat4.create();
@@ -181,7 +176,6 @@ export class SliceProjectionRenderLayer extends PerspectiveViewRenderLayer<Slice
   private projectionMode: WatchableValueInterface<SliceProjectionMode>;
   private vertexIdHelper: VertexIdHelper;
   private projectionBuffer: FramebufferConfiguration<TextureBuffer>;
-  private compositeShaderGetter: ParameterizedEmitterDependentShaderGetter<undefined>;
 
   get gl(): GL {
     return this.chunkManager.gl;
@@ -225,36 +219,6 @@ export class SliceProjectionRenderLayer extends PerspectiveViewRenderLayer<Slice
     );
     this.registerDisposer(
       this.sliceParameters.changed.add(this.redrawNeeded.dispatch),
-    );
-    this.compositeShaderGetter = parameterizedEmitterDependentShaderGetter(
-      this,
-      gl,
-      {
-        memoizeKey: "SliceProjectionComposite",
-        parameters: constantWatchableValue(undefined),
-        defineShader: (builder) => {
-          defineVertexId(builder);
-          builder.addUniform("highp mat4", "uModelViewProjection");
-          builder.addUniform("highp vec3", "uBackgroundColor");
-          builder.addUniform("highp uint", "uPickId");
-          builder.addTextureSampler(
-            "sampler2D",
-            "uProjectionSampler",
-            projectionSamplerTextureUnit,
-          );
-          builder.addVarying("highp vec2", "vTexCoord");
-          builder.addVertexCode(glsl_getQuadVertexPosition);
-          builder.setVertexMain(`
-vec2 corner = getQuadVertexPosition(vec2(-1.0, -1.0), vec2(1.0, 1.0));
-vTexCoord = corner * 0.5 + 0.5;
-gl_Position = uModelViewProjection * vec4(corner, 0.0, 1.0);
-`);
-          builder.setFragmentMain(`
-vec4 value = texture(uProjectionSampler, vTexCoord);
-emit(vec4(mix(uBackgroundColor, value.rgb, value.a), 1.0), uPickId);
-`);
-        },
-      },
     );
     const sharedObject = this.registerDisposer(
       new ChunkRenderLayerFrontend(this.layerChunkProgressInfo),
@@ -357,7 +321,6 @@ void emitTransparent() {
         builder.setFragmentMainFunction(`
 void main() {
   vec3 projected = vec3(${isMin ? "1.0" : "0.0"});
-  float coverage = 0.0;
   bool covered = false;
   for (int i = 0; i < uNumSamples; ++i) {
     float t = uNumSamples == 1 ? 0.0 : (2.0 * float(i) / float(uNumSamples - 1) - 1.0);
@@ -372,11 +335,10 @@ void main() {
     userMain();
     if (sampleColor.a <= 0.0) continue;
     projected = ${isMin ? "min" : "max"}(projected, sampleColor.rgb);
-    coverage = max(coverage, sampleColor.a);
     covered = true;
   }
   if (!covered) discard;
-  out_value = vec4(projected, coverage);
+  out_value = vec4(projected, 1.0);
 }
 `);
       },
@@ -476,7 +438,18 @@ void main() {
     gl.enable(WebGL2RenderingContext.DEPTH_TEST);
     gl.enable(WebGL2RenderingContext.STENCIL_TEST);
     renderContext.bindFramebuffer();
-    this.drawSliceQuad(renderContext, parameters, canonicalVoxelFactors);
+    computeSliceToWorld(tempMat4, parameters, canonicalVoxelFactors, 1);
+    mat4.multiply(tempMat4, projectionParameters.viewProjectionMat, tempMat4);
+    attachment.view.sliceViewRenderHelper.draw(
+      this.projectionBuffer.colorBuffers[0].texture,
+      tempMat4,
+      kIdentityColorFactor,
+      parameters.backgroundColor,
+      0,
+      0,
+      1,
+      1,
+    );
   }
 
   private drawSource(
@@ -614,57 +587,6 @@ void main() {
     if (shader !== null && chunkFormat != null) {
       chunkFormat.endDrawing(gl, shader);
     }
-  }
-
-  private drawSliceQuad(
-    renderContext: PerspectiveViewRenderContext,
-    parameters: SliceParameters,
-    canonicalVoxelFactors: Float64Array,
-  ) {
-    const { gl } = this;
-    const shaderResult = this.compositeShaderGetter(renderContext.emitter);
-    const { shader } = shaderResult;
-    if (shader === null) return;
-    shader.bind();
-    this.vertexIdHelper.enable();
-    computeSliceToWorld(tempMat4, parameters, canonicalVoxelFactors, 1);
-    mat4.multiply(
-      tempMat4,
-      renderContext.projectionParameters.viewProjectionMat,
-      tempMat4,
-    );
-    gl.uniformMatrix4fv(
-      shader.uniform("uModelViewProjection"),
-      false,
-      tempMat4,
-    );
-    gl.uniform3fv(
-      shader.uniform("uBackgroundColor"),
-      parameters.backgroundColor,
-    );
-    gl.uniform1ui(
-      shader.uniform("uPickId"),
-      renderContext.pickIDs.register(this),
-    );
-    const textureUnit = shader.textureUnit(projectionSamplerTextureUnit);
-    gl.activeTexture(WebGL2RenderingContext.TEXTURE0 + textureUnit);
-    gl.bindTexture(
-      WebGL2RenderingContext.TEXTURE_2D,
-      this.projectionBuffer.colorBuffers[0].texture,
-    );
-    gl.texParameteri(
-      WebGL2RenderingContext.TEXTURE_2D,
-      WebGL2RenderingContext.TEXTURE_MIN_FILTER,
-      WebGL2RenderingContext.LINEAR,
-    );
-    gl.texParameteri(
-      WebGL2RenderingContext.TEXTURE_2D,
-      WebGL2RenderingContext.TEXTURE_MAG_FILTER,
-      WebGL2RenderingContext.LINEAR,
-    );
-    drawQuads(gl, 1, 1);
-    gl.bindTexture(WebGL2RenderingContext.TEXTURE_2D, null);
-    this.vertexIdHelper.disable();
   }
 
   isReady(

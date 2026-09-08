@@ -3,7 +3,7 @@ import type { TransformedSource } from "#src/sliceview/base.js";
 import { forEachVisibleVolumetricChunk } from "#src/sliceview/base.js";
 import type { ChunkLayout } from "#src/sliceview/chunk_layout.js";
 import type { VolumeChunkSource } from "#src/sliceview/volume/base.js";
-import type { quat } from "#src/util/geom.js";
+import type { quat, vec4 } from "#src/util/geom.js";
 import { kAxes, mat4, transformVectorByMat4, vec3 } from "#src/util/geom.js";
 
 export const SLICE_PROJECTION_RENDER_LAYER_RPC_ID =
@@ -23,7 +23,7 @@ export interface SliceParameters {
   orientation: Float32Array;
   voxelRange: number;
   projectionMode: SliceProjectionMode;
-  backgroundColor: Float32Array;
+  backgroundColor: vec4;
   width: number;
   height: number;
 }
