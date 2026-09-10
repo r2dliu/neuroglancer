@@ -152,7 +152,8 @@ export class SliceUserLayer extends UserLayer {
     const sources: ImageRenderLayer[] = [];
     for (const managedLayer of this.manager.rootLayers.managedLayers) {
       const userLayer = managedLayer.layer;
-      if (userLayer === null || userLayer.type !== "image") continue;
+      if (!managedLayer.visible || userLayer === null) continue;
+      if (userLayer.type !== "image") continue;
       for (const renderLayer of userLayer.renderLayers) {
         if (renderLayer instanceof ImageRenderLayer) sources.push(renderLayer);
       }
