@@ -14,8 +14,9 @@ export const SLICE_PROJECTION_RENDER_LAYER_UPDATE_SOURCES_RPC_ID =
 export const SLICE_PROJECTION_MAX_TEXTURE_SIZE = 1024;
 
 export enum SliceProjectionMode {
-  MIN = 0,
-  MAX = 1,
+  NONE = 0,
+  MIN = 1,
+  MAX = 2,
 }
 
 export interface SliceParameters {
@@ -97,11 +98,19 @@ export function getVoxelSpacingAlongNormal(
   return length === 0 ? 0 : 1 / length;
 }
 
+function getEffectiveVoxelRange(parameters: SliceParameters) {
+  return parameters.projectionMode === SliceProjectionMode.NONE
+    ? 0
+    : parameters.voxelRange;
+}
+
 export function getSliceSampleCount(
   parameters: SliceParameters,
   info: SliceScaleInfo<unknown>,
 ) {
-  if (parameters.voxelRange === 0 || info.voxelSpacing === 0) return 1;
+  if (getEffectiveVoxelRange(parameters) === 0 || info.voxelSpacing === 0) {
+    return 1;
+  }
   const count = Math.round((2 * info.halfThickness) / info.voxelSpacing) + 1;
   return Math.max(1, Math.min(512, count));
 }
@@ -125,7 +134,8 @@ export function forEachChunkInSlice<
     tempNormal,
   );
   if (finestSpacing === 0) return;
-  const halfThickness = Math.max(parameters.voxelRange, 0.5) * finestSpacing;
+  const halfThickness =
+    Math.max(getEffectiveVoxelRange(parameters), 0.5) * finestSpacing;
   const targetVolume = getSliceTargetSpacing(parameters) ** 3;
   let scaleIndex = transformedSources.length - 1;
   for (let i = scaleIndex; i >= 0; --i) {
