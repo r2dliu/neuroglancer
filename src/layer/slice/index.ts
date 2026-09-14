@@ -3,6 +3,11 @@ import { registerLayerType, UserLayer } from "#src/layer/index.js";
 import type { SliceParameters } from "#src/slice_projection/base.js";
 import { SliceProjectionMode } from "#src/slice_projection/base.js";
 import { SliceProjectionRenderLayer } from "#src/slice_projection/frontend.js";
+import type { SliceWidgetState } from "#src/slice_projection/widget.js";
+import {
+  hiddenSliceWidgetState,
+  SliceWidgetRenderLayer,
+} from "#src/slice_projection/widget.js";
 import { ImageRenderLayer } from "#src/sliceview/volume/image_renderlayer.js";
 import type { WatchableValueInterface } from "#src/trackable_value.js";
 import { WatchableValue } from "#src/trackable_value.js";
@@ -51,11 +56,19 @@ export class TrackableSliceParameters
   implements Trackable, WatchableValueInterface<SliceParameters>
 {
   changed = new NullarySignal();
-  value = defaultSliceParameters();
+  private value_ = defaultSliceParameters();
+
+  get value() {
+    return this.value_;
+  }
+
+  set value(value: SliceParameters) {
+    this.value_ = value;
+    this.changed.dispatch();
+  }
 
   reset() {
     this.value = defaultSliceParameters();
-    this.changed.dispatch();
   }
 
   restoreState(x: unknown) {
@@ -99,7 +112,6 @@ export class TrackableSliceParameters
       });
     }
     this.value = value;
-    this.changed.dispatch();
   }
 
   toJSON() {
@@ -117,6 +129,7 @@ export class TrackableSliceParameters
 
 export class SliceUserLayer extends UserLayer {
   slice = new TrackableSliceParameters();
+  widget = new WatchableValue<SliceWidgetState>(hiddenSliceWidgetState());
   imageSources = new WatchableValue<readonly ImageRenderLayer[]>([]);
 
   constructor(managedLayer: Borrowed<ManagedUserLayer>) {
@@ -130,11 +143,18 @@ export class SliceUserLayer extends UserLayer {
     this.registerDisposer(() => {
       for (const source of this.imageSources.value) source.dispose();
     });
+    const projectionLayer = new SliceProjectionRenderLayer({
+      chunkManager: this.manager.chunkManager,
+      sliceParameters: this.slice,
+      imageSources: this.imageSources,
+    });
+    this.addRenderLayer(projectionLayer);
     this.addRenderLayer(
-      new SliceProjectionRenderLayer({
-        chunkManager: this.manager.chunkManager,
+      new SliceWidgetRenderLayer({
+        gl: this.manager.chunkManager.gl,
         sliceParameters: this.slice,
-        imageSources: this.imageSources,
+        widgetState: this.widget,
+        voxelSpacing: projectionLayer.voxelSpacing,
       }),
     );
     this.updateImageSources();

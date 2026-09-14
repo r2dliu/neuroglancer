@@ -34,6 +34,7 @@ export interface SliceScaleInfo<Transformed> {
   scaleIndex: number;
   sliceToWorld: mat4;
   voxelSpacing: number;
+  finestSpacing: number;
   halfThickness: number;
 }
 
@@ -157,6 +158,7 @@ export function forEachChunkInSlice<
     scaleIndex,
     sliceToWorld: tempSliceToWorld,
     voxelSpacing: getVoxelSpacingAlongNormal(tsource.chunkLayout, tempNormal),
+    finestSpacing,
     halfThickness,
   });
   tempProjectionParameters.globalPosition = globalPosition;

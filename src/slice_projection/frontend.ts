@@ -171,6 +171,7 @@ export class SliceProjectionRenderLayer extends PerspectiveViewRenderLayer<Slice
   sliceParameters: WatchableValueInterface<SliceParameters>;
   imageSources: WatchableValueInterface<readonly SliceImageSource[]>;
   backend: ChunkRenderLayerFrontend;
+  voxelSpacing = new WatchableValue(1);
   private sourcesGeneration = new WatchableValue(0);
   private sourceStates: NestedStateManager<SourceState[]>;
   private projectionMode: WatchableValueInterface<SliceProjectionMode>;
@@ -429,10 +430,17 @@ void main() {
     gl.clearColor(identity, identity, identity, 0);
     gl.clear(WebGL2RenderingContext.COLOR_BUFFER_BIT);
     this.vertexIdHelper.enable();
+    let finestSpacing = Number.POSITIVE_INFINITY;
     for (const attachedSource of attachment.state!.sources.value) {
-      this.drawSource(attachedSource, parameters, projectionParameters);
+      finestSpacing = Math.min(
+        finestSpacing,
+        this.drawSource(attachedSource, parameters, projectionParameters),
+      );
     }
     this.vertexIdHelper.disable();
+    if (Number.isFinite(finestSpacing)) {
+      this.voxelSpacing.value = finestSpacing;
+    }
     gl.blendEquation(WebGL2RenderingContext.FUNC_ADD);
     gl.disable(WebGL2RenderingContext.BLEND);
     gl.enable(WebGL2RenderingContext.DEPTH_TEST);
@@ -464,6 +472,7 @@ void main() {
     let chunks: Map<string, VolumeChunk> | undefined;
     let chunkDataSize: Uint32Array | undefined;
     let newSource = true;
+    let finestSpacing = Number.POSITIVE_INFINITY;
     forEachChunkInSlice(
       parameters,
       projectionParameters.globalPosition,
@@ -471,6 +480,7 @@ void main() {
       projectionParameters.displayDimensionRenderInfo.canonicalVoxelFactors,
       attachedSource.scales,
       (info) => {
+        finestSpacing = info.finestSpacing;
         const { tsource } = info;
         const { source } = tsource;
         chunkFormat = source.chunkFormat;
@@ -587,6 +597,7 @@ void main() {
     if (shader !== null && chunkFormat != null) {
       chunkFormat.endDrawing(gl, shader);
     }
+    return finestSpacing;
   }
 
   isReady(
