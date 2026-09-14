@@ -38,9 +38,9 @@ export interface SliceScaleInfo<Transformed> {
   halfThickness: number;
 }
 
-const tempCenter = vec3.create();
 const tempScale = vec3.create();
 const tempNormal = vec3.create();
+const tempAxis = vec3.create();
 const tempVoxelVector = vec3.create();
 const tempSliceToWorld = mat4.create();
 const tempWorldToSlice = mat4.create();
@@ -71,21 +71,49 @@ export function getSliceNormal(out: vec3, parameters: SliceParameters) {
   );
 }
 
+export function globalToIsotropic(
+  out: vec3,
+  global: vec3,
+  canonicalVoxelFactors: Float64Array,
+) {
+  for (let i = 0; i < 3; ++i) out[i] = global[i] * canonicalVoxelFactors[i];
+  return out;
+}
+
+export function isotropicToGlobal(
+  out: vec3,
+  isotropic: vec3,
+  canonicalVoxelFactors: Float64Array,
+) {
+  for (let i = 0; i < 3; ++i) out[i] = isotropic[i] / canonicalVoxelFactors[i];
+  return out;
+}
+
+export function computeSliceFrame(
+  out: mat4,
+  parameters: SliceParameters,
+  canonicalVoxelFactors: Float64Array,
+) {
+  const { position, orientation } = parameters;
+  mat4.fromQuat(out, orientation as unknown as quat);
+  for (let i = 0; i < 3; ++i) {
+    const inverseFactor = 1 / canonicalVoxelFactors[i];
+    out[i] *= inverseFactor;
+    out[4 + i] *= inverseFactor;
+    out[8 + i] *= inverseFactor;
+    out[12 + i] = position[i];
+  }
+  return out;
+}
+
 export function computeSliceToWorld(
   out: mat4,
   parameters: SliceParameters,
   canonicalVoxelFactors: Float64Array,
   halfThickness: number,
 ) {
-  const { position, width, height } = parameters;
-  for (let i = 0; i < 3; ++i) {
-    tempCenter[i] = position[i] * canonicalVoxelFactors[i];
-  }
-  mat4.fromRotationTranslation(
-    out,
-    parameters.orientation as unknown as quat,
-    tempCenter,
-  );
+  const { width, height } = parameters;
+  computeSliceFrame(out, parameters, canonicalVoxelFactors);
   vec3.set(tempScale, width / 2, height / 2, halfThickness);
   return mat4.scale(out, out, tempScale);
 }
@@ -130,9 +158,10 @@ export function forEachChunkInSlice<
   const { width, height } = parameters;
   if (transformedSources.length === 0 || !(width > 0) || !(height > 0)) return;
   getSliceNormal(tempNormal, parameters);
+  isotropicToGlobal(tempAxis, tempNormal, canonicalVoxelFactors);
   const finestSpacing = getVoxelSpacingAlongNormal(
     transformedSources[0].chunkLayout,
-    tempNormal,
+    tempAxis,
   );
   if (finestSpacing === 0) return;
   const halfThickness =
@@ -157,7 +186,7 @@ export function forEachChunkInSlice<
     tsource,
     scaleIndex,
     sliceToWorld: tempSliceToWorld,
-    voxelSpacing: getVoxelSpacingAlongNormal(tsource.chunkLayout, tempNormal),
+    voxelSpacing: getVoxelSpacingAlongNormal(tsource.chunkLayout, tempAxis),
     finestSpacing,
     halfThickness,
   });

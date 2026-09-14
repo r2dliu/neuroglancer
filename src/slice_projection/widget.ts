@@ -5,8 +5,11 @@ import { PerspectiveViewRenderLayer } from "#src/perspective_view/render_layer.j
 import type { ProjectionParameters } from "#src/projection_parameters.js";
 import type { SliceParameters } from "#src/slice_projection/base.js";
 import {
+  computeSliceFrame,
   computeSliceToWorld,
   getSliceNormal,
+  globalToIsotropic,
+  isotropicToGlobal,
 } from "#src/slice_projection/base.js";
 import type { WatchableValueInterface } from "#src/trackable_value.js";
 import { constantWatchableValue } from "#src/trackable_value.js";
@@ -72,6 +75,7 @@ const tempMat3 = mat3.create();
 const tempQuat = quat.create();
 const tempCenter = vec3.create();
 const tempOffset = vec3.create();
+const tempAnchorGlobal = vec3.create();
 const tempScaleVec = vec3.create();
 const tempNormal = vec3.create();
 const tempAnchor = vec3.create();
@@ -421,7 +425,7 @@ emit(vColor, uint(vPickId + 0.5));
     );
   }
 
-  private getAnchorWorld(
+  private getAnchorIsotropic(
     out: vec3,
     parameters: SliceParameters,
     state: SliceWidgetState,
@@ -440,13 +444,21 @@ emit(vColor, uint(vPickId + 0.5));
   }
 
   private getWidgetScale(
-    anchor: vec3,
+    anchorIsotropic: vec3,
+    factors: Float64Array,
     projectionParameters: ProjectionParameters,
   ) {
     const { width, viewProjectionMat, invViewProjectionMat } =
       projectionParameters;
     if (!(width > 0)) return 0;
-    vec4.set(tempVec4, anchor[0], anchor[1], anchor[2], 1);
+    isotropicToGlobal(tempAnchorGlobal, anchorIsotropic, factors);
+    vec4.set(
+      tempVec4,
+      tempAnchorGlobal[0],
+      tempAnchorGlobal[1],
+      tempAnchorGlobal[2],
+      1,
+    );
     vec4.transformMat4(tempVec4, tempVec4, viewProjectionMat);
     const w = tempVec4[3];
     if (!(w > 0)) return 0;
@@ -458,7 +470,8 @@ emit(vColor, uint(vPickId + 0.5));
       tempVec4[1] / tempVec4[3],
       tempVec4[2] / tempVec4[3],
     );
-    return vec3.distance(tempShifted, anchor);
+    globalToIsotropic(tempShifted, tempShifted, factors);
+    return vec3.distance(tempShifted, anchorIsotropic);
   }
 
   private computeModelMatrix(
@@ -469,13 +482,8 @@ emit(vColor, uint(vPickId + 0.5));
     scale: number,
     side: number,
   ) {
-    const { position, orientation, width, height } = parameters;
-    for (let i = 0; i < 3; ++i) tempCenter[i] = position[i] * factors[i];
-    mat4.fromRotationTranslation(
-      out,
-      orientation as unknown as quat,
-      tempCenter,
-    );
+    const { width, height } = parameters;
+    computeSliceFrame(out, parameters, factors);
     vec3.set(
       tempOffset,
       (state.anchor[0] * width) / 2,
@@ -542,13 +550,17 @@ emit(vColor, uint(vPickId + 0.5));
     const { projectionParameters } = renderContext;
     const { canonicalVoxelFactors } =
       projectionParameters.displayDimensionRenderInfo;
-    const anchor = this.getAnchorWorld(
+    const anchor = this.getAnchorIsotropic(
       tempAnchor,
       parameters,
       state,
       canonicalVoxelFactors,
     );
-    const scale = this.getWidgetScale(anchor, projectionParameters);
+    const scale = this.getWidgetScale(
+      anchor,
+      canonicalVoxelFactors,
+      projectionParameters,
+    );
     if (scale <= 0) return;
     const shaderResult = this.shaderGetter(renderContext.emitter);
     const { shader } = shaderResult;
@@ -643,15 +655,20 @@ emit(vColor, uint(vPickId + 0.5));
     if (rect.width === 0 || rect.height === 0) return false;
     const ndcX = ((clientX - rect.left) / rect.width) * 2 - 1;
     const ndcY = 1 - ((clientY - rect.top) / rect.height) * 2;
-    const { invViewProjectionMat } = panel.projectionParameters.value;
+    const projectionParameters = panel.projectionParameters.value;
+    const { invViewProjectionMat } = projectionParameters;
+    const { canonicalVoxelFactors } =
+      projectionParameters.displayDimensionRenderInfo;
     vec4.set(tempVec4, ndcX, ndcY, -1, 1);
     vec4.transformMat4(tempVec4, tempVec4, invViewProjectionMat);
     vec3.set(origin, tempVec4[0], tempVec4[1], tempVec4[2]);
     vec3.scale(origin, origin, 1 / tempVec4[3]);
+    globalToIsotropic(origin, origin, canonicalVoxelFactors);
     vec4.set(tempVec4, ndcX, ndcY, 1, 1);
     vec4.transformMat4(tempVec4, tempVec4, invViewProjectionMat);
     vec3.set(direction, tempVec4[0], tempVec4[1], tempVec4[2]);
     vec3.scale(direction, direction, 1 / tempVec4[3]);
+    globalToIsotropic(direction, direction, canonicalVoxelFactors);
     vec3.subtract(direction, direction, origin);
     const length = vec3.length(direction);
     if (length === 0) return false;
@@ -675,9 +692,11 @@ emit(vColor, uint(vPickId + 0.5));
     const { canonicalVoxelFactors } =
       panel.projectionParameters.value.displayDimensionRenderInfo;
     getSliceNormal(tempNormal, parameters);
-    for (let i = 0; i < 3; ++i) {
-      tempCenter[i] = parameters.position[i] * canonicalVoxelFactors[i];
-    }
+    globalToIsotropic(
+      tempCenter,
+      parameters.position as unknown as vec3,
+      canonicalVoxelFactors,
+    );
     const denominator = vec3.dot(tempRayDirection, tempNormal);
     if (Math.abs(denominator) < 1e-9) return undefined;
     vec3.subtract(tempDelta, tempCenter, tempRayOrigin);
@@ -765,10 +784,10 @@ emit(vColor, uint(vPickId + 0.5));
     const factors =
       projectionParameters.displayDimensionRenderInfo.canonicalVoxelFactors;
     const anchor = vec3.clone(
-      this.getAnchorWorld(tempAnchor, parameters, state, factors),
+      this.getAnchorIsotropic(tempAnchor, parameters, state, factors),
     );
     const normal = vec3.clone(getSliceNormal(tempNormal, parameters));
-    const scale = this.getWidgetScale(anchor, projectionParameters);
+    const scale = this.getWidgetScale(anchor, factors, projectionParameters);
     const basis: DragBasis = {
       anchor,
       normal,
