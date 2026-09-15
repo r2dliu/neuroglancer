@@ -40,6 +40,7 @@ export interface SliceWidgetRenderLayerOptions {
   sliceParameters: WatchableValueInterface<SliceParameters>;
   widgetState: WatchableValueInterface<SliceWidgetState>;
   voxelSpacing: WatchableValueInterface<number>;
+  onInteractionFinished: () => void;
 }
 
 const SLICE_WIDGET_ACTION = "slice-widget";
@@ -314,6 +315,7 @@ export class SliceWidgetRenderLayer extends PerspectiveViewRenderLayer<undefined
   sliceParameters: WatchableValueInterface<SliceParameters>;
   widgetState: WatchableValueInterface<SliceWidgetState>;
   voxelSpacing: WatchableValueInterface<number>;
+  private onInteractionFinished: () => void;
   private meshBuffer: GLBuffer;
   private meshVertexCount: number;
   private boxBuffer: GLBuffer;
@@ -331,6 +333,7 @@ export class SliceWidgetRenderLayer extends PerspectiveViewRenderLayer<undefined
     this.sliceParameters = options.sliceParameters;
     this.widgetState = options.widgetState;
     this.voxelSpacing = options.voxelSpacing;
+    this.onInteractionFinished = options.onInteractionFinished;
     const mesh = makeWidgetMesh();
     this.meshVertexCount = mesh.length / VERTEX_STRIDE;
     this.meshBuffer = this.registerDisposer(GLBuffer.fromData(gl, mesh));
@@ -815,6 +818,7 @@ emit(vColor, uint(vPickId + 0.5));
       () => {
         this.activeDrag = undefined;
         this.redrawNeeded.dispatch();
+        this.onInteractionFinished();
       },
     );
   }

@@ -130,6 +130,7 @@ export class TrackableSliceParameters
 export class SliceUserLayer extends UserLayer {
   slice = new TrackableSliceParameters();
   widget = new WatchableValue<SliceWidgetState>(hiddenSliceWidgetState());
+  interactionFinished = new NullarySignal();
   imageSources = new WatchableValue<readonly ImageRenderLayer[]>([]);
 
   constructor(managedLayer: Borrowed<ManagedUserLayer>) {
@@ -155,6 +156,7 @@ export class SliceUserLayer extends UserLayer {
         sliceParameters: this.slice,
         widgetState: this.widget,
         voxelSpacing: projectionLayer.voxelSpacing,
+        onInteractionFinished: () => this.interactionFinished.dispatch(),
       }),
     );
     this.updateImageSources();
