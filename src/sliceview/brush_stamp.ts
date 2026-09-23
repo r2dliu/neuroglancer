@@ -87,17 +87,6 @@ const NEIGHBOR_OFFSETS: ReadonlyArray<readonly [number, number, number]> = (() =
   return offsets;
 })();
 
-/**
- * Emit the voxel centers of every voxel the slice plane crosses within the
- * radius-`radius` (canonical units) brush circle around `center` (voxel-index
- * coords) — the exact voxel set the plane RENDERS, so the painted disk shows
- * no gaps under the cursor. Deliberate trade-off: a crossed-cube slab on an
- * oblique plane is thicker than one slice spacing, so partial slivers of the
- * stroke show on the adjacent slices (the same voxels genuinely span both).
- * The alternative (claiming each voxel only for its nearest slice) leaves
- * visible pinholes on the painted slice, which reads as broken.
- * Callers dedupe (overlapping interpolated stamps re-emit).
- */
 export function stampDiskVoxels(
   frame: BrushPlaneFrame,
   center: vec3,
@@ -111,7 +100,7 @@ export function stampDiskVoxels(
   // voxelize_slice_mask).
   const halfThickness =
     0.5 *
-      (Math.abs(normal[0]) + Math.abs(normal[1]) + Math.abs(normal[2])) +
+    (Math.abs(normal[0]) + Math.abs(normal[1]) + Math.abs(normal[2])) +
     1e-4;
   const radiusSq = radius * radius;
   const pad = radius + STAMP_STEP;
@@ -157,4 +146,56 @@ export function stampDiskVoxels(
       }
     }
   }
+}
+
+export interface StrokeStamper {
+  advanceTo(position: vec3): void;
+}
+
+export function beginStroke(
+  frame: BrushPlaneFrame,
+  radius: number,
+  bounds: VoxelBounds,
+  emit: (x: number, y: number, z: number) => void,
+): StrokeStamper {
+  const seen = new Set<string>();
+  const emitOnce = (x: number, y: number, z: number) => {
+    const key = `${x},${y},${z}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    emit(x, y, z);
+  };
+  const spacing = Math.max(radius * 0.5, 0.5);
+  const delta = vec3.create();
+  const center = vec3.create();
+  let last: vec3 | null = null;
+  return {
+    advanceTo(position: vec3) {
+      const current = vec3.clone(position);
+      if (last === null) {
+        stampDiskVoxels(frame, current, radius, bounds, emitOnce);
+      } else {
+        vec3.subtract(delta, current, last);
+        const [du, dv] = frame.toCanonical(delta);
+        const canonicalDist = Math.sqrt(du * du + dv * dv);
+        const steps = Math.max(1, Math.ceil(canonicalDist / spacing));
+        for (let s = 1; s <= steps; s++) {
+          vec3.lerp(center, last, current, s / steps);
+          stampDiskVoxels(frame, center, radius, bounds, emitOnce);
+        }
+      }
+      last = current;
+    },
+  };
+}
+
+export function stampStrokeVoxels(
+  frame: BrushPlaneFrame,
+  path: ReadonlyArray<vec3>,
+  radius: number,
+  bounds: VoxelBounds,
+  emit: (x: number, y: number, z: number) => void,
+) {
+  const stroke = beginStroke(frame, radius, bounds, emit);
+  for (const position of path) stroke.advanceTo(position);
 }
