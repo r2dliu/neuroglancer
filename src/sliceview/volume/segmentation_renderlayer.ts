@@ -664,4 +664,34 @@ uint64_t getMappedObjectId(uint64_t value) {
     }
     return null;
   }
+
+  // Like getValueAt, but never falls through to a coarser scale: those are
+  // max-downsampled, so they return some label from the block rather than the
+  // voxel's own. Every scale is registered, sorted finest first, whatever is
+  // rendered — null means the full-resolution chunk is not resident.
+  getFinestValueAt(globalPosition: Float32Array) {
+    const { tempChunkPosition } = this;
+    const sources = this.visibleSourcesList;
+    if (sources.length === 0) return null;
+    const finest = Math.abs(sources[0].chunkTransform.chunkToLayerTransformDet);
+    for (const { source, chunkTransform } of sources) {
+      if (Math.abs(chunkTransform.chunkToLayerTransformDet) !== finest) break;
+      if (
+        !getChunkPositionFromCombinedGlobalLocalPositions(
+          tempChunkPosition,
+          globalPosition,
+          this.localPosition.value,
+          chunkTransform.layerRank,
+          chunkTransform.combinedGlobalLocalToChunkTransform,
+        )
+      ) {
+        continue;
+      }
+      const result = source.getValueAt(tempChunkPosition, chunkTransform);
+      if (result != null) {
+        return result;
+      }
+    }
+    return null;
+  }
 }
