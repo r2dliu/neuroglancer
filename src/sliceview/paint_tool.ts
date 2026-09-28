@@ -1,4 +1,5 @@
 import { SegmentationUserLayer } from "#src/layer/segmentation/index.js";
+import type { DisplayPose } from "#src/navigation_state.js";
 import type {
   BrushPlaneFrame,
   StrokeStamper,
@@ -9,6 +10,7 @@ import {
   brushPlaneFrame,
   VoxelBuffer,
 } from "#src/sliceview/brush_stamp.js";
+import { SliceViewPanel } from "#src/sliceview/panel.js";
 import { SegmentationRenderLayer } from "#src/sliceview/volume/segmentation_renderlayer.js";
 import type { ToolActivation } from "#src/ui/tool.js";
 import {
@@ -50,6 +52,30 @@ function finishStroke(stroke: ActiveStroke): PaintStroke | null {
   return { value, frame, bounds, radius, path, voxels: voxels.view().slice() };
 }
 
+// Priors are read at full resolution, so paint only where it is being drawn.
+function drawsFullResolution(
+  viewer: Viewer,
+  pose: DisplayPose,
+  renderLayer: SegmentationRenderLayer,
+) {
+  for (const panel of viewer.display.panels) {
+    if (!(panel instanceof SliceViewPanel)) continue;
+    if (panel.navigationState.pose !== pose) continue;
+    const info = panel.sliceView.visibleLayers.get(renderLayer);
+    const finest = info?.visibleSources[0];
+    if (info === undefined || finest === undefined) return false;
+    return info.allSources.some((scales) => scales[0] === finest);
+  }
+  return false;
+}
+
+function paintableRenderLayer(layer: unknown) {
+  if (!(layer instanceof SegmentationUserLayer)) return undefined;
+  return layer.renderLayers.find(
+    (r): r is SegmentationRenderLayer => r instanceof SegmentationRenderLayer,
+  );
+}
+
 abstract class PaintTool extends Tool<Viewer> {
   private radius = 1;
   private stroke: ActiveStroke | null = null;
@@ -76,13 +102,17 @@ abstract class PaintTool extends Tool<Viewer> {
     content.classList.add(`neuroglancer-${this.type}-tool`);
 
     // Claim left-click/drag only when a paintable segmentation layer is
-    // selected; otherwise the guard declines and the click falls through to
-    // the normal slice-view select/navigate behavior.
+    // selected and drawn at full resolution under the cursor; otherwise the
+    // guard declines and the click falls through to the normal slice-view
+    // select/navigate behavior.
     const canPaint = () => {
       const layer = this.viewer.selectedLayer?.layer?.layer;
+      const renderLayer = paintableRenderLayer(layer);
+      const pose = this.viewer.layerSelectedValues.mouseState.pose;
       return (
-        layer instanceof SegmentationUserLayer &&
-        layer.renderLayers.some((r) => r instanceof SegmentationRenderLayer)
+        renderLayer !== undefined &&
+        pose !== undefined &&
+        drawsFullResolution(this.viewer, pose, renderLayer)
       );
     };
     const paintAction = `neuroglancer-${this.type}-paint`;
@@ -123,13 +153,14 @@ abstract class PaintTool extends Tool<Viewer> {
       const { position } = mouseState;
       if (!position) return;
 
-      const segmentationRenderLayer = selectedLayer.renderLayers.find(
-        (layer) => layer instanceof SegmentationRenderLayer,
-      );
+      const segmentationRenderLayer = paintableRenderLayer(selectedLayer);
       if (!segmentationRenderLayer) return;
 
       const pose = mouseState.pose;
       if (!pose) return;
+      if (!drawsFullResolution(this.viewer, pose, segmentationRenderLayer)) {
+        return;
+      }
       const bounds = pose.position.coordinateSpace.value.bounds;
       if (!bounds) return;
 
