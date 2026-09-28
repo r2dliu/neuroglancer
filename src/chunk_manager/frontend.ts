@@ -22,6 +22,7 @@ import {
   CHUNK_LAYER_STATISTICS_RPC_ID,
   CHUNK_MANAGER_RPC_ID,
   CHUNK_QUEUE_MANAGER_RPC_ID,
+  CHUNK_SOURCE_INVALIDATE_INDEX_RPC_ID,
   CHUNK_SOURCE_INVALIDATE_RPC_ID,
   CHUNK_SOURCE_SOFT_INVALIDATE_RPC_ID,
   CHUNK_SOURCE_SOFT_INVALIDATE_COMPLETE_RPC_ID,
@@ -543,6 +544,10 @@ export class ChunkSource extends SharedObject {
    * promise anyway if the backend never signals completion (e.g. a chunk
    * was evicted before it could re-download).
    */
+  invalidateIndexCache() {
+    this.rpc!.invoke(CHUNK_SOURCE_INVALIDATE_INDEX_RPC_ID, { id: this.rpcId });
+  }
+
   softInvalidateCache(): Promise<void> {
     const token = ++nextSoftInvalidateToken;
     this.rpc!.invoke(CHUNK_SOURCE_SOFT_INVALIDATE_RPC_ID, {

@@ -23,6 +23,7 @@ import {
   CHUNK_LAYER_STATISTICS_RPC_ID,
   CHUNK_MANAGER_RPC_ID,
   CHUNK_QUEUE_MANAGER_RPC_ID,
+  CHUNK_SOURCE_INVALIDATE_INDEX_RPC_ID,
   CHUNK_SOURCE_INVALIDATE_RPC_ID,
   CHUNK_SOURCE_SOFT_INVALIDATE_RPC_ID,
   CHUNK_SOURCE_SOFT_INVALIDATE_COMPLETE_RPC_ID,
@@ -1502,6 +1503,11 @@ registerRPC(CHUNK_SOURCE_INVALIDATE_RPC_ID, function (x) {
 registerRPC(CHUNK_SOURCE_SOFT_INVALIDATE_RPC_ID, function (x) {
   const source = <ChunkSource>this.get(x.id);
   source.chunkManager.queueManager.softInvalidateSourceCache(source, x.token);
+});
+
+registerRPC(CHUNK_SOURCE_INVALIDATE_INDEX_RPC_ID, function (x) {
+  const source = <ChunkSource>this.get(x.id);
+  source.onInvalidateCache?.();
 });
 
 registerPromiseRPC(
