@@ -321,6 +321,34 @@ export function canonicalOrder(voxels: Float64Array): Uint32Array {
   return order;
 }
 
+const CRC32_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    table[n] = c;
+  }
+  return table;
+})();
+
+// What the server checks a stroke's voxels against: CRC32 of their indices in
+// canonical order, as little-endian int32 x y z, read as a signed integer.
+export function strokeChecksum(voxels: Float64Array): number {
+  const order = canonicalOrder(voxels);
+  const view = new DataView(new ArrayBuffer(12 * order.length));
+  for (let i = 0; i < order.length; i++) {
+    for (let k = 0; k < 3; k++) {
+      view.setInt32(12 * i + 4 * k, Math.floor(voxels[3 * order[i] + k]), true);
+    }
+  }
+  const bytes = new Uint8Array(view.buffer);
+  let crc = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) {
+    crc = CRC32_TABLE[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) | 0;
+}
+
 export function stampStrokeVoxels(
   frame: BrushPlaneFrame,
   path: ReadonlyArray<vec3>,
