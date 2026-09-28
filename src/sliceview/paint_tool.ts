@@ -23,21 +23,17 @@ import { startRelativeMouseDrag } from "#src/util/mouse_drag.js";
 import { Signal } from "#src/util/signal.js";
 import type { Viewer } from "#src/viewer.js";
 
-/** Everything needed to rasterize a finished stroke again. */
 export interface PaintStroke {
   value: number;
   frame: BrushPlaneFrame;
   bounds: VoxelBounds;
   radius: number;
-  /** In-bounds pointer samples, exactly as they were rasterized. */
   path: vec3[];
-  /** Flat [x, y, z, ...] in emission order, x = OME X (last storage dim). */
+  // Emission order, not canonical order.
   voxels: Float64Array;
 }
 
-// Label and radius are fixed when the stroke starts, frame and bounds at its
-// first in-bounds sample: a stroke is one label swept at one radius on one
-// plane. `value === null` is an inert stroke.
+// `value === null` is an inert stroke.
 interface ActiveStroke {
   value: number | null;
   radius: number;
@@ -59,10 +55,9 @@ abstract class PaintTool extends Tool<Viewer> {
   private stroke: ActiveStroke | null = null;
 
   strokeStarted = new Signal<() => void>();
-  // null when the stroke painted nothing: inert, or never inside the volume.
+  // null when the stroke painted nothing.
   strokeEnded = new Signal<(stroke: PaintStroke | null) => void>();
-  // Voxels the stroke newly covers, each emitted once per stroke, as flat
-  // [x, y, z, ...]. The view is only valid during dispatch.
+  // The view is only valid during dispatch.
   voxelsEmitted = new Signal<(voxels: Float64Array, value: number) => void>();
 
   constructor(public viewer: Viewer) {
@@ -193,8 +188,7 @@ abstract class PaintTool extends Tool<Viewer> {
       this.strokeStarted.dispatch();
       paint();
 
-      // The stroke ends on the document-level pointerup, not the slice view's
-      // mouseup, so releasing over another panel still ends it.
+      // Document-level, so releasing over another panel still ends the stroke.
       startRelativeMouseDrag(actionEvent.detail, paint, endStroke);
     });
 

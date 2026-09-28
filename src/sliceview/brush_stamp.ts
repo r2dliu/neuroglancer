@@ -14,9 +14,7 @@ export interface BrushPlaneFrame {
   dirV: vec3;
   /** Slice-plane normal in voxel-index space (unit). */
   normal: vec3;
-  /** Rotation rows for the right and up axes, and the canonical voxel
-   *  factors. `toCanonical` reads exactly these, so a port given them agrees
-   *  bit for bit; `dirU = mU / factors` does not round-trip. */
+  // What toCanonical reads; dirU = mU / factors does not round-trip exactly.
   mU: vec3;
   mV: vec3;
   factors: Float64Array;
@@ -286,7 +284,6 @@ export function beginStroke(
   };
 }
 
-/** Growable flat [x, y, z, ...] voxel list. */
 export class VoxelBuffer {
   private data = new Float64Array(3 * 1024);
   length = 0;
@@ -303,7 +300,7 @@ export class VoxelBuffer {
     this.data[at + 2] = z;
   }
 
-  /** Voxels `from` onward, as a view that the next push may invalidate. */
+  // The next push may invalidate the view.
   view(from = 0): Float64Array {
     return this.data.subarray(3 * from, 3 * this.length);
   }
