@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import type { ChunkManager } from "#src/chunk_manager/backend.js";
+import type { Chunk, ChunkManager } from "#src/chunk_manager/backend.js";
 import { ChunkState } from "#src/chunk_manager/base.js";
 import { SimpleAsyncCache } from "#src/chunk_manager/generic_file_source.js";
 import {
@@ -47,6 +47,21 @@ type ShardIndex = BigUint64Array | undefined;
 const MISSING_VALUE = BigInt("18446744073709551615");
 
 type ShardIndexCache<BaseKey> = SimpleAsyncCache<BaseKey, ShardIndex>;
+
+// Always drop the memoized shard index. `SimpleAsyncCache.get` is driven
+// purely by `chunk.asyncMemoize` (which `freeSystemMemory` clears) — NOT by
+// the download queue — so an index chunk in any state (DOWNLOADING, QUEUED,
+// SYSTEM_MEMORY) would otherwise keep serving its stale offsets.
+function dropIndex<BaseKey>(
+  indexCache: ShardIndexCache<BaseKey>,
+  chunk: Chunk,
+) {
+  chunk.freeSystemMemory();
+  indexCache.chunkManager.queueManager.updateChunkState(
+    chunk,
+    ChunkState.QUEUED,
+  );
+}
 
 function makeIndexCache<BaseKey>(
   chunkManager: ChunkManager,
@@ -181,22 +196,38 @@ class ShardedKvStore<BaseKey>
     return `subchunk ${JSON.stringify(key.subChunk)} within shard ${this.base.getUrl(key.base)}`;
   }
 
+  // A sub-chunk that fails to read or decode against a shard whose index has
+  // since changed was read with stale offsets from a replaced shard: retry once.
+  async retryIfReplaced<T>(
+    key: { base: BaseKey; subChunk: number[] },
+    attempt: () => Promise<T>,
+    options: Partial<ProgressOptions>,
+  ): Promise<T> {
+    const before = await this.findKey(key, options);
+    try {
+      return await attempt();
+    } catch (e) {
+      if (options.signal?.aborted) throw e;
+      const { indexCache } = this;
+      const chunk = indexCache.chunks.get(
+        indexCache.encodeKeyFunction(key.base),
+      );
+      if (chunk !== undefined) dropIndex(indexCache, chunk);
+      const after = await this.findKey(key, options);
+      if (
+        before?.offset === after?.offset &&
+        before?.length === after?.length
+      ) {
+        throw e;
+      }
+      return attempt();
+    }
+  }
+
   invalidateIndexCache() {
     const { indexCache } = this;
     for (const chunk of indexCache.chunks.values()) {
-      // Always drop the memoized shard index. `SimpleAsyncCache.get` is
-      // driven purely by `chunk.asyncMemoize` (which `freeSystemMemory`
-      // clears) — NOT by the download queue — so if we only cleared it for
-      // chunks that happen to be in SYSTEM_MEMORY_WORKER, an index chunk in
-      // any other state (DOWNLOADING, QUEUED, SYSTEM_MEMORY) would keep
-      // serving its stale offsets and the volume re-fetch would read
-      // pre-edit bytes until a full page reload. Clearing unconditionally
-      // guarantees the next read re-downloads the index.
-      chunk.freeSystemMemory();
-      indexCache.chunkManager.queueManager.updateChunkState(
-        chunk,
-        ChunkState.QUEUED,
-      );
+      dropIndex(indexCache, chunk);
     }
   }
 

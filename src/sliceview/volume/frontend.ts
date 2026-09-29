@@ -219,6 +219,14 @@ export class VolumeChunkSource
     return this.chunkFormatHandler.chunkFormat;
   }
 
+  failedAt(chunkPosition: Float32Array) {
+    const { chunkDataSize } = this.spec;
+    const key = Array.from(chunkDataSize, (size, i) =>
+      Math.floor(chunkPosition[i] / size),
+    ).join();
+    return this.failedChunks.has(key);
+  }
+
   getValueAt(
     chunkPosition: Float32Array,
     channelAccess: ChunkChannelAccessParameters,

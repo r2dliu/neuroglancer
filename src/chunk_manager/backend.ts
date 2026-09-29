@@ -20,6 +20,7 @@ import type {
   LayerChunkProgressInfo,
 } from "#src/chunk_manager/base.js";
 import {
+  CHUNK_FAILED_RPC_ID,
   CHUNK_LAYER_STATISTICS_RPC_ID,
   CHUNK_MANAGER_RPC_ID,
   CHUNK_QUEUE_MANAGER_RPC_ID,
@@ -186,6 +187,13 @@ export class Chunk implements Disposable {
     this.error = error;
     const wasSoftRefetch = this.softRefetch;
     this.queueManager.updateChunkState(this, ChunkState.FAILED);
+    const { rpcId } = this.source!;
+    if (rpcId != null) {
+      this.queueManager.rpc!.invoke(CHUNK_FAILED_RPC_ID, {
+        source: rpcId,
+        key: this.key,
+      });
+    }
     if (wasSoftRefetch) {
       this.softRefetch = false;
       this.queueManager.noteSoftRefetchSettled(this.source as ChunkSource);

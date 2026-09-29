@@ -88,18 +88,18 @@ export class ZarrVolumeChunkSource extends WithParameters(
       baseKey += `${sep}${keyCoords[i]}`;
       sep = metadata.dimensionSeparator;
     }
-    const { chunkKvStore } = this;
-    const response = await chunkKvStore.kvStore.read(
-      chunkKvStore.getChunkKey(chunkGridPosition, baseKey),
-      { signal },
-    );
-    if (response !== undefined) {
+    const { kvStore, decodeCodecs, getChunkKey } = this.chunkKvStore;
+    const key = getChunkKey(chunkGridPosition, baseKey);
+    const attempt = async () => {
+      const response = await kvStore.read(key, { signal });
+      if (response === undefined) return;
       const decoded = await decodeArray(
-        chunkKvStore.decodeCodecs,
+        decodeCodecs,
         new Uint8Array(await response.response.arrayBuffer()),
         signal,
       );
       await postProcessRawData(chunk, signal, decoded);
-    }
+    };
+    await (kvStore.retryIfReplaced?.(key, attempt, { signal }) ?? attempt());
   }
 }

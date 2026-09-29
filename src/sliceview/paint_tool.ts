@@ -52,7 +52,6 @@ function finishStroke(stroke: ActiveStroke): PaintStroke | null {
   return { value, frame, bounds, radius, path, voxels: voxels.view().slice() };
 }
 
-// Priors are read at full resolution, so paint only where it is being drawn.
 function drawsFullResolution(
   viewer: Viewer,
   pose: DisplayPose,
@@ -95,6 +94,14 @@ abstract class PaintTool extends Tool<Viewer> {
 
   setRadius(radius: number) {
     this.radius = radius;
+  }
+
+  endStroke() {
+    const stroke = this.stroke;
+    if (stroke === null) return;
+    this.stroke = null;
+    this.strokeEnded.dispatch(finishStroke(stroke));
+    this.changed.dispatch();
   }
 
   activate(activation: ToolActivation<this>) {
@@ -196,13 +203,7 @@ abstract class PaintTool extends Tool<Viewer> {
       }
     };
 
-    const endStroke = () => {
-      const stroke = this.stroke;
-      if (stroke === null) return;
-      this.stroke = null;
-      this.strokeEnded.dispatch(finishStroke(stroke));
-      this.changed.dispatch();
-    };
+    const endStroke = () => this.endStroke();
 
     activation.bindAction<MouseEvent>(paintAction, (actionEvent) => {
       actionEvent.stopPropagation();

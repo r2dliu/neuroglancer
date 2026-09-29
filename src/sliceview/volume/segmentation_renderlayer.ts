@@ -665,12 +665,16 @@ uint64_t getMappedObjectId(uint64_t value) {
     return null;
   }
 
-  // Never falls back to a coarser scale; null = full-res chunk not resident.
+  // Never falls back to a coarser scale; null = full-res chunk not resident,
+  // undefined = outside the array, where no chunk will ever arrive, "failed" =
+  // its download failed.
   getFinestValueAt(globalPosition: Float32Array) {
     const { tempChunkPosition } = this;
     const sources = this.visibleSourcesList;
     if (sources.length === 0) return null;
     const finest = Math.abs(sources[0].chunkTransform.chunkToLayerTransformDet);
+    let inside = false;
+    let failed = false;
     for (const { source, chunkTransform } of sources) {
       if (Math.abs(chunkTransform.chunkToLayerTransformDet) !== finest) break;
       if (
@@ -684,11 +688,21 @@ uint64_t getMappedObjectId(uint64_t value) {
       ) {
         continue;
       }
+      const { lowerVoxelBound, upperVoxelBound } = source.spec;
+      let within = true;
+      for (let i = 0; i < lowerVoxelBound.length; ++i) {
+        const v = tempChunkPosition[i];
+        if (v < lowerVoxelBound[i] || v >= upperVoxelBound[i]) within = false;
+      }
+      if (!within) continue;
+      inside = true;
       const result = source.getValueAt(tempChunkPosition, chunkTransform);
       if (result != null) {
         return result;
       }
+      failed ||= source.failedAt(tempChunkPosition);
     }
-    return null;
+    if (failed) return "failed" as const;
+    return inside ? null : undefined;
   }
 }
