@@ -204,5 +204,10 @@
         ],
       },
     },
+    {
+      "default": true,
+      "id": "brush_strokes",
+      "subsource": {},
+    },
   ],
 }
