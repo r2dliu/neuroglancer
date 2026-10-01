@@ -73,8 +73,7 @@ import { overlaysOpen } from "#src/overlay.js";
 import { ScreenshotHandler } from "#src/python_integration/screenshots.js";
 import { allRenderLayerRoles, RenderLayerRole } from "#src/renderlayer.js";
 import { registerBoundingBoxToolForViewer } from "#src/sliceview/bbox.js";
-import { registerBrushToolForViewer } from "#src/sliceview/brush.js";
-import { registerEraserToolForViewer } from "#src/sliceview/eraser.js";
+import { registerPaintToolsForViewer } from "#src/sliceview/paint_tool.js";
 import { registerPointToolForViewer } from "#src/sliceview/point_tool.js";
 import { StatusMessage } from "#src/status.js";
 import {
@@ -1228,8 +1227,7 @@ export class Viewer extends RefCounted implements ViewerState {
 registerDimensionToolForViewer(Viewer);
 registerDimensionToolForLayerGroupViewer(LayerGroupViewer);
 registerDimensionToolForUserLayer(UserLayer);
-registerBrushToolForViewer(Viewer);
-registerEraserToolForViewer(Viewer);
+registerPaintToolsForViewer(Viewer);
 registerBoundingBoxToolForViewer(Viewer);
 registerPointToolForViewer(Viewer);
 registerOrientedBoundingBoxToolForViewer(Viewer);

@@ -19,9 +19,11 @@ import type {
   LayerChunkProgressInfo,
 } from "#src/chunk_manager/base.js";
 import {
+  CHUNK_FAILED_RPC_ID,
   CHUNK_LAYER_STATISTICS_RPC_ID,
   CHUNK_MANAGER_RPC_ID,
   CHUNK_QUEUE_MANAGER_RPC_ID,
+  CHUNK_SOURCE_INVALIDATE_INDEX_RPC_ID,
   CHUNK_SOURCE_INVALIDATE_RPC_ID,
   CHUNK_SOURCE_SOFT_INVALIDATE_RPC_ID,
   CHUNK_SOURCE_SOFT_INVALIDATE_COMPLETE_RPC_ID,
@@ -396,6 +398,13 @@ registerRPC("Chunk.update", function (x) {
   updateChunk(this, x);
 });
 
+registerRPC(CHUNK_FAILED_RPC_ID, function (x) {
+  const source = this.get(x.source) as ChunkSource | undefined;
+  if (source === undefined || source.chunks.has(x.key)) return;
+  source.failedChunks.add(x.key);
+  source.chunkManager.chunkQueueManager.visibleChunksChanged.dispatch();
+});
+
 registerPromiseRPC("Chunk.retrieve", function (x, signal): RPCPromise<any> {
   return new Promise<{ value: any }>((resolve, reject) => {
     x.promise = { resolve, reject, signal };
@@ -477,6 +486,8 @@ export interface ChunkRequesterState {
 export class ChunkSource extends SharedObject {
   declare OPTIONS: object;
   chunks = new Map<string, Chunk>();
+  // Keys whose last download failed and that were never received.
+  failedChunks = new Set<string>();
 
   chunkRequesters: Map<string, ChunkRequesterState[]> | undefined;
 
@@ -513,6 +524,7 @@ export class ChunkSource extends SharedObject {
 
   addChunk(key: string, chunk: Chunk) {
     this.chunks.set(key, chunk);
+    this.failedChunks.delete(key);
   }
 
   /**
@@ -527,6 +539,10 @@ export class ChunkSource extends SharedObject {
    */
   invalidateCache(): void {
     this.rpc!.invoke(CHUNK_SOURCE_INVALIDATE_RPC_ID, { id: this.rpcId });
+  }
+
+  invalidateIndexCache() {
+    this.rpc!.invoke(CHUNK_SOURCE_INVALIDATE_INDEX_RPC_ID, { id: this.rpcId });
   }
 
   /**
@@ -544,6 +560,9 @@ export class ChunkSource extends SharedObject {
    * was evicted before it could re-download).
    */
   softInvalidateCache(): Promise<void> {
+    // The backend re-queues failed chunks too; a failure seen after this is a
+    // fresh one.
+    this.failedChunks.clear();
     const token = ++nextSoftInvalidateToken;
     this.rpc!.invoke(CHUNK_SOURCE_SOFT_INVALIDATE_RPC_ID, {
       id: this.rpcId,

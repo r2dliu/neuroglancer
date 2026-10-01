@@ -20,9 +20,11 @@ import type {
   LayerChunkProgressInfo,
 } from "#src/chunk_manager/base.js";
 import {
+  CHUNK_FAILED_RPC_ID,
   CHUNK_LAYER_STATISTICS_RPC_ID,
   CHUNK_MANAGER_RPC_ID,
   CHUNK_QUEUE_MANAGER_RPC_ID,
+  CHUNK_SOURCE_INVALIDATE_INDEX_RPC_ID,
   CHUNK_SOURCE_INVALIDATE_RPC_ID,
   CHUNK_SOURCE_SOFT_INVALIDATE_RPC_ID,
   CHUNK_SOURCE_SOFT_INVALIDATE_COMPLETE_RPC_ID,
@@ -185,6 +187,13 @@ export class Chunk implements Disposable {
     this.error = error;
     const wasSoftRefetch = this.softRefetch;
     this.queueManager.updateChunkState(this, ChunkState.FAILED);
+    const { rpcId } = this.source!;
+    if (rpcId != null) {
+      this.queueManager.rpc!.invoke(CHUNK_FAILED_RPC_ID, {
+        source: rpcId,
+        key: this.key,
+      });
+    }
     if (wasSoftRefetch) {
       this.softRefetch = false;
       this.queueManager.noteSoftRefetchSettled(this.source as ChunkSource);
@@ -1502,6 +1511,11 @@ registerRPC(CHUNK_SOURCE_INVALIDATE_RPC_ID, function (x) {
 registerRPC(CHUNK_SOURCE_SOFT_INVALIDATE_RPC_ID, function (x) {
   const source = <ChunkSource>this.get(x.id);
   source.chunkManager.queueManager.softInvalidateSourceCache(source, x.token);
+});
+
+registerRPC(CHUNK_SOURCE_INVALIDATE_INDEX_RPC_ID, function (x) {
+  const source = <ChunkSource>this.get(x.id);
+  source.onInvalidateCache?.();
 });
 
 registerPromiseRPC(

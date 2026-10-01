@@ -99,6 +99,9 @@ export const CHUNK_MANAGER_RPC_ID = "ChunkManager";
 export const CHUNK_SOURCE_INVALIDATE_RPC_ID = "ChunkSource.invalidate";
 
 export const CHUNK_SOURCE_SOFT_INVALIDATE_RPC_ID = "ChunkSource.softInvalidate";
+export const CHUNK_SOURCE_INVALIDATE_INDEX_RPC_ID =
+  "ChunkSource.invalidateIndex";
+export const CHUNK_FAILED_RPC_ID = "Chunk.failed";
 
 /** Worker → frontend: fired once every chunk re-queued by a
  *  `softInvalidate` (matching `token`) has been re-downloaded and pushed
