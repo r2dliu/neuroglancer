@@ -786,6 +786,7 @@ export class PerspectivePanel extends RenderedDataPanel {
       const pickValue = data[4 * pickDiameter * pickDiameter + 4 * offset];
       pickingData.pickIDs.setMouseState(mouseState, pickValue);
       mouseState.displayDimensions = displayDimensions;
+      mouseState.pose = undefined;
       mouseState.setActive(true);
       return;
     }

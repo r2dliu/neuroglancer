@@ -22,7 +22,6 @@ import type {
 import { CodecKind } from "#src/datasource/zarr/codec/index.js";
 import type { KvStoreWithPath, ReadableKvStore } from "#src/kvstore/index.js";
 import type { RefCounted } from "#src/util/disposable.js";
-import type { ProgressOptions } from "#src/util/progress_listener.js";
 
 export interface Codec {
   name: string;
@@ -143,11 +142,6 @@ export async function decodeArray(
 
 export interface ShardedKvStoreWithInvalidation {
   invalidateIndexCache?: () => void;
-  retryIfReplaced?: <T>(
-    key: unknown,
-    attempt: () => Promise<T>,
-    options: Partial<ProgressOptions>,
-  ) => Promise<T>;
 }
 
 export function applySharding(

@@ -560,6 +560,9 @@ export class ChunkSource extends SharedObject {
    * was evicted before it could re-download).
    */
   softInvalidateCache(): Promise<void> {
+    // The backend re-queues failed chunks too; a failure seen after this is a
+    // fresh one.
+    this.failedChunks.clear();
     const token = ++nextSoftInvalidateToken;
     this.rpc!.invoke(CHUNK_SOURCE_SOFT_INVALIDATE_RPC_ID, {
       id: this.rpcId,

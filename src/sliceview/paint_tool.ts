@@ -39,6 +39,8 @@ export interface PaintStroke {
 interface ActiveStroke {
   value: number | null;
   radius: number;
+  // The slice panel the stroke started in; samples from any other panel drop.
+  pose: DisplayPose | undefined;
   frame: BrushPlaneFrame | null;
   bounds: VoxelBounds | null;
   stamper: StrokeStamper | null;
@@ -84,6 +86,8 @@ abstract class PaintTool extends Tool<Viewer> {
   strokeEnded = new Signal<(stroke: PaintStroke | null) => void>();
   // The view is only valid during dispatch.
   voxelsEmitted = new Signal<(voxels: Float64Array, value: number) => void>();
+  // A click swallowed because the layer is not drawn at full resolution.
+  paintBlocked = new Signal<() => void>();
 
   constructor(public viewer: Viewer) {
     super(viewer.toolBinder, true);
@@ -108,13 +112,17 @@ abstract class PaintTool extends Tool<Viewer> {
     const { content } = makeToolActivationStatusMessage(activation);
     content.classList.add(`neuroglancer-${this.type}-tool`);
 
-    // Claim left-click/drag only when a paintable segmentation layer is
-    // selected and drawn at full resolution under the cursor; otherwise the
-    // guard declines and the click falls through to the normal slice-view
-    // select/navigate behavior.
-    const canPaint = () => {
-      const layer = this.viewer.selectedLayer?.layer?.layer;
-      const renderLayer = paintableRenderLayer(layer);
+    // Claim left-click/drag whenever a paintable segmentation layer is
+    // selected; otherwise the guard declines and the click falls through to
+    // the normal slice-view select/navigate behavior. Below full resolution
+    // the click is claimed but paints nothing.
+    const canPaint = () =>
+      paintableRenderLayer(this.viewer.selectedLayer?.layer?.layer) !==
+        undefined && this.viewer.layerSelectedValues.mouseState.pose !== undefined;
+    const atFullResolution = () => {
+      const renderLayer = paintableRenderLayer(
+        this.viewer.selectedLayer?.layer?.layer,
+      );
       const pose = this.viewer.layerSelectedValues.mouseState.pose;
       return (
         renderLayer !== undefined &&
@@ -156,7 +164,7 @@ abstract class PaintTool extends Tool<Viewer> {
       const mouseState = selectedLayer.manager.layerSelectedValues.mouseState;
       if (!mouseState) return;
 
-      mouseState.updateUnconditionally();
+      if (!mouseState.updateUnconditionally()) return;
       const { position } = mouseState;
       if (!position) return;
 
@@ -164,7 +172,7 @@ abstract class PaintTool extends Tool<Viewer> {
       if (!segmentationRenderLayer) return;
 
       const pose = mouseState.pose;
-      if (!pose) return;
+      if (!pose || pose !== stroke.pose) return;
       if (!drawsFullResolution(this.viewer, pose, segmentationRenderLayer)) {
         return;
       }
@@ -208,9 +216,14 @@ abstract class PaintTool extends Tool<Viewer> {
     activation.bindAction<MouseEvent>(paintAction, (actionEvent) => {
       actionEvent.stopPropagation();
       endStroke();
+      if (!atFullResolution()) {
+        this.paintBlocked.dispatch();
+        return;
+      }
       this.stroke = {
         value: this.strokeValue(),
         radius: this.radius,
+        pose: this.viewer.layerSelectedValues.mouseState.pose,
         frame: null,
         bounds: null,
         stamper: null,

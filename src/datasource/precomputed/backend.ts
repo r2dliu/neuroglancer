@@ -515,58 +515,37 @@ export class PrecomputedMultiscaleMeshSource extends WithParameters(
     const manifestChunk =
       chunk.manifestChunk! as PrecomputedMultiscaleManifestChunk;
     const chunkIndex = chunk.chunkIndex;
-    const { shardInfo } = manifestChunk;
-    const read = async (
-      requestPath: string,
-      offsets: Float64Array,
-      base: number,
-    ) => {
-      const start = base + offsets[chunkIndex];
-      const readResponse = await readKvStore(kvStore.store, requestPath, {
-        signal,
-        byteRange: {
-          offset: start,
-          length: offsets[chunkIndex + 1] - offsets[chunkIndex],
-        },
-        throwIfMissing: true,
-        strictByteRange: true,
-      });
-      await decodeMultiscaleFragmentChunk(
-        chunk,
-        await readResponse.response.arrayBuffer(),
-      );
-    };
-
+    const { shardInfo, offsets } = manifestChunk;
+    const startOffset = offsets[chunkIndex];
+    const endOffset = offsets[chunkIndex + 1];
+    let requestPath: string;
+    let adjustedStartOffset: number;
+    let adjustedEndOffset: number;
     if (shardInfo !== undefined) {
-      const { offsets } = manifestChunk;
+      requestPath = shardInfo.shardPath;
       const fullDataSize = offsets[offsets.length - 1];
-      await read(shardInfo.shardPath, offsets, shardInfo.offset - fullDataSize);
-      return;
+      const start = shardInfo.offset - fullDataSize + startOffset;
+      const end = start + endOffset - startOffset;
+      adjustedStartOffset = start;
+      adjustedEndOffset = end;
+    } else {
+      requestPath = `${kvStore.path}${manifestChunk.objectId}`;
+      adjustedStartOffset = startOffset;
+      adjustedEndOffset = endOffset;
     }
-
-    // Loose meshes are rewritten in place as the segmentation changes, so a
-    // cached manifest can outlive its data file: on a failed read, take this
-    // fragment's offsets from the current index and try again.
-    const requestPath = `${kvStore.path}${manifestChunk.objectId}`;
-    let { offsets } = manifestChunk;
-    for (let attempt = 0; ; ++attempt) {
-      try {
-        await read(requestPath, offsets, 0);
-        return;
-      } catch (err) {
-        if (signal.aborted || attempt >= 2) throw err;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 200 * (attempt + 1)));
-      const index = await kvStore.store.read(`${requestPath}.index`, { signal });
-      const fresh = {
-        source: manifestChunk.source,
-      } as PrecomputedMultiscaleManifestChunk;
-      decodeMultiscaleManifestChunk(
-        fresh,
-        await getOrNotFoundError(index).response.arrayBuffer(),
-      );
-      offsets = fresh.offsets;
-    }
+    const readResponse = await readKvStore(kvStore.store, requestPath, {
+      signal,
+      byteRange: {
+        offset: adjustedStartOffset,
+        length: adjustedEndOffset - adjustedStartOffset,
+      },
+      throwIfMissing: true,
+      strictByteRange: true,
+    });
+    await decodeMultiscaleFragmentChunk(
+      chunk,
+      await readResponse.response.arrayBuffer(),
+    );
   }
 }
 
