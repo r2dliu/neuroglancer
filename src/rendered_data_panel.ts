@@ -305,7 +305,7 @@ export abstract class RenderedDataPanel extends RenderedPanel {
         if (
           block ||
           gl.getSyncParameter(sync, WebGL2RenderingContext.SYNC_STATUS) ===
-          WebGL2RenderingContext.SIGNALED
+            WebGL2RenderingContext.SIGNALED
         ) {
           this.completePickInternal(pickRequest);
           cancelRemaining = true;

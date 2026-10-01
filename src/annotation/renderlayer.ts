@@ -283,11 +283,11 @@ export class AnnotationLayer extends RefCounted {
           return displayState.displayUnfiltered.value
             ? undefined
             : source.relationships.map((relationship) => {
-              const state = relationshipStates.get(relationship);
-              return state.showMatches.value
-                ? state.segmentationState.value
-                : undefined;
-            });
+                const state = relationshipStates.get(relationship);
+                return state.showMatches.value
+                  ? state.segmentationState.value
+                  : undefined;
+              });
         },
         [
           this.state.displayState.relationshipStates,
@@ -766,8 +766,8 @@ function AnnotationRenderLayer<
             chunkPosition,
             mouseState.pickedAnnotationBuffer,
             mouseState.pickedAnnotationBufferBaseOffset +
-            mouseState.pickedAnnotationIndex *
-            propertySerializer.propertyGroupBytes[0],
+              mouseState.pickedAnnotationIndex *
+                propertySerializer.propertyGroupBytes[0],
             partIndex,
           );
           const globalRank = globalToRenderLayerDimensions.length;
@@ -825,7 +825,7 @@ type AnnotationRenderLayer = InstanceType<
 >;
 
 const NonSpatiallyIndexedAnnotationRenderLayer = <
-  TBase extends { new(...args: any[]): AnnotationRenderLayer },
+  TBase extends { new (...args: any[]): AnnotationRenderLayer },
 >(
   Base: TBase,
 ) =>
@@ -935,7 +935,7 @@ const PerspectiveViewAnnotationLayerBase = AnnotationRenderLayer(
 
 export class PerspectiveViewAnnotationLayer extends NonSpatiallyIndexedAnnotationRenderLayer(
   PerspectiveViewAnnotationLayerBase,
-) { }
+) {}
 
 const SpatiallyIndexedAnnotationLayer = <
   TBase extends AnyConstructor<AnnotationRenderLayer>,
@@ -1040,8 +1040,9 @@ const SpatiallyIndexedAnnotationLayer = <
       ShaderModule,
       undefined
     > = parameterizedEmitterDependentShaderGetter(this, this.gl, {
-      memoizeKey: `annotation/wireFrameShader:${this instanceof SliceViewPanelRenderLayer
-        }`,
+      memoizeKey: `annotation/wireFrameShader:${
+        this instanceof SliceViewPanelRenderLayer
+      }`,
       parameters: constantWatchableValue(undefined),
       defineShader: (builder: ShaderBuilder) => {
         this.wireFrameRenderHelper.defineShader(builder);
@@ -1081,7 +1082,7 @@ const SpatiallyIndexedAnnotationLayer = <
         this.base.state.localPosition.value,
         this.renderScaleTarget.value,
         transformedSources[0],
-        () => { },
+        () => {},
         (tsource, index, drawFraction, physicalSpacing, pixelSpacing) => {
           index;
           const chunk = tsource.source.chunks.get(
@@ -1142,7 +1143,7 @@ const SpatiallyIndexedAnnotationLayer = <
         this.base.state.localPosition.value,
         this.renderScaleTarget.value,
         transformedSources[0],
-        () => { },
+        () => {},
         (tsource, index, drawFraction, physicalSpacing, pixelSpacing) => {
           index;
           drawFraction;

@@ -77,13 +77,15 @@ export type GizmoHandle =
 
 export function classifyGizmoPart(partIndex: number): GizmoHandle {
   const translate = partIndex - TRANSLATE_AXIS_PICK_OFFSET;
-  if (translate >= 0 && translate < 3) return { kind: "translate", axis: translate };
+  if (translate >= 0 && translate < 3)
+    return { kind: "translate", axis: translate };
   const scale = partIndex - SCALE_AXIS_PICK_OFFSET;
   if (scale >= 0 && scale < 3) return { kind: "scale", axis: scale };
   const ring = partIndex - ROTATE_RING_PICK_OFFSET;
   if (ring >= 0 && ring < 3) return { kind: "ring", axis: ring };
   if (partIndex === CENTER_BALL_PICK_OFFSET) return { kind: "centerBall" };
-  if (partIndex >= EDGES_PICK_OFFSET && partIndex < EDGES_PICK_END) return { kind: "edge" };
+  if (partIndex >= EDGES_PICK_OFFSET && partIndex < EDGES_PICK_END)
+    return { kind: "edge" };
   return { kind: "none" };
 }
 
@@ -191,12 +193,60 @@ function makeCubeMesh(): {
   vertexCount: number;
 } {
   const faces: [number[], number[][]][] = [
-    [[0, 0, 1], [[-0.5, -0.5, 0.5], [0.5, -0.5, 0.5], [0.5, 0.5, 0.5], [-0.5, 0.5, 0.5]]],
-    [[0, 0, -1], [[0.5, -0.5, -0.5], [-0.5, -0.5, -0.5], [-0.5, 0.5, -0.5], [0.5, 0.5, -0.5]]],
-    [[1, 0, 0], [[0.5, -0.5, 0.5], [0.5, -0.5, -0.5], [0.5, 0.5, -0.5], [0.5, 0.5, 0.5]]],
-    [[-1, 0, 0], [[-0.5, -0.5, -0.5], [-0.5, -0.5, 0.5], [-0.5, 0.5, 0.5], [-0.5, 0.5, -0.5]]],
-    [[0, 1, 0], [[-0.5, 0.5, 0.5], [0.5, 0.5, 0.5], [0.5, 0.5, -0.5], [-0.5, 0.5, -0.5]]],
-    [[0, -1, 0], [[-0.5, -0.5, -0.5], [0.5, -0.5, -0.5], [0.5, -0.5, 0.5], [-0.5, -0.5, 0.5]]],
+    [
+      [0, 0, 1],
+      [
+        [-0.5, -0.5, 0.5],
+        [0.5, -0.5, 0.5],
+        [0.5, 0.5, 0.5],
+        [-0.5, 0.5, 0.5],
+      ],
+    ],
+    [
+      [0, 0, -1],
+      [
+        [0.5, -0.5, -0.5],
+        [-0.5, -0.5, -0.5],
+        [-0.5, 0.5, -0.5],
+        [0.5, 0.5, -0.5],
+      ],
+    ],
+    [
+      [1, 0, 0],
+      [
+        [0.5, -0.5, 0.5],
+        [0.5, -0.5, -0.5],
+        [0.5, 0.5, -0.5],
+        [0.5, 0.5, 0.5],
+      ],
+    ],
+    [
+      [-1, 0, 0],
+      [
+        [-0.5, -0.5, -0.5],
+        [-0.5, -0.5, 0.5],
+        [-0.5, 0.5, 0.5],
+        [-0.5, 0.5, -0.5],
+      ],
+    ],
+    [
+      [0, 1, 0],
+      [
+        [-0.5, 0.5, 0.5],
+        [0.5, 0.5, 0.5],
+        [0.5, 0.5, -0.5],
+        [-0.5, 0.5, -0.5],
+      ],
+    ],
+    [
+      [0, -1, 0],
+      [
+        [-0.5, -0.5, -0.5],
+        [0.5, -0.5, -0.5],
+        [0.5, -0.5, 0.5],
+        [-0.5, -0.5, 0.5],
+      ],
+    ],
   ];
   const P: number[] = [];
   const Nm: number[] = [];
@@ -428,12 +478,7 @@ class PerspectiveViewRenderHelper extends RenderHelper {
   private edgeBoxCornerOffsetsBuffer = this.registerDisposer(
     GLBuffer.fromData(
       this.gl,
-      tile2dArray(
-        edgeBoxCornerOffsetData,
-        7,
-        1,
-        VERTICES_PER_LINE,
-      ),
+      tile2dArray(edgeBoxCornerOffsetData, 7, 1, VERTICES_PER_LINE),
     ),
   );
 
@@ -814,9 +859,9 @@ bool gizmoPartHidden(int thisPart) {
       const hi = bounds?.upper[i];
       const ci =
         lo !== undefined &&
-          hi !== undefined &&
-          Number.isFinite(lo) &&
-          Number.isFinite(hi)
+        hi !== undefined &&
+        Number.isFinite(lo) &&
+        Number.isFinite(hi)
           ? (lo + hi) / 2
           : 0;
       for (let j = 0; j < 3; ++j) out[j] += sm[i * 3 + j] * ci;
@@ -840,7 +885,10 @@ bool gizmoPartHidden(int thisPart) {
   drawEdges(context: AnnotationRenderContext) {
     const { gl } = this;
     this.enable(this.edgeShaderGetter, context, (shader) => {
-      gl.uniform1i(shader.uniform("uSelectedInstance"), context.selectedInstance);
+      gl.uniform1i(
+        shader.uniform("uSelectedInstance"),
+        context.selectedInstance,
+      );
       const aBoxCornerOffset1 = shader.attribute("aBoxCornerOffset1");
       const aBoxCornerOffset2 = shader.attribute("aBoxCornerOffset2");
       const vertexStride = 4 * 7;
@@ -1500,8 +1548,10 @@ registerAnnotationTypeRenderHandler<OrientedBoundingBox>(
       out.set(ann.center);
       const handle = classifyGizmoPart(partIndex);
       const sphereAxis =
-        handle.kind === "ring" ? (handle.axis + 1) % 3
-          : handle.kind === "edge" ? 0
+        handle.kind === "ring"
+          ? (handle.axis + 1) % 3
+          : handle.kind === "edge"
+            ? 0
             : -1;
       if (sphereAxis >= 0) {
         const rotation = mat3.fromQuat(mat3.create(), quatOf(ann.orientation));
@@ -1597,7 +1647,10 @@ registerAnnotationTypeRenderHandler<OrientedBoundingBox>(
             vec3.create(),
             vec3.sub(vec3.create(), toVec3(draggedPoint), toVec3(center)),
           );
-          return boxWithRotation(base, quat.rotationTo(quat.create(), from, to));
+          return boxWithRotation(
+            base,
+            quat.rotationTo(quat.create(), from, to),
+          );
         }
         case "none":
           return base; // interior / cross-section: not draggable

@@ -149,8 +149,7 @@ function sweepSegment(
   const hi = [0, 0, 0];
   for (let k = 0; k < 3; k++) {
     // Furthest a canonical offset of length `radius` reaches along this axis.
-    const reach =
-      radius * Math.sqrt(dirU[k] * dirU[k] + dirV[k] * dirV[k]) + 1;
+    const reach = radius * Math.sqrt(dirU[k] * dirU[k] + dirV[k] * dirV[k]) + 1;
     lo[k] = Math.max(Math.min(a[k], b[k]) - reach, lowerBounds[k]);
     hi[k] = Math.min(Math.max(a[k], b[k]) + reach, upperBounds[k] - 1);
     if (lo[k] > hi[k]) return;
@@ -192,11 +191,7 @@ function sweepSegment(
       const aHi = centre + spread < hiAx ? centre + spread : hiAx;
       const aLo = centre - spread > loAx ? centre - spread : loAx;
       cand[s2] = c2;
-      for (
-        let av = Math.ceil(aLo - offsetAx) + offsetAx;
-        av <= aHi;
-        av++
-      ) {
+      for (let av = Math.ceil(aLo - offsetAx) + offsetAx; av <= aHi; av++) {
         cand[ax] = av;
         vec3.subtract(delta, cand, a);
         toCanonical(delta, uv);

@@ -336,7 +336,8 @@ export class EventActionMap
     EventAction,
     EventActionMap
   >
-  implements EventActionMapInterface {
+  implements EventActionMapInterface
+{
   label: string | undefined;
 
   /**

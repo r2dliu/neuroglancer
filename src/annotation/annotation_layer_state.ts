@@ -55,12 +55,12 @@ import {
 
 export class AnnotationHoverState extends WatchableValue<
   | {
-    id: string;
-    partIndex: number;
-    annotationLayerState: AnnotationLayerState;
-  }
+      id: string;
+      partIndex: number;
+      annotationLayerState: AnnotationLayerState;
+    }
   | undefined
-> { }
+> {}
 
 // null means loading
 // undefined means no attached layer

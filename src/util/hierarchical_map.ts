@@ -49,7 +49,8 @@ export class HierarchicalMap<
     Key,
     Value
   > = HierarchicalMapInterface<Key, Value>,
-> implements HierarchicalMapInterface<Key, Value> {
+> implements HierarchicalMapInterface<Key, Value>
+{
   parents = new Array<Parent>();
   private parentPriorities = new Array<number>();
   bindings = new Map<Key, Value>();

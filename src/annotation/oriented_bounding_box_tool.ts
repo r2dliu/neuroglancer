@@ -28,7 +28,7 @@ export class OrientedBoundingBoxTool extends Tool<Viewer> {
         action: "move-annotation",
         when: () =>
           mouseState.pickedAnnotationType ===
-          AnnotationType.ORIENTED_BOUNDING_BOX &&
+            AnnotationType.ORIENTED_BOUNDING_BOX &&
           isInteractiveGizmoPart(mouseState.pickedOffset),
       },
     });

@@ -118,7 +118,8 @@ abstract class PaintTool extends Tool<Viewer> {
     // the click is claimed but paints nothing.
     const canPaint = () =>
       paintableRenderLayer(this.viewer.selectedLayer?.layer?.layer) !==
-        undefined && this.viewer.layerSelectedValues.mouseState.pose !== undefined;
+        undefined &&
+      this.viewer.layerSelectedValues.mouseState.pose !== undefined;
     const atFullResolution = () => {
       const renderLayer = paintableRenderLayer(
         this.viewer.selectedLayer?.layer?.layer,
