@@ -671,6 +671,7 @@ function AnnotationRenderLayer<
         chunkDisplayTransform,
       };
       const computeHistograms =
+        !renderContext.isForeground &&
         this.base.state.displayState.shaderControls.histogramSpecifications
           .visibleHistograms > 0;
       for (const annotationType of annotationTypes) {
@@ -700,7 +701,11 @@ function AnnotationRenderLayer<
           context.selectedIndex = selectedIndex;
           context.selectedInstance = selectedInstance ?? -1;
           const renderHelper = this.renderHelpers[annotationType];
-          renderHelper.draw(context);
+          if (renderContext.isForeground) {
+            renderHelper.drawForeground(context);
+          } else {
+            renderHelper.draw(context);
+          }
           if (computeHistograms) {
             renderHelper.computeHistograms(context, renderContext.frameNumber);
             renderContext.bindFramebuffer();

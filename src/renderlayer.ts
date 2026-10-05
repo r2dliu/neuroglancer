@@ -125,6 +125,9 @@ export interface ThreeDimensionalRenderContext
   wireFrame: boolean;
   bindFramebuffer: () => void;
   frameNumber: number;
+
+  // If set, renders last "on top" of all other layers as to always be visible
+  isForeground?: boolean;
 }
 
 export interface ThreeDimensionalRenderLayerAttachmentState {

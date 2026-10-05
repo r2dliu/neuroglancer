@@ -1068,15 +1068,7 @@ export class PerspectivePanel extends RenderedDataPanel {
     this.hasVolumeRendering = hasVolumeRendering;
     this.drawSliceViews(renderContext);
 
-    if (hasAnnotation) {
-      // Render annotations with blending enabled.
-
-      gl.enable(WebGL2RenderingContext.BLEND);
-      gl.depthFunc(WebGL2RenderingContext.LEQUAL);
-      gl.blendFunc(
-        WebGL2RenderingContext.SRC_ALPHA,
-        WebGL2RenderingContext.ONE_MINUS_SRC_ALPHA,
-      );
+    const drawAnnotationLayers = () => {
       for (const [renderLayer, attachment] of visibleLayers) {
         if (renderLayer.isAnnotation) {
           const annotationRenderLayer =
@@ -1092,6 +1084,16 @@ export class PerspectivePanel extends RenderedDataPanel {
           }
         }
       }
+    };
+
+    if (hasAnnotation) {
+      gl.enable(WebGL2RenderingContext.BLEND);
+      gl.depthFunc(WebGL2RenderingContext.LEQUAL);
+      gl.blendFunc(
+        WebGL2RenderingContext.SRC_ALPHA,
+        WebGL2RenderingContext.ONE_MINUS_SRC_ALPHA,
+      );
+      drawAnnotationLayers();
       gl.depthFunc(WebGL2RenderingContext.LESS);
       gl.disable(WebGL2RenderingContext.BLEND);
     }
@@ -1416,6 +1418,26 @@ export class PerspectivePanel extends RenderedDataPanel {
     }
     gl.stencilMask(0xffffffff);
     gl.disable(WebGL2RenderingContext.STENCIL_TEST);
+
+    if (hasAnnotation) {
+      renderContext.emitter = perspectivePanelEmit;
+      renderContext.emitColor = true;
+      renderContext.emitPickID = true;
+      renderContext.isForeground = true;
+      bindFramebuffer();
+      gl.disable(WebGL2RenderingContext.DEPTH_TEST);
+      gl.depthMask(false);
+      gl.enable(WebGL2RenderingContext.BLEND);
+      gl.blendFunc(
+        WebGL2RenderingContext.SRC_ALPHA,
+        WebGL2RenderingContext.ONE_MINUS_SRC_ALPHA,
+      );
+      drawAnnotationLayers();
+      renderContext.isForeground = false;
+      gl.disable(WebGL2RenderingContext.BLEND);
+      gl.depthMask(true);
+      gl.enable(WebGL2RenderingContext.DEPTH_TEST);
+    }
 
     if (
       this.viewer.showScaleBar.value &&

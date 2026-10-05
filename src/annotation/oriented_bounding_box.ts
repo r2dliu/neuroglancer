@@ -490,10 +490,13 @@ class PerspectiveViewRenderHelper extends RenderHelper {
       // uSelectedInstance: the React-selected box (-1 if none). Drives both the
       // dimming of other boxes and the gating of edge interactivity below.
       builder.addUniform("highp int", "uSelectedInstance");
+      // 1 = foreground pass (selected box only), 0 = normal pass (all but selected).
+      builder.addUniform("highp int", "uSelectedOnly");
       builder.addAttribute("highp vec3", "aBoxCornerOffset1");
       builder.addAttribute("highp vec4", "aBoxCornerOffset2");
       builder.setVertexMain(`
-if (!obbVisible()) { cullVertex(); return; }
+bool isSelected = gl_InstanceID == uSelectedInstance;
+if (!obbVisible() || isSelected != (uSelectedOnly != 0)) { cullVertex(); return; }
 // always draw a box's full wireframe in 3-D
 // (no subspace-clip fade, which would cull a box smaller than the data bounds).
 vec3 endpointA = orientedCornerPosition(aBoxCornerOffset1);
@@ -512,7 +515,7 @@ if (hovered) {
 }
 // Dim the other boxes while one is selected (mirrors segment/instance dimming),
 // but a hovered box stays at full alpha so its row-hover highlight reads clearly.
-if (uSelectedInstance >= 0 && gl_InstanceID != uSelectedInstance && !hovered) {
+if (uSelectedInstance >= 0 && !isSelected && !hovered) {
   vColor.a *= ${NOT_SELECTED_ALPHA.toFixed(2)};
 }
 emitLine(uModelViewProjection * vec4(endpointA, 1.0),
@@ -521,7 +524,7 @@ emitLine(uModelViewProjection * vec4(endpointA, 1.0),
 // Edges drive free-rotation only on the selected box; every other box emits the
 // non-interactive full-object pick id so its edges can't be grabbed/dragged.
 // (Picking the box still resolves the annotation for hover, just not a handle.)
-uint edgePart = (gl_InstanceID == uSelectedInstance)
+uint edgePart = isSelected
   ? uint(aBoxCornerOffset2.w)
   : ${FULL_OBJECT_PICK_OFFSET}u;
 vPickID = uPickID + getPickBaseOffset() + edgePart;
@@ -882,13 +885,14 @@ bool gizmoPartHidden(int thisPart) {
     return ann?.center ?? null;
   }
 
-  drawEdges(context: AnnotationRenderContext) {
+  drawEdges(context: AnnotationRenderContext, selectedOnly: boolean) {
     const { gl } = this;
     this.enable(this.edgeShaderGetter, context, (shader) => {
       gl.uniform1i(
         shader.uniform("uSelectedInstance"),
         context.selectedInstance,
       );
+      gl.uniform1i(shader.uniform("uSelectedOnly"), selectedOnly ? 1 : 0);
       const aBoxCornerOffset1 = shader.attribute("aBoxCornerOffset1");
       const aBoxCornerOffset2 = shader.attribute("aBoxCornerOffset2");
       const vertexStride = 4 * 7;
@@ -1081,10 +1085,12 @@ bool gizmoPartHidden(int thisPart) {
   }
 
   draw(context: AnnotationRenderContext) {
-    const { gl } = this;
-    // The box wireframe always draws (every box); only the interactive handles
-    // below are gated to the selected box.
-    this.drawEdges(context);
+    this.drawEdges(context, false);
+  }
+
+  // Selected box wireframe, then its gizmo, on top of all other layers.
+  drawForeground(context: AnnotationRenderContext) {
+    if (context.selectedInstance >= 0) this.drawEdges(context, true);
 
     const dragging = getGizmoDragStartNdc() !== null;
     const pids = ORIENTED_BBOX_PICK_IDS_PER_INSTANCE;
@@ -1100,31 +1106,22 @@ bool gizmoPartHidden(int thisPart) {
     const selectedInstance = dragging
       ? draggedInstance
       : context.selectedInstance;
-    // No selected/dragged box in this chunk: only the wireframe above renders.
     if (selectedInstance < 0) return;
 
-    // Remove depth rendering for gizmo so it is always visible and never occluded
-    gl.disable(WebGL2RenderingContext.DEPTH_TEST);
-    gl.depthMask(false);
-    try {
-      this.drawRings(context, selectedInstance, draggedInstance, draggedPart);
-      this.drawArrow(context, selectedInstance, draggedInstance, draggedPart);
-      this.drawCubes(context, selectedInstance, draggedInstance, draggedPart);
-      // A tripod translate replaces the dragged box's arrow with a long axis
-      // guide line (shown only on that box).
-      if (dragging && classifyGizmoPart(draggedPart).kind === "translate") {
-        this.drawGuideLine(
-          context,
-          draggedPart - TRANSLATE_AXIS_PICK_OFFSET,
-          selectedInstance,
-          draggedInstance,
-        );
-      }
-      this.drawCenterBall(context, selectedInstance);
-    } finally {
-      gl.enable(WebGL2RenderingContext.DEPTH_TEST);
-      gl.depthMask(true);
+    this.drawRings(context, selectedInstance, draggedInstance, draggedPart);
+    this.drawArrow(context, selectedInstance, draggedInstance, draggedPart);
+    this.drawCubes(context, selectedInstance, draggedInstance, draggedPart);
+    // A tripod translate replaces the dragged box's arrow with a long axis
+    // guide line (shown only on that box).
+    if (dragging && classifyGizmoPart(draggedPart).kind === "translate") {
+      this.drawGuideLine(
+        context,
+        draggedPart - TRANSLATE_AXIS_PICK_OFFSET,
+        selectedInstance,
+        draggedInstance,
+      );
     }
+    this.drawCenterBall(context, selectedInstance);
   }
 }
 
@@ -1423,6 +1420,7 @@ function ringRotationAngle(
 // has been captured yet (caller falls back to a world-space estimate).
 function freeRotationDelta(
   center: Float32Array,
+  grabbedPoint: Float32Array,
   draggedPoint: Float32Array,
 ): quat | null {
   const projection = getGizmoProjection();
@@ -1448,6 +1446,7 @@ function freeRotationDelta(
   };
 
   const centerScreen = toScreen(toSubspace(center));
+  const grabbedScreen = toScreen(toSubspace(grabbedPoint));
   const draggedScreen = toScreen(toSubspace(draggedPoint));
   // Grab/current positions relative to the box center, in trackball radii.
   const grab = {
@@ -1455,8 +1454,8 @@ function freeRotationDelta(
     y: (grabNdc.y - centerScreen.y) / FREE_ROTATE_RADIUS,
   };
   const cur = {
-    x: (draggedScreen.x - centerScreen.x) / FREE_ROTATE_RADIUS,
-    y: (draggedScreen.y - centerScreen.y) / FREE_ROTATE_RADIUS,
+    x: grab.x + (draggedScreen.x - grabbedScreen.x) / FREE_ROTATE_RADIUS,
+    y: grab.y + (draggedScreen.y - grabbedScreen.y) / FREE_ROTATE_RADIUS,
   };
   // Map a planar point to the trackball sphere (+z toward the viewer); points
   // beyond the rim ride the equator.
@@ -1475,7 +1474,7 @@ function freeRotationDelta(
   const sin = vec3.length(axisCam);
   const cos = vec3.dot(v0, v1);
   const angle = Math.atan2(sin, cos);
-  if (sin < 1e-6) return null;
+  if (sin < 1e-6) return quat.create();
   vec3.scale(axisCam, axisCam, 1 / sin);
 
   // Camera-space axis -> subspace axis: viewRotᵀ · axisCam (viewRot is the
@@ -1627,21 +1626,18 @@ registerAnnotationTypeRenderHandler<OrientedBoundingBox>(
         case "edge": {
           // Free trackball rotation. Preferred path: a camera-aware screen-space
           // arcball (never reverses with the view angle).
-          const delta = freeRotationDelta(center, draggedPoint);
+          const rotation = mat3.fromQuat(mat3.create(), quatOf(orientation));
+          const radius = boundingSphereRadius(extents);
+          const axis = worldAxis(rotation, 0);
+          const grabbedPoint = Float32Array.from(center);
+          for (let i = 0; i < 3; ++i) grabbedPoint[i] += radius * axis[i];
+          const delta = freeRotationDelta(center, grabbedPoint, draggedPoint);
           if (delta !== null) return boxWithRotation(base, delta);
           // Fallback (no projection captured yet): rotate the grabbed
           // bounding-sphere point toward the dragged point in world space.
-          const rotation = mat3.fromQuat(mat3.create(), quatOf(orientation));
-          const radius = boundingSphereRadius(extents);
-          const grabbedPoint = vec3.scaleAndAdd(
-            vec3.create(),
-            toVec3(center),
-            worldAxis(rotation, 0),
-            radius,
-          );
           const from = vec3.normalize(
             vec3.create(),
-            vec3.sub(vec3.create(), grabbedPoint, toVec3(center)),
+            vec3.sub(vec3.create(), toVec3(grabbedPoint), toVec3(center)),
           );
           const to = vec3.normalize(
             vec3.create(),

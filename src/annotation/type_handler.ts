@@ -604,6 +604,8 @@ if (ng_discardValue) {
 
   abstract draw(context: AnnotationRenderContext): void;
 
+  drawForeground(_context: AnnotationRenderContext): void {}
+
   private histogramShaders = new Map<
     AnnotationPropertySpec["type"],
     ShaderProgram
