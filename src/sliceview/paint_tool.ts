@@ -86,8 +86,14 @@ abstract class PaintTool extends Tool<Viewer> {
   strokeEnded = new Signal<(stroke: PaintStroke | null) => void>();
   // The view is only valid during dispatch.
   voxelsEmitted = new Signal<(voxels: Float64Array, value: number) => void>();
-  // A click swallowed because the layer is not drawn at full resolution.
-  paintBlocked = new Signal<() => void>();
+  // A click swallowed because the layer is hidden or not drawn at full
+  // resolution.
+  paintBlocked = new Signal<(reason: "hidden" | "resolution") => void>();
+  // A click swallowed because the tool is disabled (nothing to paint into).
+  paintDisabled = new Signal<() => void>();
+  // While false, slice-view clicks are claimed and reported via paintDisabled
+  // instead of falling through to navigation.
+  enabled = true;
 
   constructor(public viewer: Viewer) {
     super(viewer.toolBinder, true);
@@ -117,9 +123,10 @@ abstract class PaintTool extends Tool<Viewer> {
     // the normal slice-view select/navigate behavior. Below full resolution
     // the click is claimed but paints nothing.
     const canPaint = () =>
-      paintableRenderLayer(this.viewer.selectedLayer?.layer?.layer) !==
-        undefined &&
-      this.viewer.layerSelectedValues.mouseState.pose !== undefined;
+      this.viewer.layerSelectedValues.mouseState.pose !== undefined &&
+      (!this.enabled ||
+        paintableRenderLayer(this.viewer.selectedLayer?.layer?.layer) !==
+          undefined);
     const atFullResolution = () => {
       const renderLayer = paintableRenderLayer(
         this.viewer.selectedLayer?.layer?.layer,
@@ -217,8 +224,18 @@ abstract class PaintTool extends Tool<Viewer> {
     activation.bindAction<MouseEvent>(paintAction, (actionEvent) => {
       actionEvent.stopPropagation();
       endStroke();
+      if (!this.enabled) {
+        this.paintDisabled.dispatch();
+        return;
+      }
+      // A hidden layer isn't drawn in any slice view, so the resolution check
+      // below would misreport it as "not full resolution".
+      if (this.viewer.selectedLayer?.layer?.visible === false) {
+        this.paintBlocked.dispatch("hidden");
+        return;
+      }
       if (!atFullResolution()) {
-        this.paintBlocked.dispatch();
+        this.paintBlocked.dispatch("resolution");
         return;
       }
       this.stroke = {
