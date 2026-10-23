@@ -109,6 +109,12 @@ export abstract class Tool<Context extends object = object> extends RefCounted {
     super();
   }
   abstract activate(activation: ToolActivation<this>): void;
+  // The action a primary press over a data panel should fire while this tool
+  // is active, or undefined to leave the press to navigation.
+  primaryAction(panel: "slice" | "perspective"): string | undefined {
+    panel;
+    return undefined;
+  }
   renderInPalette(context: RefCounted): HTMLElement | undefined {
     context;
     return undefined;

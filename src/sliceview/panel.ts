@@ -101,6 +101,7 @@ const tempVec3b = vec3.create();
 const tempVec4 = vec4.create();
 
 export class SliceViewPanel extends RenderedDataPanel {
+  readonly kind = "slice";
   declare viewer: SliceViewerState;
   private sliceViewRenderHelper;
 

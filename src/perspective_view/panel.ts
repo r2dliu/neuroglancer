@@ -287,6 +287,7 @@ class PerspectiveViewState extends PerspectiveViewStateBase {
 }
 
 export class PerspectivePanel extends RenderedDataPanel {
+  readonly kind = "perspective";
   declare viewer: PerspectiveViewerState;
   sliceViewRenderHelper: SliceViewRenderHelper;
 

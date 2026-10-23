@@ -19,7 +19,6 @@ import {
   Tool,
 } from "#src/ui/tool.js";
 import { createToolCursor, updateCursorPosition } from "#src/util/cursor.js";
-import { EventActionMap } from "#src/util/event_action_map.js";
 import { vec3 } from "#src/util/geom.js";
 import { startRelativeMouseDrag } from "#src/util/mouse_drag.js";
 import { Signal } from "#src/util/signal.js";
@@ -106,6 +105,23 @@ abstract class PaintTool extends Tool<Viewer> {
     this.radius = radius;
   }
 
+  private get paintAction() {
+    return `neuroglancer-${this.type}-paint`;
+  }
+
+  // Claims the press whenever a paintable segmentation layer is selected;
+  // otherwise it falls through to navigation. Below full resolution the press
+  // is claimed but paints nothing.
+  primaryAction(panel: "slice" | "perspective") {
+    if (panel !== "slice") return undefined;
+    const claims =
+      this.viewer.layerSelectedValues.mouseState.pose !== undefined &&
+      (!this.enabled ||
+        paintableRenderLayer(this.viewer.selectedLayer?.layer?.layer) !==
+          undefined);
+    return claims ? this.paintAction : undefined;
+  }
+
   endStroke() {
     const stroke = this.stroke;
     if (stroke === null) return;
@@ -118,15 +134,6 @@ abstract class PaintTool extends Tool<Viewer> {
     const { content } = makeToolActivationStatusMessage(activation);
     content.classList.add(`neuroglancer-${this.type}-tool`);
 
-    // Claim left-click/drag whenever a paintable segmentation layer is
-    // selected; otherwise the guard declines and the click falls through to
-    // the normal slice-view select/navigate behavior. Below full resolution
-    // the click is claimed but paints nothing.
-    const canPaint = () =>
-      this.viewer.layerSelectedValues.mouseState.pose !== undefined &&
-      (!this.enabled ||
-        paintableRenderLayer(this.viewer.selectedLayer?.layer?.layer) !==
-          undefined);
     const atFullResolution = () => {
       const renderLayer = paintableRenderLayer(
         this.viewer.selectedLayer?.layer?.layer,
@@ -138,28 +145,6 @@ abstract class PaintTool extends Tool<Viewer> {
         drawsFullResolution(this.viewer, pose, renderLayer)
       );
     };
-    const paintAction = `neuroglancer-${this.type}-paint`;
-    const releaseAction = `neuroglancer-${this.type}-release`;
-    const paintMap = EventActionMap.fromObject({
-      "at:mousedown0": {
-        action: paintAction,
-        when: canPaint,
-        stopPropagation: true,
-        preventDefault: true,
-      },
-      "at:mouseup0": {
-        action: releaseAction,
-        when: canPaint,
-        stopPropagation: true,
-        preventDefault: true,
-      },
-    });
-
-    activation.pushInputLayer(
-      this.viewer.inputEventBindings.sliceView,
-      paintMap,
-    );
-
     const paint = () => {
       const stroke = this.stroke;
       if (stroke === null || stroke.value === null) return;
@@ -221,7 +206,7 @@ abstract class PaintTool extends Tool<Viewer> {
 
     const endStroke = () => this.endStroke();
 
-    activation.bindAction<MouseEvent>(paintAction, (actionEvent) => {
+    activation.bindAction<MouseEvent>(this.paintAction, (actionEvent) => {
       actionEvent.stopPropagation();
       endStroke();
       if (!this.enabled) {
@@ -253,10 +238,6 @@ abstract class PaintTool extends Tool<Viewer> {
 
       // Document-level, so releasing over another panel still ends the stroke.
       startRelativeMouseDrag(actionEvent.detail, paint, endStroke);
-    });
-
-    activation.bindAction<MouseEvent>(releaseAction, (actionEvent) => {
-      actionEvent.stopPropagation();
     });
 
     const cursor = createToolCursor();

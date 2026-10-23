@@ -8,7 +8,6 @@ import { captureDataBounds } from "#src/annotation/obb_gizmo_state.js";
 import { isInteractiveGizmoPart } from "#src/annotation/oriented_bounding_box.js";
 import type { ToolActivation } from "#src/ui/tool.js";
 import { registerTool, Tool } from "#src/ui/tool.js";
-import { EventActionMap } from "#src/util/event_action_map.js";
 import type { Viewer } from "#src/viewer.js";
 
 const ORIENTED_BOX_TOOL_ID = "orientedBox";
@@ -18,25 +17,18 @@ export class OrientedBoundingBoxTool extends Tool<Viewer> {
     super(viewer.toolBinder, true);
   }
 
-  activate(activation: ToolActivation<this>) {
+  activate(_activation: ToolActivation<this>) {
     captureDataBounds(this.viewer);
+  }
 
-    // Conditional left click control; only functions when clicking on a gizmo handle
+  // Claims the press only on a gizmo handle.
+  primaryAction(panel: "slice" | "perspective") {
     const { mouseState } = this.viewer;
-    const gizmoMap = EventActionMap.fromObject({
-      "at:mousedown0": {
-        action: "move-annotation",
-        when: () =>
-          mouseState.pickedAnnotationType ===
-            AnnotationType.ORIENTED_BOUNDING_BOX &&
-          isInteractiveGizmoPart(mouseState.pickedOffset),
-      },
-    });
-
-    activation.pushInputLayer(
-      this.viewer.inputEventBindings.perspectiveView,
-      gizmoMap,
-    );
+    const onHandle =
+      panel === "perspective" &&
+      mouseState.pickedAnnotationType === AnnotationType.ORIENTED_BOUNDING_BOX &&
+      isInteractiveGizmoPart(mouseState.pickedOffset);
+    return onHandle ? "move-annotation" : undefined;
   }
 
   get description() {
