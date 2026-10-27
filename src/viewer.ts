@@ -98,7 +98,7 @@ import { SelectionDetailsPanel } from "#src/ui/selection_details.js";
 import { SidePanelManager } from "#src/ui/side_panel.js";
 import { StateEditorDialog } from "#src/ui/state_editor.js";
 import { StatisticsDisplayState, StatisticsPanel } from "#src/ui/statistics.js";
-import { GlobalToolBinder, LocalToolBinder } from "#src/ui/tool.js";
+import { GlobalToolBinder, LocalToolBinder, restoreTool } from "#src/ui/tool.js";
 import {
   MultiToolPaletteDropdownButton,
   MultiToolPaletteManager,
@@ -1165,6 +1165,10 @@ export class Viewer extends RefCounted implements ViewerState {
 
   activateTool(uppercase: string) {
     this.globalToolBinder.activate(uppercase);
+  }
+  activateUnboundTool(toolJson: unknown) {
+    const tool = restoreTool(this, toolJson);
+    return tool && this.globalToolBinder.activateUnbound(tool);
   }
   deactivateTool() {
     this.globalToolBinder.deactivate_();

@@ -331,6 +331,23 @@ export class GlobalToolBinder extends RefCounted {
     return this.bindings.get(key);
   }
 
+  get activeTool(): Borrowed<Tool> | undefined {
+    return this.activeTool_?.tool;
+  }
+
+  // Activates a tool that has no key binding, until another tool replaces it or
+  // it is deactivated. The activation owns the tool.
+  activateUnbound(tool: Owned<Tool>): Borrowed<Tool> {
+    this.debounceDeactivate.cancel();
+    this.queuedTool = undefined;
+    this.deactivate_();
+    const activation = new ToolActivation(tool, this.inputEventMapBinder);
+    activation.registerDisposer(tool);
+    this.activeTool_ = activation;
+    tool.activate(activation);
+    return tool;
+  }
+
   private deleteBinding(tool: Tool) {
     const keyBinding = tool.keyBinding!;
     tool.keyBinding = undefined;
