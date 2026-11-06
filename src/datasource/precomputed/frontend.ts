@@ -502,11 +502,26 @@ function parseMeshMetadata(data: any): ParsedMeshMetadata {
       "sharding",
       parseShardingParameters,
     );
+    const nodeFragments =
+      verifyOptionalObjectProperty(data, "fragments", (x) => {
+        if (x !== "nodes") {
+          throw new Error(`Unsupported fragments: ${JSON.stringify(x)}`);
+        }
+        return true;
+      }) ?? false;
+    const vertexFeatureIds =
+      verifyOptionalObjectProperty(
+        data,
+        "vertex_feature_ids",
+        verifyOptionalBoolean,
+      ) ?? false;
     metadata = {
       lodScaleMultiplier,
       transform,
       sharding,
       vertexQuantizationBits,
+      nodeFragments,
+      vertexFeatureIds,
     };
   }
   const segmentPropertyMap = verifyObjectProperty(

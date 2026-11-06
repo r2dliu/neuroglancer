@@ -455,11 +455,13 @@ async function decodeMultiscaleFragmentChunk(
   const { lod } = chunk;
   const source = chunk.manifestChunk!
     .source! as PrecomputedMultiscaleMeshSource;
+  const { metadata } = source.parameters;
   const rawMesh = await decodeDracoPartitioned(
     new Uint8Array(response),
-    source.parameters.metadata.vertexQuantizationBits,
+    metadata.vertexQuantizationBits,
     lod !== 0,
   );
+  if (!metadata.vertexFeatureIds) rawMesh.featureIds = undefined;
   assignMultiscaleMeshFragmentData(
     chunk,
     rawMesh,
@@ -515,6 +517,21 @@ export class PrecomputedMultiscaleMeshSource extends WithParameters(
     const manifestChunk =
       chunk.manifestChunk! as PrecomputedMultiscaleManifestChunk;
     const chunkIndex = chunk.chunkIndex;
+    if (this.parameters.metadata.nodeFragments) {
+      const { octree } = manifestChunk.manifest!;
+      const row = 5 * chunkIndex;
+      const name = `${chunk.lod}_${octree[row]}_${octree[row + 1]}_${octree[row + 2]}`;
+      const nodeResponse = await readKvStore(
+        kvStore.store,
+        `${kvStore.path}nodes/${name}.drc`,
+        { signal, throwIfMissing: true },
+      );
+      await decodeMultiscaleFragmentChunk(
+        chunk,
+        await nodeResponse.response.arrayBuffer(),
+      );
+      return;
+    }
     const { shardInfo, offsets } = manifestChunk;
     const startOffset = offsets[chunkIndex];
     const endOffset = offsets[chunkIndex + 1];

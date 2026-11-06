@@ -37,7 +37,7 @@ import type { Borrowed } from "#src/util/disposable.js";
 import { stableStringify } from "#src/util/json.js";
 import { StringMemoize } from "#src/util/memoize.js";
 import { getObjectId } from "#src/util/object_id.js";
-import { NullarySignal } from "#src/util/signal.js";
+import { NullarySignal, Signal } from "#src/util/signal.js";
 import type { GL } from "#src/webgl/context.js";
 import type { RPC, RPCPromise } from "#src/worker_rpc.js";
 import {
@@ -49,17 +49,16 @@ import {
 
 const DEBUG_CHUNK_UPDATES = false;
 
-// Deterministic soft-invalidate completion: each `softInvalidateCache` call
-// gets a token; the worker fires CHUNK_SOURCE_SOFT_INVALIDATE_COMPLETE_RPC_ID
-// with that token once every re-queued chunk has been re-downloaded. The
-// matching resolver below settles the caller's promise.
+// Each `softInvalidateCache` call gets a token, which the worker completes.
 let nextSoftInvalidateToken = 0;
 const pendingSoftInvalidations = new Map<number, () => void>();
 const SOFT_INVALIDATE_TIMEOUT_MS = 15000;
 
 registerRPC(CHUNK_SOURCE_SOFT_INVALIDATE_COMPLETE_RPC_ID, function (x) {
-  const finish = pendingSoftInvalidations.get(x.token);
-  if (finish !== undefined) finish();
+  // Queued behind the source's chunk updates, so it resolves only once the
+  // refetched chunks are applied.
+  if (this.get(x.source) === undefined) return;
+  updateChunk(this, { source: x.source, softInvalidateComplete: x.token });
 });
 
 export class Chunk {
@@ -116,6 +115,12 @@ export interface FrameNumberCounter {
 @registerSharedObjectOwner(CHUNK_QUEUE_MANAGER_RPC_ID)
 export class ChunkQueueManager extends SharedObject {
   visibleChunksChanged = new NullarySignal();
+  chunkEvents = {
+    added: new Signal<
+      (source: ChunkSource, key: string, chunk: Chunk) => void
+    >(),
+    removed: new Signal<(source: ChunkSource, key: string) => void>(),
+  };
   pendingChunkUpdates: any = null;
   pendingChunkUpdatesTail: any = null;
 
@@ -257,7 +262,9 @@ export class ChunkQueueManager extends SharedObject {
           `${update.id} ${update.state}`,
       );
     }
-    if (update.promise !== undefined) {
+    if (update.softInvalidateComplete !== undefined) {
+      pendingSoftInvalidations.get(update.softInvalidateComplete)?.();
+    } else if (update.promise !== undefined) {
       this.handleFetch_(source, update);
     } else if (update.id === undefined) {
       // Invalidate source.
@@ -269,48 +276,19 @@ export class ChunkQueueManager extends SharedObject {
       const newState: number = update.state;
       if (newState === ChunkState.EXPIRED) {
         // FIXME: maybe use freeList for chunks here
-        source.deleteChunk(update.id);
+        // A dropped soft-refetch chunk may never have reached the frontend.
+        if (source.chunks.has(update.id)) source.deleteChunk(update.id);
       } else {
         let chunk: Chunk;
         const key = update.id;
-        const existing = source.chunks.get(key);
-        if (update.new || existing === undefined) {
-          // First load, or a soft-refetch (`new === false`) of a chunk the
-          // frontend evicted in the meantime — either way there's no live
-          // chunk to swap against, so create a fresh one.
+        if (update.new) {
+          // A soft-invalidate refetch replaces a copy still held here.
+          const old = source.chunks.get(key);
+          if (old?.state === ChunkState.GPU_MEMORY) old.freeGPUMemory(this.gl);
           chunk = source.getChunk(update);
           source.addChunk(key, chunk);
         } else {
-          chunk = existing;
-          // Soft-swap path: an existing chunk is receiving fresh bytes
-          // from a `softInvalidateCache` round-trip. Stage the new
-          // chunk + push it to GPU *before* freeing the old chunk's
-          // GPU memory, so the visible texture for this key is never
-          // empty. Without this branch, the standard SYSTEM_MEMORY
-          // transition below would call `freeGPUMemory` first and the
-          // user would see a multi-second blank while chunks reload.
-          if (update.data !== undefined) {
-            const oldChunk = chunk;
-            const newChunk = source.getChunk(update);
-            const oldOnGPU = oldChunk.state === ChunkState.GPU_MEMORY;
-            if (oldOnGPU) {
-              newChunk.copyToGPU(this.gl);
-              newChunk.state = ChunkState.GPU_MEMORY;
-            } else {
-              // The chunk wasn't on GPU yet; let the normal state
-              // machine push it the rest of the way on subsequent
-              // updates. We set newState directly so the matching
-              // `GPU_MEMORY` follow-up from the backend (which carries
-              // no data) is a no-op state transition.
-              newChunk.state = newState;
-            }
-            source.chunks.set(key, newChunk);
-            if (oldOnGPU) {
-              oldChunk.freeGPUMemory(this.gl);
-            }
-            visibleChunksChanged = true;
-            return visibleChunksChanged;
-          }
+          chunk = source.chunks.get(key)!;
         }
         const oldState = chunk.state;
         if (newState !== oldState) {
@@ -520,11 +498,23 @@ export class ChunkSource extends SharedObject {
       chunk.freeGPUMemory(this.gl);
     }
     this.chunks.delete(key);
+    this.chunkManager.chunkQueueManager.chunkEvents.removed.dispatch(this, key);
   }
 
   addChunk(key: string, chunk: Chunk) {
     this.chunks.set(key, chunk);
     this.failedChunks.delete(key);
+    this.chunkManager.chunkQueueManager.chunkEvents.added.dispatch(
+      this,
+      key,
+      chunk,
+    );
+  }
+
+  disposed() {
+    const { removed } = this.chunkManager.chunkQueueManager.chunkEvents;
+    for (const key of this.chunks.keys()) removed.dispatch(this, key);
+    super.disposed();
   }
 
   /**
@@ -545,20 +535,9 @@ export class ChunkSource extends SharedObject {
     this.rpc!.invoke(CHUNK_SOURCE_INVALIDATE_INDEX_RPC_ID, { id: this.rpcId });
   }
 
-  /**
-   * Soft-invalidate: re-fetch every chunk in this source, but keep the
-   * existing chunks (and their GPU memory) live until the new data
-   * arrives. Used by brush-write invalidations to avoid the multi-
-   * second blank gap that the hard {@link invalidateCache} would
-   * produce. See `softInvalidateSourceCache` on the backend for the
-   * other half of the soft-swap protocol.
-   *
-   * Returns a promise that resolves once every re-queued chunk has been
-   * re-downloaded and pushed back to the frontend, so callers can reap
-   * optimistic overlays deterministically. A safety timeout resolves the
-   * promise anyway if the backend never signals completion (e.g. a chunk
-   * was evicted before it could re-download).
-   */
+  // Re-fetches every chunk while the current ones stay drawn until replaced.
+  // Resolves once every re-queued chunk has reached the frontend or been
+  // dropped (or after a safety timeout).
   softInvalidateCache(): Promise<void> {
     // The backend re-queues failed chunks too; a failure seen after this is a
     // fresh one.
