@@ -4,6 +4,8 @@ import {
   ATTRIBUTE_HIDDEN,
   attributeClassColor,
   attributeColor,
+  isMeshSegment,
+  MESH_SEGMENT,
   SegmentAttributeTables,
 } from "#src/segmentation_display_state/attributes.js";
 
@@ -55,5 +57,15 @@ describe("attribute colors", () => {
     expect(attributeColor(t, 8n, color)).toBe(false);
     expect(attributeClassColor(t, 8n, color)).toBe(true);
     expect(attributeClassColor(t, 9n, color)).toBe(false);
+  });
+});
+
+describe("mesh segments", () => {
+  it("covers the single mesh and every block id below it", () => {
+    expect(isMeshSegment(MESH_SEGMENT)).toBe(true);
+    expect(isMeshSegment(MESH_SEGMENT - 1n)).toBe(true);
+    expect(isMeshSegment(MESH_SEGMENT - 0xffffffffn)).toBe(true);
+    expect(isMeshSegment(MESH_SEGMENT - 0x100000000n)).toBe(false);
+    expect(isMeshSegment(0xffffffffn)).toBe(false);
   });
 });

@@ -41,6 +41,12 @@ const GONE = BigInt(ATTRIBUTE_GONE);
 // features colored and hidden one by one through the tables.
 export const MESH_SEGMENT = 0xffffffffffffffffn;
 
+// The layer mesh in one manifest (MESH_SEGMENT), or one block of it: block k
+// is MESH_SEGMENT - 1 - k.
+export function isMeshSegment(id: bigint): boolean {
+  return id > MESH_SEGMENT - 0x100000000n;
+}
+
 // The CPU twin of the 2D shader's getAttributeColor: writes the class rgb of a
 // raw id into `color`; false when it should not draw.
 export function attributeColor(

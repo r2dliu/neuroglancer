@@ -28,7 +28,7 @@ import { getCssColor } from "#src/segment_color.js";
 import {
   attributeClassColor,
   attributeColor,
-  MESH_SEGMENT,
+  isMeshSegment,
   type SegmentAttributeTables,
 } from "#src/segmentation_display_state/attributes.js";
 import type { VisibleSegmentsState } from "#src/segmentation_display_state/base.js";
@@ -1092,7 +1092,7 @@ export function forEachVisibleSegmentToDraw(
     displayState.segmentationGroupState.value,
     (objectId, rootObjectId) => {
       let colorId = baseSegmentColoring ? objectId : rootObjectId;
-      if (attributes !== undefined && objectId !== MESH_SEGMENT) {
+      if (attributes !== undefined && !isMeshSegment(objectId)) {
         // Any id of the group may be the one whose attributes are held.
         const drawn = [colorId, objectId, rootObjectId].find((id) =>
           attributeColor(attributes, id, tempColor),
