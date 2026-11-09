@@ -1169,11 +1169,21 @@ export class ChunkQueueManager extends SharedObjectCounterpart {
   // Like invalidateSourceCache, but the frontend keeps its chunks until each
   // refetched chunk ships and replaces its copy, so nothing blanks. The
   // tokens complete once every re-queued chunk has shipped or been dropped.
-  softInvalidateSourceCache(source: ChunkSource, token: number) {
-    source.onInvalidateCache?.();
+  // With `keys`, only the chunks with those keys are re-queued.
+  softInvalidateSourceCache(
+    source: ChunkSource,
+    token: number,
+    keys?: readonly string[],
+  ) {
+    let chunks: Iterable<Chunk> = source.chunks.values();
+    if (keys === undefined) {
+      source.onInvalidateCache?.();
+    } else {
+      chunks = keys.flatMap((key) => source.chunks.get(key) ?? []);
+    }
     source.softRefetchTokens.push(token);
-    source.softRefetchPending = source.chunks.size;
-    for (const chunk of source.chunks.values()) {
+    for (const chunk of chunks) {
+      if (!chunk.softRefetch) ++source.softRefetchPending;
       switch (chunk.state) {
         case ChunkState.DOWNLOADING:
           cancelChunkDownload(chunk);
@@ -1460,7 +1470,11 @@ registerRPC(CHUNK_SOURCE_INVALIDATE_RPC_ID, function (x) {
 
 registerRPC(CHUNK_SOURCE_SOFT_INVALIDATE_RPC_ID, function (x) {
   const source = <ChunkSource>this.get(x.id);
-  source.chunkManager.queueManager.softInvalidateSourceCache(source, x.token);
+  source.chunkManager.queueManager.softInvalidateSourceCache(
+    source,
+    x.token,
+    x.keys,
+  );
 });
 
 registerRPC(CHUNK_SOURCE_INVALIDATE_INDEX_RPC_ID, function (x) {

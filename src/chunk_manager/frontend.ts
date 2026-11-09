@@ -535,17 +535,22 @@ export class ChunkSource extends SharedObject {
     this.rpc!.invoke(CHUNK_SOURCE_INVALIDATE_INDEX_RPC_ID, { id: this.rpcId });
   }
 
-  // Re-fetches every chunk while the current ones stay drawn until replaced.
-  // Resolves once every re-queued chunk has reached the frontend or been
-  // dropped (or after a safety timeout).
-  softInvalidateCache(): Promise<void> {
+  // Re-fetches every chunk, or only those with `keys`, while the current ones
+  // stay drawn until replaced. Resolves once every re-queued chunk has reached
+  // the frontend or been dropped (or after a safety timeout).
+  softInvalidateCache(keys?: readonly string[]): Promise<void> {
     // The backend re-queues failed chunks too; a failure seen after this is a
     // fresh one.
-    this.failedChunks.clear();
+    if (keys === undefined) {
+      this.failedChunks.clear();
+    } else {
+      for (const key of keys) this.failedChunks.delete(key);
+    }
     const token = ++nextSoftInvalidateToken;
     this.rpc!.invoke(CHUNK_SOURCE_SOFT_INVALIDATE_RPC_ID, {
       id: this.rpcId,
       token,
+      keys,
     });
     return new Promise<void>((resolve) => {
       const finish = () => {
