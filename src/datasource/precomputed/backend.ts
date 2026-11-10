@@ -491,9 +491,10 @@ export class PrecomputedMultiscaleMeshSource extends WithParameters(
     let readResponse: ReadResponse | undefined;
     if (shardedKvStore === undefined) {
       const { kvStore } = this;
+      // Rewritten in place on every edit.
       readResponse = await kvStore.store.read(
         `${kvStore.path}${chunk.objectId}.index`,
-        { signal },
+        { signal, cache: "no-store" },
       );
     } else {
       ({ response: readResponse, shardInfo: chunk.shardInfo } =
@@ -524,7 +525,7 @@ export class PrecomputedMultiscaleMeshSource extends WithParameters(
       const nodeResponse = await readKvStore(
         kvStore.store,
         `${kvStore.path}nodes/${name}.drc`,
-        { signal, throwIfMissing: true },
+        { signal, throwIfMissing: true, cache: "no-store" },
       );
       await decodeMultiscaleFragmentChunk(
         chunk,

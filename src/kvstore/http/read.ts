@@ -135,6 +135,7 @@ export async function read<Key>(
       requestInit.headers = { range: rangeHeader };
       requestInit.cache = byteRangeCacheMode;
     }
+    if (options.cache !== undefined) requestInit.cache = options.cache;
     let response = await fetchOkImpl(url, requestInit);
     if (wasRedirectedToDirectoryListing(url, response)) {
       return undefined;
