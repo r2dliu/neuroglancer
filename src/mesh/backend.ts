@@ -63,7 +63,9 @@ import type { RPC } from "#src/worker_rpc.js";
 import { registerSharedObject } from "#src/worker_rpc.js";
 
 const MESH_OBJECT_MANIFEST_CHUNK_PRIORITY = 100;
-const MESH_OBJECT_FRAGMENT_CHUNK_PRIORITY = 50;
+// Below every visible slice chunk (sliceview BASE_PRIORITY is -1e12), so mesh
+// fragments are evicted from GPU memory before the 2D data.
+const MESH_OBJECT_FRAGMENT_CHUNK_PRIORITY = -2e12;
 
 const CONVERT_TO_TRIANGLE_STRIPS = false;
 
