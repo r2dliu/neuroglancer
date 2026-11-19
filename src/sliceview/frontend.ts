@@ -111,6 +111,9 @@ class FrontendSliceViewBase extends SliceViewBase<
 > {}
 const Base = withSharedVisibility(FrontendSliceViewBase);
 
+const NO_CLIP_LOWER = vec3.fromValues(-1e30, -1e30, -1e30);
+const NO_CLIP_UPPER = vec3.fromValues(1e30, 1e30, 1e30);
+
 export interface FrontendTransformedSource<
   RLayer extends SliceViewRenderLayer = SliceViewRenderLayer,
   Source extends SliceViewChunkSource = SliceViewChunkSource,
@@ -180,6 +183,9 @@ export class SliceView extends Base {
   declare rpcId: number;
 
   renderingStale = true;
+
+  // Display-space box outside which the 3D panel discards this view's quad.
+  clipBounds: { lower: vec3; upper: vec3 } | undefined = undefined;
 
   visibleChunksStale = true;
 
@@ -775,6 +781,8 @@ export class SliceViewRenderHelper extends RefCounted {
     builder.addUniform("vec4", "uTextureCoordinateAdjustment");
     if (isProjection) {
       builder.addUniform("mat4", "uSliceViewInvViewProj");
+      builder.addUniform("vec3", "uClipLower");
+      builder.addUniform("vec3", "uClipUpper");
       if (hasBrush) {
         this.brushHashTableManager.defineShader(builder);
         this.segmentColorShaderManager.defineShader(builder);
@@ -784,7 +792,17 @@ export class SliceViewRenderHelper extends RefCounted {
       }
     }
     builder.require(emitter);
-    const glsl_fragmentMainStart = `
+    const glsl_fragmentMainStart = `${
+      isProjection
+        ? `
+vec4 clipPos = vec4(2.0 * vTexCoord - 1.0, 0.0, 1.0);
+vec4 worldPos4 = uSliceViewInvViewProj * clipPos;
+vec3 worldPos = worldPos4.xyz / worldPos4.w;
+if (any(lessThan(worldPos, uClipLower)) || any(greaterThan(worldPos, uClipUpper))) {
+  discard;
+}`
+        : ""
+    }
 vec4 sampledColor = texture(uSampler, vTexCoord);
 if (sampledColor.a == 0.0) {`;
     let glsl_fragmentMainEnd: string;
@@ -841,9 +859,6 @@ else {
       glsl_fragmentMainEnd = `
   sampledColor = uBackgroundColor;
 }
-vec4 clipPos = vec4(2.0 * vTexCoord - 1.0, 0.0, 1.0);
-vec4 worldPos4 = uSliceViewInvViewProj * clipPos;
-vec3 worldPos = worldPos4.xyz / worldPos4.w;
 // round: worldPos is in GLOBAL coordinates, where this app's OME
 // datasets put voxel centers at INTEGERS (voxel i spans [i-0.5, i+0.5)), and
 // the CPU brush key truncates those integer center coords. floor() here keys
@@ -940,6 +955,7 @@ gl_Position = uProjectionMatrix * aVertexPosition;
     sliceViewInvViewProj?: mat4,
     brushStrokeLayer?: BrushStrokeLayer,
     brushOverlayOnly = false,
+    clipBounds?: { lower: vec3; upper: vec3 },
   ) {
     const { gl, textureCoordinateAdjustment } = this;
     textureCoordinateAdjustment[0] = xStart;
@@ -990,6 +1006,14 @@ gl_Position = uProjectionMatrix * aVertexPosition;
         shader.uniform("uSliceViewInvViewProj"),
         false,
         sliceViewInvViewProj,
+      );
+      gl.uniform3fv(
+        shader.uniform("uClipLower"),
+        clipBounds?.lower ?? NO_CLIP_LOWER,
+      );
+      gl.uniform3fv(
+        shader.uniform("uClipUpper"),
+        clipBounds?.upper ?? NO_CLIP_UPPER,
       );
     }
     if (this.isProjection && brushStrokeLayer !== undefined) {

@@ -1533,6 +1533,8 @@ export class PerspectivePanel extends RenderedDataPanel {
         1,
         invViewProj,
         inlineBrushLayer,
+        false,
+        sliceView.clipBounds,
       );
       // Overlay pass per additional segmentation layer — brush hits
       // emit, misses `discard`, so each layer's brush composites on
@@ -1559,6 +1561,7 @@ export class PerspectivePanel extends RenderedDataPanel {
             invViewProj,
             brushStrokeLayers[i],
             /*brushOverlayOnly=*/ true,
+            sliceView.clipBounds,
           );
         }
         this.gl.depthFunc(WebGL2RenderingContext.LESS);
