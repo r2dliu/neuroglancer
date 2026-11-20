@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import { luts } from "#src/luts/luts.js";
 import type { SliceView } from "#src/sliceview/frontend.js";
 import type { MultiscaleVolumeChunkSource } from "#src/sliceview/volume/frontend.js";
 import type { RenderLayerBaseOptions } from "#src/sliceview/volume/renderlayer.js";
@@ -131,6 +132,7 @@ export class ImageRenderLayer extends SliceViewVolumeRenderLayer<ShaderControlsB
       throw new Error("Invalid UI control specification");
     }
     builder.addUniform("highp float", "uOpacity");
+    builder.addUniform("vec4", "lut", 256);
     defineImageLayerShader(builder, shaderBuilderState);
   }
 
@@ -146,6 +148,16 @@ export class ImageRenderLayer extends SliceViewVolumeRenderLayer<ShaderControlsB
       sliceView.visibleLayers.get(this)!,
     );
     gl.uniform1f(shader.uniform("uOpacity"), this.opacity.value);
+
+    // Check if called too frequently
+    const lutName =
+      (window as any).lutName === undefined
+        ? "Tricolor 1"
+        : (window as any).lutName;
+    gl.uniform4fv(
+      shader.uniform("lut"),
+      new Float32Array((luts as any)[lutName]),
+    );
     setControlsInShader(
       gl,
       shader,

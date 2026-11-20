@@ -78,12 +78,18 @@ export class SimpleAsyncCache<Key, Value> extends ChunkSourceBase {
       this.addChunk(chunk);
     }
     if (chunk.asyncMemoize === undefined) {
-      chunk.asyncMemoize = asyncMemoizeWithProgress(async (progressOptions) => {
+      const entry = chunk;
+      const memoize = asyncMemoizeWithProgress(async (progressOptions) => {
+        // Freed or evicted while downloading: the result may predate what
+        // freed it, and the chunk may be gone. Fetch again.
+        const superseded = () =>
+          entry.source === null || entry.asyncMemoize !== memoize;
         try {
           const { data, size } = await this.downloadFunction(
             key,
             progressOptions,
           );
+          if (superseded()) return this.get(key, progressOptions);
           chunk.systemMemoryBytes = size;
           chunk!.queueManager.updateChunkState(
             chunk!,
@@ -91,10 +97,12 @@ export class SimpleAsyncCache<Key, Value> extends ChunkSourceBase {
           );
           return data;
         } catch (e) {
+          if (superseded()) return this.get(key, progressOptions);
           chunk!.queueManager.updateChunkState(chunk!, ChunkState.FAILED);
           throw e;
         }
       });
+      chunk.asyncMemoize = memoize;
     }
     if (chunk.state === ChunkState.SYSTEM_MEMORY_WORKER) {
       chunk.chunkManager.queueManager.markRecentlyUsed(chunk);

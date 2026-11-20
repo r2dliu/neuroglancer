@@ -109,7 +109,7 @@ function parsePaintValue(obj: unknown): bigint {
   return n;
 }
 
-class TrackablePaintValue extends TrackableValue<bigint> {
+export class TrackablePaintValue extends TrackableValue<bigint> {
   constructor() {
     super(1n, parsePaintValue);
   }
@@ -478,8 +478,7 @@ export function UserLayerWithVoxelEditingMixin<
     erasePaintValueOnly = new TrackableBoolean(false);
     voxelEditingState = this.registerDisposer(new CompoundTrackable());
     cursorInEraseMode = new TrackableBoolean(false, false);
-
-    private _isInEraseState = false;
+    _isInEraseState = false;
 
     constructor(...args: any[]) {
       super(...args);
@@ -523,7 +522,7 @@ export function UserLayerWithVoxelEditingMixin<
 
     // The overlay only draws the brush cursor, so it is bound to the panels
     // and redrawn on mouse moves only while a source has writing enabled.
-    private bindOverlay(context: RefCounted) {
+    bindOverlay(context: RefCounted) {
       const { display, layerSelectedValues } = this.manager.root;
       const redraw = this.scheduleOverlayRedraw;
       this.bindOverlayToPanels();
@@ -554,8 +553,8 @@ export function UserLayerWithVoxelEditingMixin<
       redraw();
     }
 
-    private panelOverlays = new Map<SliceViewPanel, PanelOverlay>();
-    private bindOverlayToPanels() {
+    panelOverlays = new Map<SliceViewPanel, PanelOverlay>();
+    bindOverlayToPanels() {
       const { panels } = this.manager.root.display;
       for (const panel of panels) {
         if (panel instanceof SliceViewPanel && !this.panelOverlays.has(panel)) {
@@ -573,10 +572,7 @@ export function UserLayerWithVoxelEditingMixin<
       }
     }
 
-    private handleOverlayDraw(
-      ctx: CanvasRenderingContext2D,
-      panel: SliceViewPanel,
-    ) {
+    handleOverlayDraw(ctx: CanvasRenderingContext2D, panel: SliceViewPanel) {
       if (
         panel.mouseX < 0 ||
         panel.mouseY < 0 ||
@@ -603,7 +599,7 @@ export function UserLayerWithVoxelEditingMixin<
       this.drawStaminaBar(ctx, panel.mouseX, panel.mouseY, pending, radiusY);
     }
 
-    private drawStaminaBar(
+    drawStaminaBar(
       ctx: CanvasRenderingContext2D,
       x: number,
       y: number,

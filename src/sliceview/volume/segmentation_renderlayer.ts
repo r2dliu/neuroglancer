@@ -14,18 +14,21 @@
  * limitations under the License.
  */
 
+import type { BrushHashTable } from "#src/brush_stroke/index.js";
 import { HashMapUint64 } from "#src/gpu_hash/hash_table.js";
 import {
   GPUHashTable,
   HashMapShaderManager,
   HashSetShaderManager,
 } from "#src/gpu_hash/shader.js";
+import { getChunkPositionFromCombinedGlobalLocalPositions } from "#src/render_coordinate_transform.js";
 import {
   DEFAULT_USER_MAIN_SEGMENT_COLOR,
   encodeSegmentPropertyShaderDefinition,
   type SegmentationColorUserShaderManagerParameters,
   type SegmentPropertyShaderDefinition,
 } from "#src/segment_color.js";
+import { AttributeShader } from "#src/segmentation_display_state/attributes_shader.js";
 import { getVisibleSegments } from "#src/segmentation_display_state/base.js";
 import type {
   SegmentationDisplayState,
@@ -34,6 +37,7 @@ import type {
 import { registerRedrawWhenSegmentationDisplayStateChanged } from "#src/segmentation_display_state/frontend.js";
 import type { SliceViewSourceOptions } from "#src/sliceview/base.js";
 import type {
+  FrontendTransformedSource,
   SliceView,
   SliceViewSingleResolutionSource,
 } from "#src/sliceview/frontend.js";
@@ -52,6 +56,7 @@ import {
 } from "#src/trackable_value.js";
 import type { Uint64Map } from "#src/uint64_map.js";
 import type { DisjointUint64Sets } from "#src/util/disjoint_sets.js";
+import { kOneVec, vec3 } from "#src/util/geom.js";
 import {
   EMPTY_VOXEL_VALUE,
   SEGMENTATION_ERASE_SENTINEL,
@@ -62,6 +67,9 @@ import {
   parseShaderUiControls,
   type ShaderControlsBuilderState,
 } from "#src/webgl/shader_ui_controls.js";
+
+// Scratch for setupSourceUniforms' per-source downsample factor.
+const tempBrushSourceScale = vec3.create();
 
 function glslUint64Equals(name: string, value: bigint) {
   const v = BigInt.asUintN(64, value);
@@ -93,9 +101,11 @@ export interface SliceViewSegmentationDisplayState
   notSelectedAlpha: WatchableValueInterface<number>;
   hideSegmentZero: WatchableValueInterface<boolean>;
   ignoreNullVisibleSet: WatchableValueInterface<boolean>;
+  brushHashTable?: BrushHashTable;
 }
 
 interface ShaderParameters {
+  hasAttributes: boolean;
   segmentColorParameters: SegmentationColorUserShaderManagerParameters;
   segmentColorProperties: readonly SegmentPropertyShaderDefinition[];
   hasEquivalences: boolean;
@@ -118,6 +128,7 @@ function getFallbackShaderParameters(
     ? displayState.tempSegmentStatedColors2d.value
     : displayState.segmentStatedColors.value;
   return {
+    hasAttributes: displayState.segmentAttributes?.enabled.value ?? false,
     segmentColorParameters: {
       hasSegmentDefaultColor: activeSegmentDefaultColor !== undefined,
       hasSegmentStatedColors: activeSegmentStatedColors.size !== 0,
@@ -151,6 +162,13 @@ export class SegmentationRenderLayer extends SliceViewVolumeRenderLayer<ShaderPa
   private gpuTemporaryEquivalencesHashTable;
   private voxelEditingPreviewLayer: SegmentationRenderLayer | undefined;
   public isVoxelEditingPreview: WatchableValue<boolean>;
+  // Brush-overlay machinery. Same prefix ("brushStroke") as the 2D
+  // `BrushStrokeLayer`'s manager, so the GLSL helper functions are
+  // named identically and `GPUHashTable.get(gl, table)` memoization
+  // shares the underlying GPU resource across consumers.
+  private brushHashTableManager = new HashMapShaderManager("brushStroke");
+  private gpuBrushHashTable: GPUHashTable<HashMapUint64> | undefined;
+  private attributeShader: AttributeShader | undefined;
 
   constructor(
     multiscaleSource: MultiscaleVolumeChunkSource,
@@ -173,6 +191,9 @@ export class SegmentationRenderLayer extends SliceViewVolumeRenderLayer<ShaderPa
         getFallbackShaderParameters(displayState),
       ),
       shaderParameters: new AggregateWatchableValue((refCounted) => ({
+        hasAttributes:
+          displayState.segmentAttributes?.enabled ??
+          new WatchableValue<boolean>(false),
         segmentColorParameters: refCounted.registerDisposer(
           makeCachedDerivedWatchableValue(
             (
@@ -252,6 +273,28 @@ export class SegmentationRenderLayer extends SliceViewVolumeRenderLayer<ShaderPa
       GPUHashTable.get(this.gl, this.temporaryEquivalencesHashMap.hashMap),
     );
 
+    const { segmentAttributes } = displayState;
+    if (segmentAttributes !== undefined) {
+      this.attributeShader = this.registerDisposer(
+        new AttributeShader(this.gl, segmentAttributes),
+      );
+      this.registerDisposer(
+        segmentAttributes.changed.add(() => this.redrawNeeded.dispatch()),
+      );
+    }
+
+    const { brushHashTable } = displayState;
+    if (brushHashTable !== undefined) {
+      this.gpuBrushHashTable = this.registerDisposer(
+        GPUHashTable.get(this.gl, brushHashTable),
+      );
+      this.registerDisposer(
+        brushHashTable.changed.add(() => {
+          this.redrawNeeded.dispatch();
+        }),
+      );
+    }
+
     this.registerDisposer(
       this.shaderParameters as AggregateWatchableValue<ShaderParameters>,
     );
@@ -265,6 +308,16 @@ export class SegmentationRenderLayer extends SliceViewVolumeRenderLayer<ShaderPa
     this.registerDisposer(
       displayState.ignoreNullVisibleSet.changed.add(this.redrawNeeded.dispatch),
     );
+    if (displayState.focusedSegment) {
+      this.registerDisposer(
+        displayState.focusedSegment.changed.add(this.redrawNeeded.dispatch),
+      );
+    }
+    if (displayState.focusDim) {
+      this.registerDisposer(
+        displayState.focusDim.changed.add(this.redrawNeeded.dispatch),
+      );
+    }
   }
 
   disposed() {
@@ -289,14 +342,56 @@ export class SegmentationRenderLayer extends SliceViewVolumeRenderLayer<ShaderPa
       parameters.segmentColorParameters,
     );
 
-    let getUint64Code = `
+    const hasBrushOverlay = this.gpuBrushHashTable !== undefined;
+    if (hasBrushOverlay) {
+      this.brushHashTableManager.defineShader(builder);
+      // The vertex's un-nudged position (before the parent's
+      // CHUNK_POSITION_EPSILON along the normal), so the hash key matches
+      // what the CPU brush emit's Math.round saw at click time.
+      builder.addVarying("highp vec3", "vBrushWorldPos");
+      builder.addVertexMain("vBrushWorldPos = position;");
+      // `vBrushWorldPos` is in THIS source's voxel grid; the brush hash is
+      // keyed in full-res voxels, so it is scaled by the source's downsample
+      // factor (set per source in `setupSourceUniforms`).
+      builder.addUniform("highp vec3", "uBrushSourceScale");
+    }
+    const brushLookup = hasBrushOverlay
+      ? `
+  {
+    // Integer full-res voxel index under this fragment, matching the CPU
+    // brush hash (getBrushKey does coord >>> 0).
+    uvec3 brushVoxel = uvec3(floor(vBrushWorldPos * uBrushSourceScale));
+    uint x1 = brushVoxel.x;
+    uint y1 = brushVoxel.y;
+    uint z1 = brushVoxel.z;
+    uint h1 = ((x1 * 73u) * 1271u) ^ ((y1 * 513u) * 1345u) ^ ((z1 * 421u) * 675u);
+    uint h2 = ((x1 * 127u) * 337u) ^ ((y1 * 111u) * 887u) ^ ((z1 * 269u) * 325u);
+    uint64_t brushKey;
+    brushKey.value[0] = h1;
+    brushKey.value[1] = h2;
+    uint64_t brushValue;
+    if (${this.brushHashTableManager.getFunctionName}(brushKey, brushValue)) {
+      // value=0 marks "erased": report segment 0, whose transparent emit
+      // (forced on with a brush overlay) reveals the layer underneath, which
+      // a discard would not. value>0 paints optimistically.
+      if (brushValue.value[0] == 0u && brushValue.value[1] == 0u) {
+        uint64_t erased;
+        erased.value[0] = 0u;
+        erased.value[1] = 0u;
+        return erased;
+      }
+      return brushValue;
+    }
+  }
+`
+      : "";
+    builder.addFragmentCode(`
 uint64_t getUint64DataValue() {
+${brushLookup}
   uint64_t x = toUint64(getDataValue());
-`;
-    getUint64Code += `return x;
+  return x;
 }
-`;
-    builder.addFragmentCode(getUint64Code);
+`);
     if (parameters.hasEquivalences) {
       this.equivalencesShaderManager.defineShader(builder);
       builder.addFragmentCode(`
@@ -315,9 +410,15 @@ uint64_t getMappedObjectId(uint64_t value) {
 }
 `);
     }
+    if (parameters.hasAttributes) {
+      this.attributeShader?.defineShader(builder);
+    }
     builder.addUniform("bool", "uShowAllSegments");
     builder.addUniform("highp float", "uSelectedAlpha");
     builder.addUniform("highp float", "uNotSelectedAlpha");
+    builder.addUniform("bool", "uHasFocusedSegment");
+    builder.addUniform("highp uvec2", "uFocusedSegment");
+    builder.addUniform("highp float", "uFocusDim");
     let fragmentMain = `
   uint64_t baseValue = getUint64DataValue();
   uint64_t value = getMappedObjectId(baseValue);
@@ -340,16 +441,33 @@ uint64_t getMappedObjectId(uint64_t value) {
     discard;
   }
       `;
-    if (parameters.hideSegmentZero) {
+    // With a brush overlay, erased voxels read as segment 0 (see brushLookup)
+    // and rely on this transparent emit to reveal the layer underneath.
+    if (parameters.hideSegmentZero || hasBrushOverlay) {
       fragmentMain += `
   if (value.value[0] == 0u && value.value[1] == 0u) {
-    emit(vec4(vec4(0, 0, 0, 0))); 
+    emit(vec4(vec4(0, 0, 0, 0)));
     return;
   }
 `;
     }
-    fragmentMain += `
+    if (parameters.hasAttributes) {
+      // The attribute tables replace the visible set and the mapped colors:
+      // an id they don't draw is transparent.
+      fragmentMain += `
+  vec4 attributeColor;
+  if (!getAttributeColor(baseValue, attributeColor)) {
+    emit(vec4(0.0, 0.0, 0.0, 0.0));
+    return;
+  }
+  bool has = true;
+`;
+    } else {
+      fragmentMain += `
   bool has = uShowAllSegments || ${this.hashTableManager.hasFunctionName}(value);
+`;
+    }
+    fragmentMain += `
   if (uHasSelectedSegment && uSelectedSegment == valueForHighlight.value) {
 `;
     if (parameters.hasHighlightColor) {
@@ -364,9 +482,24 @@ uint64_t getMappedObjectId(uint64_t value) {
     alpha = uNotSelectedAlpha;
   }
 `;
-    fragmentMain += `
+    if (parameters.hasAttributes) {
+      fragmentMain += `
+  float saturation = uSaturation;
+  if (uHasSelectedSegment && uSelectedSegment == valueForColor.value) {
+    saturation += saturation > 0.5 ? -0.5 : 0.5;
+  }
+  vec4 rgba = vec4(mix(vec3(1.0), attributeColor.rgb, saturation), 1.0);
+`;
+    } else {
+      fragmentMain += `
   vec4 rgba = segmentColorUserShader(valueForColor, has ? 0.5 : 0.75);
+`;
+    }
+    fragmentMain += `
   alpha *= rgba.a;
+  if (uHasFocusedSegment && uFocusedSegment != valueForHighlight.value) {
+    alpha *= uFocusDim;
+  }
   emit(vec4(rgba.rgb, alpha));
 `;
     builder.setFragmentMain(fragmentMain);
@@ -431,6 +564,40 @@ uint64_t getMappedObjectId(uint64_t value) {
     if (parameters.hasHighlightColor && highlightColor !== undefined) {
       gl.uniform4fv(shader.uniform("uHighlightColor"), highlightColor);
     }
+    const focusedSegment = displayState.focusedSegment?.value ?? null;
+    gl.uniform1ui(
+      shader.uniform("uHasFocusedSegment"),
+      focusedSegment != null ? 1 : 0,
+    );
+    if (focusedSegment != null) {
+      gl.uniform2ui(
+        shader.uniform("uFocusedSegment"),
+        Number(focusedSegment & 0xffffffffn),
+        Number(focusedSegment >> 32n),
+      );
+    }
+    gl.uniform1f(
+      shader.uniform("uFocusDim"),
+      displayState.focusDim?.value ?? 0.15,
+    );
+    if (this.gpuBrushHashTable !== undefined) {
+      this.brushHashTableManager.enable(gl, shader, this.gpuBrushHashTable);
+    }
+    if (parameters.hasAttributes) {
+      this.attributeShader?.enable(gl, shader);
+    }
+    // Hover highlights a segment only while it is drawn.
+    const { segmentSelectionState } = displayState;
+    let hoverHighlight = displayState.hoverHighlight.value;
+    if (hoverHighlight && segmentSelectionState.hasSelectedSegment) {
+      const seg = displayState.baseSegmentHighlighting.value
+        ? segmentSelectionState.baseSelectedSegment
+        : segmentSelectionState.selectedSegment;
+      hoverHighlight =
+        parameters.hasAttributes ||
+        visibleSegments.size === 0 ||
+        visibleSegments.has(seg);
+    }
     displayState.segmentationColorUserShader.enable(
       gl,
       shader,
@@ -440,7 +607,7 @@ uint64_t getMappedObjectId(uint64_t value) {
       {
         segmentDefaultColor: activeSegmentDefaultColor,
         segmentStatedColors: activeSegmentStatedColors,
-        hoverHighlight: displayState.hoverHighlight.value,
+        hoverHighlight,
       },
     );
   }
@@ -456,6 +623,9 @@ uint64_t getMappedObjectId(uint64_t value) {
       parameters.segmentColorParameters,
     );
     this.hashTableManager.disable(gl, shader);
+    if (parameters.hasAttributes) {
+      this.attributeShader?.disable(gl, shader);
+    }
     if (parameters.hasEquivalences) {
       this.equivalencesShaderManager.disable(gl, shader);
     }
@@ -474,5 +644,69 @@ uint64_t getMappedObjectId(uint64_t value) {
       this.voxelEditingPreviewLayer.draw(renderContext);
     }
     super.draw(renderContext);
+  }
+
+  override setupSourceUniforms(
+    gl: WebGL2RenderingContext,
+    shader: ShaderProgram,
+    transformedSource: FrontendTransformedSource,
+  ) {
+    if (this.gpuBrushHashTable === undefined) return;
+    // The brush hash is keyed in full-res (level-0) voxel indices, while
+    // `vBrushWorldPos` is in THIS source's voxel grid: one source voxel spans
+    // |localSpatialVectorToGlobal(1⃗)| global voxel-index units. Not derived
+    // from `effectiveVoxelSize`, which folds in display scales. No offset: the
+    // level's translation is already in the projection.
+    const scale = transformedSource.chunkLayout.localSpatialVectorToGlobal(
+      tempBrushSourceScale,
+      kOneVec,
+    );
+    gl.uniform3f(
+      shader.uniform("uBrushSourceScale"),
+      Math.abs(scale[0]) || 1,
+      Math.abs(scale[1]) || 1,
+      Math.abs(scale[2]) || 1,
+    );
+  }
+
+  // Never falls back to a coarser scale; null = full-res chunk not resident,
+  // undefined = outside the array, where no chunk will ever arrive, "failed" =
+  // its download failed.
+  getFinestValueAt(globalPosition: Float32Array) {
+    const { tempChunkPosition } = this;
+    const sources = this.visibleSourcesList;
+    if (sources.length === 0) return null;
+    const finest = Math.abs(sources[0].chunkTransform.chunkToLayerTransformDet);
+    let inside = false;
+    let failed = false;
+    for (const { source, chunkTransform } of sources) {
+      if (Math.abs(chunkTransform.chunkToLayerTransformDet) !== finest) break;
+      if (
+        !getChunkPositionFromCombinedGlobalLocalPositions(
+          tempChunkPosition,
+          globalPosition,
+          this.localPosition.value,
+          chunkTransform.layerRank,
+          chunkTransform.combinedGlobalLocalToChunkTransform,
+        )
+      ) {
+        continue;
+      }
+      const { lowerVoxelBound, upperVoxelBound } = source.spec;
+      let within = true;
+      for (let i = 0; i < lowerVoxelBound.length; ++i) {
+        const v = tempChunkPosition[i];
+        if (v < lowerVoxelBound[i] || v >= upperVoxelBound[i]) within = false;
+      }
+      if (!within) continue;
+      inside = true;
+      const result = source.getValueAt(tempChunkPosition, chunkTransform);
+      if (result != null) {
+        return result;
+      }
+      failed ||= source.failedAt(tempChunkPosition);
+    }
+    if (failed) return "failed" as const;
+    return inside ? null : undefined;
   }
 }

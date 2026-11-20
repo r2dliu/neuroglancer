@@ -514,6 +514,12 @@
       "neuroglancer/layer/image:disabled": "./src/util/false.ts",
       "default": "./src/layer/image/index.ts"
     },
+    "#layer/oblique_slice": {
+      "neuroglancer/layer/oblique_slice:enabled": "./src/layer/oblique_slice/index.ts",
+      "neuroglancer/layer:none_by_default": "./src/util/false.ts",
+      "neuroglancer/layer/oblique_slice:disabled": "./src/util/false.ts",
+      "default": "./src/layer/oblique_slice/index.ts"
+    },
     "#layer/segmentation": {
       "neuroglancer/layer/segmentation:enabled": "./src/layer/segmentation/index.ts",
       "neuroglancer/layer:none_by_default": "./src/util/false.ts",

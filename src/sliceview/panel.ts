@@ -100,6 +100,7 @@ const tempVec3b = vec3.create();
 const tempVec4 = vec4.create();
 
 export class SliceViewPanel extends RenderedDataPanel {
+  readonly kind = "slice";
   declare viewer: SliceViewerState;
   private sliceViewRenderHelper;
 
@@ -500,6 +501,7 @@ export class SliceViewPanel extends RenderedDataPanel {
     }
     mouseState.coordinateSpace = this.navigationState.coordinateSpace.value;
     mouseState.displayDimensions = displayDimensions;
+    mouseState.pose = this.navigationState.pose;
 
     setPosition(pickRadius, pickRadius, unsnappedPosition);
 

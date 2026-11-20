@@ -109,6 +109,13 @@ export class StatusMessage {
     }
     statusMessages.delete(this);
   }
+  dismissModal() {
+    if (this.modalElementWrapper) {
+      modalStatusContainer!.removeChild(this.modalElementWrapper);
+      this.modalElementWrapper = undefined;
+      statusContainer!.appendChild(this.element);
+    }
+  }
   setText(text: string, makeVisible?: boolean) {
     this.element.textContent = text;
     if (makeVisible) {

@@ -26,8 +26,8 @@ import type { mat4 } from "#src/util/geom.js";
 import { parseFixedLengthArray, verifyFloat01 } from "#src/util/json.js";
 import { NullarySignal } from "#src/util/signal.js";
 import {
-  TrackableScreenshotMode,
   ScreenshotMode,
+  TrackableScreenshotMode,
 } from "#src/util/trackable_screenshot_mode.js";
 import type { WatchableVisibilityPriority } from "#src/visibility_priority/frontend.js";
 import type { GL } from "#src/webgl/context.js";

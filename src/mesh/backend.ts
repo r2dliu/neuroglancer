@@ -108,6 +108,8 @@ export class ManifestChunk extends Chunk {
 export interface RawMeshData {
   vertexPositions: Float32Array | Uint32Array;
   indices: MeshVertexIndices;
+  // Per vertex: which feature (instance) of the layer mesh it belongs to.
+  featureIds?: Uint32Array;
 }
 
 export interface RawPartitionedMeshData extends RawMeshData {
@@ -127,6 +129,12 @@ function serializeMeshData(data: EncodedMeshData, msg: any, transfers: any[]) {
     transfers.push(indicesBuffer);
   }
   transfers.push(vertexNormals!.buffer);
+  for (const name of ["featureIds", "features", "featureIndices"] as const) {
+    const array = data[name];
+    if (array === undefined) continue;
+    msg[name] = array;
+    transfers.push(array.buffer);
+  }
 }
 
 function getMeshDataSize(data: EncodedMeshData) {
@@ -134,7 +142,10 @@ function getMeshDataSize(data: EncodedMeshData) {
   return (
     vertexPositions!.byteLength +
     indices!.byteLength +
-    vertexNormals!.byteLength
+    vertexNormals!.byteLength +
+    (data.featureIds?.byteLength ?? 0) +
+    (data.features?.byteLength ?? 0) +
+    (data.featureIndices?.byteLength ?? 0)
   );
 }
 
@@ -810,6 +821,30 @@ function convertMeshData(
   };
 }
 
+// A mesh fragment's per-vertex feature ids, its distinct features, and each
+// vertex's index into them (its pick offset).
+function featureData(featureIds: Uint32Array | undefined) {
+  if (featureIds === undefined) return {};
+  const sorted = featureIds.slice().sort();
+  let n = 0;
+  for (let i = 0; i < sorted.length; ++i) {
+    if (i === 0 || sorted[i] !== sorted[i - 1]) sorted[n++] = sorted[i];
+  }
+  const features = sorted.slice(0, n);
+  const featureIndices = new Uint32Array(featureIds.length);
+  for (let i = 0; i < featureIds.length; ++i) {
+    let lo = 0;
+    let hi = n - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (features[mid] < featureIds[i]) lo = mid + 1;
+      else hi = mid;
+    }
+    featureIndices[i] = lo;
+  }
+  return { featureIds, features, featureIndices };
+}
+
 export function assignMeshFragmentData(
   chunk: FragmentChunk,
   data: RawMeshData,
@@ -823,7 +858,10 @@ export function assignMultiscaleMeshFragmentData(
   data: RawPartitionedMeshData,
   vertexPositionFormat: VertexPositionFormat,
 ) {
-  chunk.meshData = convertMeshData(data, vertexPositionFormat);
+  chunk.meshData = {
+    ...convertMeshData(data, vertexPositionFormat),
+    ...featureData(data.featureIds),
+  };
   chunk.subChunkOffsets = data.subChunkOffsets;
 }
 

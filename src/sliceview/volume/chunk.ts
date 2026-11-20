@@ -24,6 +24,8 @@ import type { GL } from "#src/webgl/context.js";
 export abstract class VolumeChunk extends SliceViewChunk {
   declare source: VolumeChunkSource;
   chunkDataSize: Uint32Array;
+  // A segmentation chunk's distinct non-zero labels, from the chunk worker.
+  labels: BigUint64Array | null;
   declare CHUNK_FORMAT_TYPE: ChunkFormat;
 
   get chunkFormat(): this["CHUNK_FORMAT_TYPE"] {
@@ -33,6 +35,7 @@ export abstract class VolumeChunk extends SliceViewChunk {
   constructor(source: VolumeChunkSource, x: any) {
     super(source, x);
     this.chunkDataSize = x.chunkDataSize || source.spec.chunkDataSize;
+    this.labels = x.labels ?? null;
   }
   abstract getValueAt(dataPosition: Uint32Array): any;
   abstract updateFromCpuData(gl: GL): void;

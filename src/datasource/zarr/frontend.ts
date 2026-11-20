@@ -31,6 +31,7 @@ import type {
   KvStoreBasedDataSourceProvider,
 } from "#src/datasource/index.js";
 import { getKvStorePathCompletions } from "#src/datasource/kvstore_completions.js";
+import { LocalDataSource } from "#src/datasource/local.js";
 import { VolumeChunkSourceParameters } from "#src/datasource/zarr/base.js";
 import { codecChainSupportsWriting } from "#src/datasource/zarr/codec/index.js";
 import "#src/datasource/zarr/codec/bytes/resolve.js";
@@ -117,60 +118,108 @@ export class MultiscaleVolumeChunkSource extends GenericMultiscaleVolumeChunkSou
   }
 
   getSources(volumeSourceOptions: VolumeSourceOptions) {
+    const levels = this.multiscale.scales.map((scale) => {
+      const { metadata } = scale;
+      const { rank, codecs, shape } = metadata;
+      const readChunkShape = codecs.layoutInfo[0].readChunkShape;
+      const { physicalToLogicalDimension } = metadata.codecs.layoutInfo[0];
+      const permutedChunkShape = new Uint32Array(rank);
+      const permutedDataShape = new Float32Array(rank);
+      const orderTransform = new Float32Array((rank + 1) ** 2);
+      orderTransform[(rank + 1) ** 2 - 1] = 1;
+      for (let i = 0; i < rank; ++i) {
+        const decodedDim = physicalToLogicalDimension[rank - 1 - i];
+        permutedChunkShape[i] = readChunkShape[decodedDim];
+        permutedDataShape[i] = shape[decodedDim];
+        orderTransform[decodedDim + i * (rank + 1)] = 1;
+      }
+      const transform = new Float32Array((rank + 1) ** 2);
+      matrix.multiply<Float32Array | Float64Array>(
+        transform,
+        rank + 1,
+        scale.transform,
+        rank + 1,
+        orderTransform,
+        rank + 1,
+        rank + 1,
+        rank + 1,
+        rank + 1,
+      );
+      return { scale, permutedChunkShape, permutedDataShape, transform };
+    });
+    const { rank } = this;
+    // Downsampled levels round their shape up and so reach past the base
+    // level; each is clipped to the base level's extent.
+    const base = levels[0];
+    const baseLower = matrix.transformPoint(
+      new Float32Array(rank),
+      base.transform,
+      rank + 1,
+      new Float32Array(rank),
+      rank,
+    );
+    const baseUpper = matrix.transformPoint(
+      new Float32Array(rank),
+      base.transform,
+      rank + 1,
+      base.permutedDataShape,
+      rank,
+    );
     return transposeNestedArrays(
-      this.multiscale.scales.map((scale) => {
-        const { metadata } = scale;
-        const { rank, codecs, shape } = metadata;
-        const readChunkShape = codecs.layoutInfo[0].readChunkShape;
-        const { physicalToLogicalDimension } = metadata.codecs.layoutInfo[0];
-        const permutedChunkShape = new Uint32Array(rank);
-        const permutedDataShape = new Float32Array(rank);
-        const orderTransform = new Float32Array((rank + 1) ** 2);
-        orderTransform[(rank + 1) ** 2 - 1] = 1;
-        for (let i = 0; i < rank; ++i) {
-          const decodedDim = physicalToLogicalDimension[rank - 1 - i];
-          permutedChunkShape[i] = readChunkShape[decodedDim];
-          permutedDataShape[i] = shape[decodedDim];
-          orderTransform[decodedDim + i * (rank + 1)] = 1;
-        }
-        const transform = new Float32Array((rank + 1) ** 2);
-        matrix.multiply<Float32Array | Float64Array>(
-          transform,
-          rank + 1,
-          scale.transform,
-          rank + 1,
-          orderTransform,
-          rank + 1,
-          rank + 1,
-          rank + 1,
-          rank + 1,
-        );
-        return makeDefaultVolumeChunkSpecifications({
-          rank,
-          chunkToMultiscaleTransform: transform,
-          dataType: metadata.dataType,
-          upperVoxelBound: permutedDataShape,
-          volumeType: this.volumeType,
-          chunkDataSizes: [permutedChunkShape],
-          volumeSourceOptions,
-          fillValue: metadata.fillValue,
-        }).map(
-          (spec): SliceViewSingleResolutionSource<VolumeChunkSource> => ({
-            chunkSource: this.chunkManager.getChunkSource(
-              ZarrVolumeChunkSource,
-              {
-                sharedKvStoreContext: this.sharedKvStoreContext,
-                spec,
-                parameters: {
-                  url: scale.url,
-                  metadata,
-                },
-              },
-            ),
+      levels.map(
+        ({ scale, permutedChunkShape, permutedDataShape, transform }) => {
+          const { metadata } = scale;
+          const inverse = new Float32Array((rank + 1) ** 2);
+          matrix.inverse(inverse, rank + 1, transform, rank + 1, rank + 1);
+          const a = matrix.transformPoint(
+            new Float32Array(rank),
+            inverse,
+            rank + 1,
+            baseLower,
+            rank,
+          );
+          const b = matrix.transformPoint(
+            new Float32Array(rank),
+            inverse,
+            rank + 1,
+            baseUpper,
+            rank,
+          );
+          const lowerClipBound = new Float32Array(rank);
+          const upperClipBound = new Float32Array(rank);
+          for (let i = 0; i < rank; ++i) {
+            lowerClipBound[i] = Math.min(a[i], b[i]);
+            upperClipBound[i] = Math.max(a[i], b[i]);
+          }
+          return makeDefaultVolumeChunkSpecifications({
+            rank,
             chunkToMultiscaleTransform: transform,
-          }),
-        );
-      }),
+            dataType: metadata.dataType,
+            upperVoxelBound: permutedDataShape,
+            volumeType: this.volumeType,
+            chunkDataSizes: [permutedChunkShape],
+            volumeSourceOptions,
+            fillValue: metadata.fillValue,
+          }).map(
+            (spec): SliceViewSingleResolutionSource<VolumeChunkSource> => ({
+              chunkSource: this.chunkManager.getChunkSource(
+                ZarrVolumeChunkSource,
+                {
+                  sharedKvStoreContext: this.sharedKvStoreContext,
+                  spec,
+                  parameters: {
+                    url: scale.url,
+                    metadata,
+                  },
+                },
+              ),
+              chunkToMultiscaleTransform: transform,
+              lowerClipBound,
+              upperClipBound,
+            }),
+          );
+        },
+      ),
     );
   }
 }
@@ -588,6 +637,12 @@ export class ZarrDataSource implements KvStoreBasedDataSourceProvider {
                   volume.modelSpace.bounds,
                 ),
               },
+            },
+            {
+              id: "brush_strokes",
+              default: true,
+              url: undefined,
+              subsource: { local: LocalDataSource.brushStrokes },
             },
           ],
         };

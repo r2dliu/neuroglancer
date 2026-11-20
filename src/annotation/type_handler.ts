@@ -75,6 +75,9 @@ export interface AnnotationRenderContext {
   count: number;
   basePickId: number;
   selectedIndex: number;
+  // Instance index of the selected oriented bounding box, or -1.
+  // Only that instance shows its interactive gizmo handles.
+  selectedInstance: number;
   modelViewProjectionMatrix: mat4;
   subspaceMatrix: Float32Array;
   renderSubspaceModelMatrix: mat4;
@@ -673,6 +676,8 @@ if (ng_discardValue) {
   }
 
   abstract draw(context: AnnotationRenderContext): void;
+
+  drawForeground(_context: AnnotationRenderContext): void {}
 
   private histogramShaders = new Map<
     AnnotationPropertySpec["type"],

@@ -225,6 +225,14 @@ export class VolumeChunkSource
     return this.chunkFormatHandler.chunkFormat;
   }
 
+  failedAt(chunkPosition: Float32Array) {
+    const { chunkDataSize } = this.spec;
+    const key = Array.from(chunkDataSize, (size, i) =>
+      Math.floor(chunkPosition[i] / size),
+    ).join();
+    return this.failedChunks.has(key);
+  }
+
   computeChunkIndices(voxelCoord: Float32Array): {
     chunkGridPosition: Float32Array;
     positionWithinChunk: Uint32Array;
@@ -249,6 +257,7 @@ export class VolumeChunkSource
     const chunkGridPosition = this.tempChunkGridPosition;
     const positionWithinChunk = this.tempPositionWithinChunk;
     const { spec } = this;
+
     {
       const { chunkDataSize } = spec;
       for (let chunkDim = 0; chunkDim < rank; ++chunkDim) {

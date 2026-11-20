@@ -50,7 +50,7 @@ import { MouseEventBinder } from "#src/util/mouse_bindings.js";
 import { startRelativeMouseDrag } from "#src/util/mouse_drag.js";
 import { getWheelZoomAmount } from "#src/util/wheel_zoom.js";
 import type { WatchableVisibilityPriority } from "#src/visibility_priority/frontend.js";
-import { GLBuffer, getMemoizedBuffer } from "#src/webgl/buffer.js";
+import { getMemoizedBuffer, GLBuffer } from "#src/webgl/buffer.js";
 import type { GL } from "#src/webgl/context.js";
 import type { HistogramSpecifications } from "#src/webgl/empirical_cdf.js";
 import {
@@ -71,11 +71,11 @@ import { getShaderType } from "#src/webgl/shader_lib.js";
 import { setRawTextureParameters } from "#src/webgl/texture.js";
 import { ColorWidget } from "#src/widget/color.js";
 import {
+  createCDFLineShader,
   getUpdatedRangeAndWindowParameters,
+  NUM_CDF_LINES,
   updateInputBoundValue,
   updateInputBoundWidth,
-  createCDFLineShader,
-  NUM_CDF_LINES,
 } from "#src/widget/invlerp.js";
 import { AutoRangeFinder } from "#src/widget/invlerp_range_finder.js";
 import type {

@@ -86,12 +86,16 @@ export class VisibilityPriorityAggregator extends WatchableVisibilityPriority {
   }
 }
 
+export interface SharedObjectWithVisibility extends SharedObject {
+  visibility: VisibilityPriorityAggregator;
+}
+
 /**
  * Mixin that adds a `visibility` property which is shared with the counterpart.
  */
 export function withSharedVisibility<
   T extends { new (...args: any[]): SharedObject },
->(Base: T) {
+>(Base: T): T & { new (...args: any[]): SharedObjectWithVisibility } {
   return class extends Base {
     visibility = new VisibilityPriorityAggregator();
 

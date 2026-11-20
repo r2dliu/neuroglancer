@@ -46,6 +46,7 @@ import {
 import { createImageLayerAsMultiChannel } from "#src/layer/multi_channel_setup.js";
 import type {
   DisplayDimensions,
+  DisplayPose,
   WatchableDisplayDimensionRenderInfo,
 } from "#src/navigation_state.js";
 import {
@@ -362,7 +363,7 @@ export class UserLayer extends RefCounted {
   readyStateChanged = new NullarySignal();
   specificationChanged = new NullarySignal();
   renderLayers = new Array<RenderLayer>();
-  private loadingCounter = 1;
+  loadingCounter = 1;
   get isReady() {
     return this.loadingCounter === 0;
   }
@@ -456,7 +457,7 @@ export class UserLayer extends RefCounted {
     this.activateDataSubsources(getDataSubsources.call(this));
   }
 
-  private decrementLoadingCounter() {
+  decrementLoadingCounter() {
     if (--this.loadingCounter === 0) {
       this.readyStateChanged.dispatch();
     }
@@ -1169,6 +1170,7 @@ export class MouseSelectionState implements PickState {
   pickedAnnotationType: AnnotationType | undefined = undefined;
   pageX: number;
   pageY: number;
+  pose: DisplayPose | undefined = undefined;
 
   private forcerFunction: (() => void) | undefined = undefined;
 
@@ -1780,7 +1782,9 @@ export class SelectedLayerState extends RefCounted implements Trackable {
     }
     const existingLayer = this.layer_;
     if (existingLayer !== undefined) {
-      this.existingLayerDisposer!();
+      if (this.existingLayerDisposer) {
+        this.existingLayerDisposer();
+      }
       this.existingLayerDisposer = undefined;
       this.maybeDeleteNewLayer(existingLayer);
     }

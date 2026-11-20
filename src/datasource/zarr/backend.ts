@@ -15,9 +15,9 @@
  */
 
 import "#src/datasource/zarr/codec/blosc/decode.js";
-import "#src/datasource/zarr/codec/zstd/decode.js";
 import "#src/datasource/zarr/codec/bytes/decode.js";
 import "#src/datasource/zarr/codec/crc32c/decode.js";
+import "#src/datasource/zarr/codec/zstd/decode.js";
 
 import "#src/datasource/zarr/codec/bytes/encode.js";
 import "#src/datasource/zarr/codec/gzip/encode.js";
@@ -54,6 +54,11 @@ export class ZarrVolumeChunkSource
     this.parameters.metadata.codecs,
     this.sharedKvStoreContext.kvStoreContext.getKvStore(this.parameters.url),
   );
+
+  onInvalidateCache() {
+    const { kvStore } = this.chunkKvStore;
+    kvStore.invalidateIndexCache?.();
+  }
 
   // Sharded stores use structured (non-string) keys, hence the unknown type.
   private getChunkStoreKey(chunkGridPosition: Float32Array): unknown {

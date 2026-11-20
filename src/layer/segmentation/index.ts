@@ -16,6 +16,8 @@
 
 import "#src/layer/segmentation/style.css";
 
+import { BrushHashTable } from "#src/brush_stroke/index.js";
+import { BrushStrokeLayer } from "#src/brush_stroke/renderlayer.js";
 import type { CoordinateTransformSpecification } from "#src/coordinate_transform.js";
 import { emptyValidCoordinateSpace } from "#src/coordinate_transform.js";
 import type { DataSourceSpecification } from "#src/datasource/index.js";
@@ -55,6 +57,7 @@ import {
   SegmentColorHash,
   SegmentColorUserShaderManager,
 } from "#src/segment_color.js";
+import { SegmentAttributeTables } from "#src/segmentation_display_state/attributes.js";
 import { getSegmentEquivalences } from "#src/segmentation_display_state/base.js";
 import type {
   SegmentationColorGroupState,
@@ -529,6 +532,7 @@ class SegmentationUserLayerDisplayState implements SegmentationDisplayState {
     );
 
     this.transparentPickEnabled = layer.pick;
+    this.segmentAttributes = layer.segmentAttributes;
 
     this.useTempSegmentStatedColors2d = layer.registerDisposer(
       SharedWatchableValue.make(layer.manager.rpc, false),
@@ -644,7 +648,10 @@ class SegmentationUserLayerDisplayState implements SegmentationDisplayState {
   selectedAlpha = trackableAlphaValue(0.5);
   saturation = trackableAlphaValue(1.0);
   notSelectedAlpha = trackableAlphaValue(0);
-  hoverHighlight = new TrackableBoolean(true, true);
+  hoverHighlight = new TrackableBoolean(false, false);
+  // Focus highlight (dim-everything-else)
+  focusedSegment = new WatchableValue<bigint | null>(null);
+  focusDim = trackableAlphaValue(0.5);
   silhouetteRendering = new TrackableValue<number>(
     0,
     verifyFiniteNonNegativeFloat,
@@ -665,6 +672,7 @@ class SegmentationUserLayerDisplayState implements SegmentationDisplayState {
   renderScaleTarget = trackableRenderScaleTarget(1);
   selectSegment: SegmentationDisplayState["selectSegment"];
   transparentPickEnabled: TrackableBoolean;
+  segmentAttributes: SegmentAttributeTables;
   baseSegmentColoring = new TrackableBoolean(false, false);
   baseSegmentHighlighting = new TrackableBoolean(false, false);
   useTempSegmentStatedColors2d: SharedWatchableValue<boolean>;
@@ -868,6 +876,9 @@ export class SegmentationUserLayer extends Base {
   voxelEditingPreviewRenderScaleHistogram = new RenderScaleHistogram();
   sliceViewRenderScaleTarget = trackableRenderScaleTarget(1);
   codeVisible = new TrackableBoolean(true);
+  brushHashTable = new BrushHashTable();
+  segmentAttributes = new SegmentAttributeTables();
+  brushStrokeLayer: BrushStrokeLayer | null = null;
 
   graphConnection = new WatchableValue<
     SegmentationGraphSourceConnection | undefined
@@ -1129,6 +1140,7 @@ export class SegmentationUserLayer extends Base {
             renderScaleTarget: this.sliceViewRenderScaleTarget,
             renderScaleHistogram: this.sliceViewRenderScaleHistogram,
             localPosition: this.localPosition,
+            brushHashTable: this.brushHashTable,
           });
           loadedSubsource.addRenderLayer(segmentationRenderLayer);
           context.registerDisposer(
@@ -1242,6 +1254,32 @@ export class SegmentationUserLayer extends Base {
               });
             });
           }
+        }
+      } else if (local === LocalDataSource.brushStrokes) {
+        if (!isGroupRoot) {
+          loadedSubsource.deactivate(
+            "Not supported on non-root linked segmentation layers",
+          );
+        } else {
+          loadedSubsource.activate((refCounted) => {
+            // Optimistic paint has no dedicated render layer: in 2D the
+            // canonical SegmentationRenderLayer's brush hijack draws painted
+            // voxels through its own shader (so they get the layer opacity + the
+            // focused-instance highlight and stay in lock-step with disk data),
+            // and in 3D the perspective panel reads this BrushStrokeLayer
+            // directly. We just keep the BrushStrokeLayer alive as the
+            // brush-data + redraw hub; repaints on edits come from
+            // brushHashTable.changed, wired in SegmentationRenderLayer.
+            const brushStrokeLayer = new BrushStrokeLayer(
+              this.brushHashTable,
+              this.displayState,
+            );
+            this.brushStrokeLayer = brushStrokeLayer;
+            refCounted.registerDisposer(brushStrokeLayer);
+            refCounted.registerDisposer(() => {
+              this.brushStrokeLayer = null;
+            });
+          });
         }
       } else {
         loadedSubsource.deactivate("Not compatible with segmentation layer");

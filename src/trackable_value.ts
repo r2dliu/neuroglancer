@@ -77,7 +77,7 @@ export class TrackableValue<T> extends WatchableValue<T> implements Trackable {
   }
 }
 
-class DerivedWatchableValue<U>
+export class DerivedWatchableValue<U>
   extends RefCounted
   implements WatchableValueInterface<U>
 {
@@ -105,7 +105,7 @@ export function makeDerivedWatchableValue<U, T extends any[]>(
   return new DerivedWatchableValue(f, ws);
 }
 
-class CachedLazyDerivedWatchableValue<U>
+export class CachedLazyDerivedWatchableValue<U>
   extends RefCounted
   implements WatchableValueInterface<U>
 {

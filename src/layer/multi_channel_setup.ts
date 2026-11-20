@@ -45,14 +45,22 @@ type MakeLayerFn = (
   spec: any,
 ) => ManagedUserLayer;
 
+// Managed "color" template the multichannel setup writes into every
+// freshly created image-channel layer's `fragmentMain`. Kept byte-for-
+// byte identical to `MANAGED_COLOR_FRAGMENT_MAIN` in
+// `web/src/lib/shaderRender.ts` — the per-layer reconciler is the
+// single source of truth for shader mode/color/LUT, and matching this
+// template means the reconciler's "swap to managed color" is a no-op
+// against fresh layers (no false-positive external-edit reverts).
 const MULTICHANNEL_FRAGMENT_MAIN = `#uicontrol invlerp contrast
 #uicontrol vec3 color color
 void main() {
-  float contrast_value = contrast();
   if (VOLUME_RENDERING) {
+    float contrast_value = contrast(getInterpolatedDataValue());
     emitRGBA(vec4(color * contrast_value, contrast_value));
   }
   else {
+    float contrast_value = contrast();
     emitRGB(color * contrast_value);
   }
 }
@@ -64,8 +72,6 @@ const DEFAULT_ARRAY_COLORS = new Map([
   [2, new Float32Array([0, 0, 1])],
   [3, new Float32Array([1, 1, 1])],
 ]);
-
-const DEFAULT_VOLUME_RENDERING_SAMPLES = 256;
 
 /**
  * Rename each output dim with ^ to be ' instead.
@@ -169,12 +175,9 @@ function getLayerChannelMetadata(
 }
 
 function checkLayerInputMetadataForErrors(layer: ManagedUserLayer): boolean {
-  // If all the ranges are the same and the colors are black, then we can
-  // assume that the input metadata is not set up correctly
   const channels = getChannelMetadata(layer);
   if (!channels || channels.length === 0) return true;
 
-  // Check if all ranges that are defined are the same
   const definedRanges = channels
     .map((channel) => channel.range)
     .filter((range): range is [number, number] => range !== undefined);
@@ -277,7 +280,6 @@ function setupLayerPostCreation(
     const debouncedCheckDataReady = debounce(() => {
       checkDataReady();
     }, 500);
-    // The first wait should give some time for data to load in
     const firstCheckForData = debounce(() => {
       checkDataReady();
     }, 1200);
@@ -285,7 +287,10 @@ function setupLayerPostCreation(
   };
 
   const setupWidgetsFunction = () => {
-    shaderControlValue.get("color")!.trackable.value = determineColor();
+    const colorEntry = shaderControlValue.get("color");
+    if (colorEntry) {
+      colorEntry.trackable.value = determineColor();
+    }
     if (
       channel?.range !== undefined &&
       channel?.window !== undefined &&
@@ -315,20 +320,21 @@ function setupLayerPostCreation(
     );
   };
 
-  const setVolumeRenderingSamples = () => {
-    userImageLayer.volumeRenderingDepthSamplesTarget.value =
-      DEFAULT_VOLUME_RENDERING_SAMPLES;
-  };
+  // Don't set volumeRenderingDepthSamplesTarget here — the host app
+  // (Ichnaea) owns this value via its viewport store + applier hook. If we
+  // wrote a default here, it would race with the host's hook and stomp the
+  // user's chosen samples value when channel layers finish initializing.
 
   const set2DBlending = () => {
     userImageLayer.blendMode.value = BLEND_MODES.ADDITIVE;
     userImageLayer.opacity.value = 1.0;
   };
 
-  postCreationSetupFunctions.push(setVolumeRenderingSamples);
   postCreationSetupFunctions.push(set2DBlending);
   postCreationSetupFunctions.push(setShaderDefaultsWhenReady);
 }
+
+const setupComplete = new WeakSet<ManagedUserLayer>();
 
 export function createImageLayerAsMultiChannel(
   managedLayer: Borrowed<ManagedUserLayer>,
@@ -336,6 +342,7 @@ export function createImageLayerAsMultiChannel(
   checkForMultipleChannels: boolean = false,
 ) {
   if (managedLayer.layer?.type !== "image") return;
+  if (setupComplete.has(managedLayer)) return;
 
   renameChannelDimensions(managedLayer.layer);
   const { dataLocalChannels, lowerBounds, upperBounds, localDimensionRank } =
@@ -343,6 +350,8 @@ export function createImageLayerAsMultiChannel(
   const totalLocalChannels = Math.max(dataLocalChannels, 1);
 
   if (totalLocalChannels <= 1 && checkForMultipleChannels) return;
+
+  setupComplete.add(managedLayer);
 
   const ranges = [];
   for (let i = 0; i < localDimensionRank; i++) {
@@ -371,14 +380,14 @@ export function createImageLayerAsMultiChannel(
   for (let i = 0; i < totalLocalChannels; i++) {
     const channelMetadata = getLayerChannelMetadata(managedLayer, i);
     const { localPosition, chanName } = getAdjustedLocalPositionAndName(i);
-    let nameSuffix = "";
+    let name: string;
     if (channelMetadata?.label) {
-      nameSuffix = ` ${channelMetadata.label}`;
+      name = channelMetadata.label;
     } else if (totalLocalChannels !== 1) {
-      nameSuffix = ` c${chanName}`;
+      name = `${startingName} c${chanName}`;
+    } else {
+      name = startingName;
     }
-
-    const name = `${startingName}${nameSuffix}`;
     let addedLayer: any = managedLayer;
     if (i == 0) {
       changeLayerName(managedLayer, name);

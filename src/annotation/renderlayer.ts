@@ -15,9 +15,10 @@
  */
 
 import "#src/annotation/bounding_box.js";
-import "#src/annotation/line.js";
-import "#src/annotation/point.js";
 import "#src/annotation/ellipsoid.js";
+import "#src/annotation/line.js";
+import "#src/annotation/oriented_bounding_box.js";
+import "#src/annotation/point.js";
 import "#src/annotation/polyline.js";
 
 import type {
@@ -352,6 +353,9 @@ export class AnnotationLayer extends RefCounted {
       this.hoverState.changed.add(this.redrawNeeded.dispatch),
     );
     this.registerDisposer(
+      displayState.selectedAnnotation.changed.add(this.redrawNeeded.dispatch),
+    );
+    this.registerDisposer(
       this.transform.changed.add(this.redrawNeeded.dispatch),
     );
   }
@@ -666,6 +670,7 @@ function AnnotationRenderLayer<
         renderContext,
         attachment,
         selectedIndex: 0,
+        selectedInstance: -1,
         basePickId: pickId,
         buffer: chunk.buffer!,
         bufferOffset: 0,
@@ -680,6 +685,7 @@ function AnnotationRenderLayer<
         chunkDisplayTransform,
       };
       const computeHistograms =
+        !renderContext.isForeground &&
         this.base.state.displayState.shaderControls.histogramSpecifications
           .visibleHistograms > 0;
       for (const annotationType of annotationTypes) {
@@ -698,12 +704,18 @@ function AnnotationRenderLayer<
                   cumulativeInstanceCount * handler.pickIdsPerInstance;
               } else {
                 selectedIndex = index * handler.pickIdsPerInstance;
+                // Highlight the specific hovered sub-part (gizmo handle, corner,
+                // edge, endpoint, ...) rather than the whole annotation.
+                selectedIndex += hoverValue.partIndex;
               }
-              // If we wanted to include the partIndex, we would add:
-              // selectedIndex += hoverValue.partIndex;
-              // Though for polylines this would be more complicated
             }
           }
+          const selectedAnnotationId =
+            base.state.displayState.selectedAnnotation.value;
+          const selectedInstance =
+            selectedAnnotationId !== undefined
+              ? idMap.get(selectedAnnotationId)
+              : undefined;
           count = Math.round(count * drawFraction);
           // Adjust the count slightly if needed to ensure we always
           // Draw a full polyline if present
@@ -719,8 +731,13 @@ function AnnotationRenderLayer<
           context.count = count;
           context.bufferOffset = typeToOffset[annotationType];
           context.selectedIndex = selectedIndex;
+          context.selectedInstance = selectedInstance ?? -1;
           const renderHelper = this.renderHelpers[annotationType];
-          renderHelper.draw(context);
+          if (renderContext.isForeground) {
+            renderHelper.drawForeground(context);
+          } else {
+            renderHelper.draw(context);
+          }
           if (computeHistograms) {
             renderHelper.computeHistograms(context, renderContext.frameNumber);
             renderContext.bindFramebuffer();

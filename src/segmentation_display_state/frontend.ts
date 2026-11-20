@@ -28,6 +28,12 @@ import type {
   SegmentColorUserShaderManager,
 } from "#src/segment_color.js";
 import { getCssColor } from "#src/segment_color.js";
+import {
+  attributeClassColor,
+  attributeColor,
+  isMeshSegment,
+  type SegmentAttributeTables,
+} from "#src/segmentation_display_state/attributes.js";
 import type { VisibleSegmentsState } from "#src/segmentation_display_state/base.js";
 import {
   forEachVisibleSegment,
@@ -203,6 +209,12 @@ export interface SegmentationDisplayState {
   segmentSelectionState: SegmentSelectionState;
   saturation: TrackableAlphaValue;
   hoverHighlight: WatchableValueInterface<boolean>;
+  // Focus highlight: when set, every segment EXCEPT this one renders at
+  // `focusDim` × its alpha — "dim everything else" for a selected instance.
+  // Independent of visibleSegments (which the hide feature owns), so the two
+  // compose. Optional so non-layer implementers of this interface needn't set it.
+  focusedSegment?: WatchableValueInterface<bigint | null>;
+  focusDim?: WatchableValueInterface<number>;
   baseSegmentColoring: WatchableValueInterface<boolean>;
   baseSegmentHighlighting: WatchableValueInterface<boolean>;
   segmentationGroupState: WatchableValueInterface<SegmentationGroupState>;
@@ -235,6 +247,7 @@ export interface SegmentationDisplayState {
   segmentDefaultColor: WatchableValueInterface<vec3 | undefined>;
   tempSegmentDefaultColor2d: WatchableValueInterface<vec3 | vec4 | undefined>;
   highlightColor: WatchableValueInterface<vec4 | undefined>;
+  segmentAttributes?: SegmentAttributeTables;
 }
 
 export function resetTemporaryVisibleSegmentsState(
@@ -1138,6 +1151,15 @@ export function registerRedrawWhenSegmentationDisplayState3DChanged(
       renderLayer.redrawNeeded.dispatch,
     ),
   );
+  const { segmentAttributes } = displayState;
+  if (segmentAttributes !== undefined) {
+    renderLayer.registerDisposer(
+      segmentAttributes.changed.add(renderLayer.redrawNeeded.dispatch),
+    );
+    renderLayer.registerDisposer(
+      segmentAttributes.enabled.changed.add(renderLayer.redrawNeeded.dispatch),
+    );
+  }
 }
 
 /**
@@ -1154,6 +1176,14 @@ export function getBaseObjectColor(
     color.fill(1);
     return color;
   }
+  const { segmentAttributes } = displayState;
+  if (
+    segmentAttributes?.enabled.value &&
+    attributeClassColor(segmentAttributes, objectId, color)
+  ) {
+    color[3] = 1;
+    return color;
+  }
   const { getShaderBaseSegmentColor } = displayState;
   return getShaderBaseSegmentColor(objectId) ?? color;
 }
@@ -1168,8 +1198,17 @@ export function getBaseObjectColors(
     colors.fill(1);
     return colors;
   }
-  const { getShaderBaseSegmentColors } = displayState;
-  return getShaderBaseSegmentColors(objectIds, colors) ?? colors;
+  const { getShaderBaseSegmentColors, segmentAttributes } = displayState;
+  const result = getShaderBaseSegmentColors(objectIds, colors) ?? colors;
+  if (segmentAttributes?.enabled.value) {
+    objectIds.forEach((id, i) => {
+      if (attributeClassColor(segmentAttributes, id, tempColor)) {
+        result.set(tempColor.subarray(0, 3), 4 * i);
+        result[4 * i + 3] = 1;
+      }
+    });
+  }
+  return result;
 }
 
 export function sendVisibleSegmentsState(
@@ -1224,20 +1263,37 @@ export function forEachVisibleSegmentToDraw(
   displayState: SegmentationDisplayState3D,
   renderLayer: RenderLayer,
   pickIDs: PickIDManager | undefined,
+  // `attributeColor`: while the layer's attribute tables are enabled, the
+  // class color the segment draws in (segments they don't draw are skipped).
   callback: (
     objectId: bigint,
     pickIndex: number | undefined,
     colorObjectId: bigint,
+    attributeColor: Float32Array | undefined,
   ) => void,
 ) {
+  const baseSegmentColoring = displayState.baseSegmentColoring.value;
+  const attributes = displayState.segmentAttributes?.enabled.value
+    ? displayState.segmentAttributes
+    : undefined;
   forEachVisibleSegment(
     displayState.segmentationGroupState.value,
     (objectId, rootObjectId) => {
+      let colorId = baseSegmentColoring ? objectId : rootObjectId;
+      if (attributes !== undefined && !isMeshSegment(objectId)) {
+        // Any id of the group may be the one whose attributes are held.
+        const drawn = [colorId, objectId, rootObjectId].find((id) =>
+          attributeColor(attributes, id, tempColor),
+        );
+        if (drawn === undefined) return;
+        colorId = drawn;
+      }
       const pickIndex = pickIDs?.registerUint64(renderLayer, objectId);
-      const colorObjectId = displayState.baseSegmentColoring.value
-        ? objectId
-        : rootObjectId;
-      callback(objectId, pickIndex, colorObjectId);
+      const classColor =
+        attributes !== undefined && !isMeshSegment(objectId)
+          ? tempColor
+          : undefined;
+      callback(objectId, pickIndex, colorId, classColor);
     },
   );
 }

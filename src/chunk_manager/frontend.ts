@@ -19,11 +19,15 @@ import type {
   LayerChunkProgressInfo,
 } from "#src/chunk_manager/base.js";
 import {
+  CHUNK_FAILED_RPC_ID,
   CHUNK_SOURCE_INVALIDATE_CHUNKS_RPC_ID,
   CHUNK_LAYER_STATISTICS_RPC_ID,
   CHUNK_MANAGER_RPC_ID,
   CHUNK_QUEUE_MANAGER_RPC_ID,
+  CHUNK_SOURCE_INVALIDATE_INDEX_RPC_ID,
   CHUNK_SOURCE_INVALIDATE_RPC_ID,
+  CHUNK_SOURCE_SOFT_INVALIDATE_RPC_ID,
+  CHUNK_SOURCE_SOFT_INVALIDATE_COMPLETE_RPC_ID,
   ChunkState,
   REQUEST_CHUNK_STATISTICS_RPC_ID,
 } from "#src/chunk_manager/base.js";
@@ -34,7 +38,7 @@ import type { Borrowed } from "#src/util/disposable.js";
 import { stableStringify } from "#src/util/json.js";
 import { StringMemoize } from "#src/util/memoize.js";
 import { getObjectId } from "#src/util/object_id.js";
-import { NullarySignal } from "#src/util/signal.js";
+import { NullarySignal, Signal } from "#src/util/signal.js";
 import type { GL } from "#src/webgl/context.js";
 import type { RPC, RPCPromise } from "#src/worker_rpc.js";
 import {
@@ -45,6 +49,18 @@ import {
 } from "#src/worker_rpc.js";
 
 const DEBUG_CHUNK_UPDATES = false;
+
+// Each `softInvalidateCache` call gets a token, which the worker completes.
+let nextSoftInvalidateToken = 0;
+const pendingSoftInvalidations = new Map<number, () => void>();
+const SOFT_INVALIDATE_TIMEOUT_MS = 15000;
+
+registerRPC(CHUNK_SOURCE_SOFT_INVALIDATE_COMPLETE_RPC_ID, function (x) {
+  // Queued behind the source's chunk updates, so it resolves only once the
+  // refetched chunks are applied.
+  if (this.get(x.source) === undefined) return;
+  updateChunk(this, { source: x.source, softInvalidateComplete: x.token });
+});
 
 export class Chunk {
   state = ChunkState.SYSTEM_MEMORY;
@@ -100,6 +116,12 @@ export interface FrameNumberCounter {
 @registerSharedObjectOwner(CHUNK_QUEUE_MANAGER_RPC_ID)
 export class ChunkQueueManager extends SharedObject {
   visibleChunksChanged = new NullarySignal();
+  chunkEvents = {
+    added: new Signal<
+      (source: ChunkSource, key: string, chunk: Chunk) => void
+    >(),
+    removed: new Signal<(source: ChunkSource, key: string) => void>(),
+  };
   pendingChunkUpdates: any = null;
   pendingChunkUpdatesTail: any = null;
 
@@ -241,7 +263,9 @@ export class ChunkQueueManager extends SharedObject {
           `${update.id} ${update.state}`,
       );
     }
-    if (update.promise !== undefined) {
+    if (update.softInvalidateComplete !== undefined) {
+      pendingSoftInvalidations.get(update.softInvalidateComplete)?.();
+    } else if (update.promise !== undefined) {
       this.handleFetch_(source, update);
     } else if (update.id === undefined) {
       // Invalidate source.
@@ -253,7 +277,8 @@ export class ChunkQueueManager extends SharedObject {
       const newState: number = update.state;
       if (newState === ChunkState.EXPIRED) {
         // FIXME: maybe use freeList for chunks here
-        // The frontend may already have dropped a chunk it invalidated itself.
+        // The frontend may already have dropped a chunk it invalidated itself,
+        // and a dropped soft-refetch chunk may never have reached it.
         const chunk = source.chunks.get(update.id);
         if (chunk !== undefined) {
           if (chunk.state === ChunkState.GPU_MEMORY) {
@@ -265,6 +290,9 @@ export class ChunkQueueManager extends SharedObject {
         let chunk: Chunk;
         const key = update.id;
         if (update.new) {
+          // A soft-invalidate refetch replaces a copy still held here.
+          const old = source.chunks.get(key);
+          if (old?.state === ChunkState.GPU_MEMORY) old.freeGPUMemory(this.gl);
           chunk = source.getChunk(update);
           source.addChunk(key, chunk);
         } else {
@@ -356,6 +384,13 @@ registerRPC("Chunk.update", function (x) {
   updateChunk(this, x);
 });
 
+registerRPC(CHUNK_FAILED_RPC_ID, function (x) {
+  const source = this.get(x.source) as ChunkSource | undefined;
+  if (source === undefined || source.chunks.has(x.key)) return;
+  source.failedChunks.add(x.key);
+  source.chunkManager.chunkQueueManager.visibleChunksChanged.dispatch();
+});
+
 registerPromiseRPC("Chunk.retrieve", function (x, signal): RPCPromise<any> {
   return new Promise<{ value: any }>((resolve, reject) => {
     x.promise = { resolve, reject, signal };
@@ -437,6 +472,8 @@ export interface ChunkRequesterState {
 export class ChunkSource extends SharedObject {
   declare OPTIONS: object;
   chunks = new Map<string, Chunk>();
+  // Keys whose last download failed and that were never received.
+  failedChunks = new Set<string>();
 
   chunkRequesters: Map<string, ChunkRequesterState[]> | undefined;
 
@@ -469,6 +506,7 @@ export class ChunkSource extends SharedObject {
       chunk.freeGPUMemory(this.gl);
     }
     this.chunks.delete(key);
+    this.chunkManager.chunkQueueManager.chunkEvents.removed.dispatch(this, key);
   }
 
   /**
@@ -502,6 +540,18 @@ export class ChunkSource extends SharedObject {
 
   addChunk(key: string, chunk: Chunk) {
     this.chunks.set(key, chunk);
+    this.failedChunks.delete(key);
+    this.chunkManager.chunkQueueManager.chunkEvents.added.dispatch(
+      this,
+      key,
+      chunk,
+    );
+  }
+
+  disposed() {
+    const { removed } = this.chunkManager.chunkQueueManager.chunkEvents;
+    for (const key of this.chunks.keys()) removed.dispatch(this, key);
+    super.disposed();
   }
 
   /**
@@ -516,6 +566,41 @@ export class ChunkSource extends SharedObject {
    */
   invalidateCache(): void {
     this.rpc!.invoke(CHUNK_SOURCE_INVALIDATE_RPC_ID, { id: this.rpcId });
+  }
+
+  invalidateIndexCache() {
+    this.rpc!.invoke(CHUNK_SOURCE_INVALIDATE_INDEX_RPC_ID, { id: this.rpcId });
+  }
+
+  // Re-fetches every chunk, or only those with `keys`, while the current ones
+  // stay drawn until replaced. Resolves once every re-queued chunk has reached
+  // the frontend or been dropped (or after a safety timeout).
+  softInvalidateCache(keys?: readonly string[]): Promise<void> {
+    // The backend re-queues failed chunks too; a failure seen after this is a
+    // fresh one.
+    if (keys === undefined) {
+      this.failedChunks.clear();
+    } else {
+      for (const key of keys) this.failedChunks.delete(key);
+    }
+    const token = ++nextSoftInvalidateToken;
+    this.rpc!.invoke(CHUNK_SOURCE_SOFT_INVALIDATE_RPC_ID, {
+      id: this.rpcId,
+      token,
+      keys,
+    });
+    return new Promise<void>((resolve) => {
+      const finish = () => {
+        if (pendingSoftInvalidations.delete(token)) {
+          clearTimeout(timer);
+          resolve();
+        }
+      };
+      // Safety net: resolve anyway if the completion signal never arrives
+      // (e.g. a re-queued chunk was evicted before it could re-download).
+      const timer = setTimeout(finish, SOFT_INVALIDATE_TIMEOUT_MS);
+      pendingSoftInvalidations.set(token, finish);
+    });
   }
 
   static encodeOptions(_options: object): { [key: string]: any } {

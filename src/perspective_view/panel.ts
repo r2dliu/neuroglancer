@@ -19,6 +19,7 @@ import "#src/perspective_view/panel.css";
 
 import type { PerspectiveViewAnnotationLayer } from "#src/annotation/renderlayer.js";
 import { AxesLineHelper, computeAxisLineMatrix } from "#src/axes_lines.js";
+import type { BrushStrokeLayer } from "#src/brush_stroke/renderlayer.js";
 import type { DisplayContext } from "#src/display_context.js";
 import { applyRenderViewportToProjectionMatrix } from "#src/display_context.js";
 import type { VisibleRenderLayerTracker } from "#src/layer/index.js";
@@ -181,6 +182,22 @@ const tempVec3 = vec3.create();
 const tempVec4 = vec4.create();
 const tempMat4 = mat4.create();
 
+function findBrushStrokeLayers(
+  viewer: PerspectiveViewerState,
+): BrushStrokeLayer[] {
+  const result: BrushStrokeLayer[] = [];
+  for (const managedLayer of viewer.layerManager.managedLayers) {
+    const userLayer = (
+      managedLayer as { layer?: { brushStrokeLayer?: BrushStrokeLayer | null } }
+    ).layer;
+    const brushStrokeLayer = userLayer?.brushStrokeLayer;
+    if (brushStrokeLayer) {
+      result.push(brushStrokeLayer);
+    }
+  }
+  return result;
+}
+
 // Copy the OIT values to the main color buffer
 function defineTransparencyCopyShader(builder: ShaderBuilder) {
   builder.addOutputBuffer("vec4", "v4f_fragColor", null);
@@ -269,6 +286,7 @@ class PerspectiveViewState extends PerspectiveViewStateBase {
 }
 
 export class PerspectivePanel extends RenderedDataPanel {
+  readonly kind = "perspective";
   declare viewer: PerspectiveViewerState;
   sliceViewRenderHelper: SliceViewRenderHelper;
 
@@ -752,6 +770,7 @@ export class PerspectivePanel extends RenderedDataPanel {
     unsnappedPosition.set(mousePosition);
     pickingData.pickIDs.setMouseState(mouseState, resolvedPick.pickValue);
     mouseState.displayDimensions = displayDimensions;
+    mouseState.pose = undefined;
     mouseState.setActive(true);
   }
 
@@ -1030,21 +1049,13 @@ export class PerspectivePanel extends RenderedDataPanel {
     this.hasVolumeRendering = hasVolumeRendering;
     this.drawSliceViews(renderContext);
 
-    if (hasAnnotation) {
-      // Render annotations with blending enabled.
-
-      gl.enable(WebGL2RenderingContext.BLEND);
-      gl.depthFunc(WebGL2RenderingContext.LEQUAL);
-      gl.blendFunc(
-        WebGL2RenderingContext.SRC_ALPHA,
-        WebGL2RenderingContext.ONE_MINUS_SRC_ALPHA,
-      );
+    const drawAnnotationLayers = () => {
       for (const [renderLayer, attachment] of visibleLayers) {
         if (renderLayer.isAnnotation) {
           const annotationRenderLayer =
             renderLayer as PerspectiveViewAnnotationLayer;
           if (
-            annotationRenderLayer.base.state.displayState.disablePicking.value
+            annotationRenderLayer.base?.state.displayState.disablePicking.value
           ) {
             disablePicking();
             annotationRenderLayer.draw(renderContext, attachment);
@@ -1054,6 +1065,16 @@ export class PerspectivePanel extends RenderedDataPanel {
           }
         }
       }
+    };
+
+    if (hasAnnotation) {
+      gl.enable(WebGL2RenderingContext.BLEND);
+      gl.depthFunc(WebGL2RenderingContext.LEQUAL);
+      gl.blendFunc(
+        WebGL2RenderingContext.SRC_ALPHA,
+        WebGL2RenderingContext.ONE_MINUS_SRC_ALPHA,
+      );
+      drawAnnotationLayers();
       gl.depthFunc(WebGL2RenderingContext.LESS);
       gl.disable(WebGL2RenderingContext.BLEND);
     }
@@ -1379,6 +1400,26 @@ export class PerspectivePanel extends RenderedDataPanel {
     gl.stencilMask(0xffffffff);
     gl.disable(WebGL2RenderingContext.STENCIL_TEST);
 
+    if (hasAnnotation) {
+      renderContext.emitter = perspectivePanelEmit;
+      renderContext.emitColor = true;
+      renderContext.emitPickID = true;
+      renderContext.isForeground = true;
+      bindFramebuffer();
+      gl.disable(WebGL2RenderingContext.DEPTH_TEST);
+      gl.depthMask(false);
+      gl.enable(WebGL2RenderingContext.BLEND);
+      gl.blendFunc(
+        WebGL2RenderingContext.SRC_ALPHA,
+        WebGL2RenderingContext.ONE_MINUS_SRC_ALPHA,
+      );
+      drawAnnotationLayers();
+      renderContext.isForeground = false;
+      gl.disable(WebGL2RenderingContext.BLEND);
+      gl.depthMask(true);
+      gl.enable(WebGL2RenderingContext.DEPTH_TEST);
+    }
+
     if (
       this.viewer.showScaleBar.value &&
       this.viewer.orthographicProjection.value
@@ -1424,6 +1465,8 @@ export class PerspectivePanel extends RenderedDataPanel {
     } = renderContext;
 
     const showSliceViews = this.viewer.showSliceViews.value;
+    const brushStrokeLayers = findBrushStrokeLayers(this.viewer);
+    const inlineBrushLayer: BrushStrokeLayer | undefined = brushStrokeLayers[0];
     for (const [sliceView, unconditional] of this.sliceViews) {
       if (!unconditional && !showSliceViews) {
         continue;
@@ -1455,6 +1498,18 @@ export class PerspectivePanel extends RenderedDataPanel {
       backgroundColor[1] = crossSectionBackgroundColor[1];
       backgroundColor[2] = crossSectionBackgroundColor[2];
       backgroundColor[3] = 1;
+      const invViewProj =
+        sliceView.projectionParameters.value.invViewProjectionMat;
+      const { pickTarget } = sliceView;
+      const pickID =
+        pickTarget !== undefined && renderContext.emitPickID
+          ? renderContext.pickIDs.register(
+              pickTarget.renderLayer,
+              pickTarget.part + 1,
+            ) + pickTarget.part
+          : 0;
+      // Inline draw: sampled slice-view framebuffer + first
+      // segmentation layer's brush (if any).
       sliceViewRenderHelper.draw(
         sliceView.offscreenFramebuffer.colorBuffers[0].texture,
         mat,
@@ -1464,7 +1519,43 @@ export class PerspectivePanel extends RenderedDataPanel {
         0,
         1,
         1,
+        invViewProj,
+        inlineBrushLayer,
+        false,
+        sliceView.clipBounds,
+        pickID,
       );
+      // Overlay pass per additional segmentation layer — brush hits
+      // emit, misses `discard`, so each layer's brush composites on
+      // top of the previous frame without overwriting it.
+      //
+      // Switch depth test to LEQUAL: the overlay quad is at the
+      // exact same depth as the inline draw above (same vertex
+      // shader, same plane), so the default `gl.LESS` would reject
+      // every fragment — the brush wouldn't show. Restored to LESS
+      // after the loop so we don't change global state for the rest
+      // of the perspective render.
+      if (brushStrokeLayers.length > 1) {
+        this.gl.depthFunc(WebGL2RenderingContext.LEQUAL);
+        for (let i = 1; i < brushStrokeLayers.length; ++i) {
+          sliceViewRenderHelper.draw(
+            sliceView.offscreenFramebuffer.colorBuffers[0].texture,
+            mat,
+            vec4.fromValues(factor, factor, factor, 1),
+            tempVec4,
+            0,
+            0,
+            1,
+            1,
+            invViewProj,
+            brushStrokeLayers[i],
+            /*brushOverlayOnly=*/ true,
+            sliceView.clipBounds,
+            pickID,
+          );
+        }
+        this.gl.depthFunc(WebGL2RenderingContext.LESS);
+      }
     }
   }
 

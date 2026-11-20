@@ -20,6 +20,7 @@ import svg_arrowLeft from "ikonate/icons/arrow-left.svg?raw";
 import svg_arrowRight from "ikonate/icons/arrow-right.svg?raw";
 import type { DisplayContext } from "#src/display_context.js";
 import { IndirectRenderedPanel } from "#src/display_context.js";
+import { luts } from "#src/luts/luts.js";
 import {
   makeCachedDerivedWatchableValue,
   makeCachedLazyDerivedWatchableValue,
@@ -510,6 +511,7 @@ class ColorLegendPanel extends IndirectRenderedPanel {
           builder.addOutputBuffer("vec4", "v4f_fragData0", 0);
           builder.addAttribute("vec2", "aVertexPosition");
           builder.addUniform("float", "uLegendOffset");
+          builder.addUniform("vec4", "lut", 256);
           builder.addVarying("float", "vLinearPosition");
           builder.setVertexMain(`
 gl_Position = vec4(aVertexPosition, 0.0, 1.0);
@@ -575,6 +577,16 @@ ${shaderDataType} getInterpolatedDataValue(int dummyChannel) {
       shader.uniform("uLegendOffset"),
       Number.isFinite(legendOffset) ? legendOffset : 0,
     );
+
+    const lutName =
+      (globalThis as any).lutName === undefined
+        ? "Tricolor 1"
+        : (globalThis as any).lutName;
+    gl.uniform4fv(
+      shader.uniform("lut"),
+      new Float32Array((luts as any)[lutName]),
+    );
+
     gl.blendFunc(
       WebGL2RenderingContext.SRC_ALPHA,
       WebGL2RenderingContext.ONE_MINUS_SRC_ALPHA,

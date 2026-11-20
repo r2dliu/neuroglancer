@@ -18,6 +18,7 @@ import "#src/viewer.css";
 import "#src/ui/layer_data_sources_tab.js";
 import "#src/noselect.css";
 import { debounce } from "lodash-es";
+import { registerOrientedBoundingBoxToolForViewer } from "#src/annotation/oriented_bounding_box_tool.js";
 import {
   makeCoordinateSpace,
   TrackableCoordinateSpace,
@@ -44,6 +45,7 @@ import {
   TrackableDataSelectionState,
   UserLayer,
 } from "#src/layer/index.js";
+import { registerObliqueSliceToolForViewer } from "#src/layer/oblique_slice/tool.js";
 import { LayerGroupViewer } from "#src/layer_group_viewer.js";
 import { RootLayoutContainer } from "#src/layer_groups_layout.js";
 import {
@@ -63,6 +65,9 @@ import {
 import { overlaysOpen } from "#src/overlay.js";
 import { ScreenshotHandler } from "#src/python_integration/screenshots.js";
 import { allRenderLayerRoles, RenderLayerRole } from "#src/renderlayer.js";
+import { registerBoundingBoxToolForViewer } from "#src/sliceview/bbox.js";
+import { registerPaintToolsForViewer } from "#src/sliceview/paint_tool.js";
+import { registerPointToolForViewer } from "#src/sliceview/point_tool.js";
 import { StatusMessage } from "#src/status.js";
 import { TrackableBoolean } from "#src/trackable_boolean.js";
 import type { WatchableValueInterface } from "#src/trackable_value.js";
@@ -80,7 +85,11 @@ import { copySelectionPositionToClipboard } from "#src/ui/selection_details.js";
 import type { SidePanelManager } from "#src/ui/side_panel.js";
 import { StateEditorDialog } from "#src/ui/state_editor.js";
 import { StatisticsDisplayState } from "#src/ui/statistics.js";
-import { GlobalToolBinder, LocalToolBinder } from "#src/ui/tool.js";
+import {
+  GlobalToolBinder,
+  LocalToolBinder,
+  restoreTool,
+} from "#src/ui/tool.js";
 import { MultiToolPaletteState } from "#src/ui/tool_palette.js";
 import { encodeStateAsFragment } from "#src/ui/url_hash_binding.js";
 import { ViewerChrome } from "#src/ui/viewer_chrome.js";
@@ -989,6 +998,13 @@ export class Viewer extends RefCounted implements ViewerState {
   activateTool(uppercase: string) {
     this.globalToolBinder.activate(uppercase);
   }
+  activateUnboundTool(toolJson: unknown) {
+    const tool = restoreTool(this, toolJson);
+    return tool && this.globalToolBinder.activateUnbound(tool);
+  }
+  deactivateTool() {
+    this.globalToolBinder.deactivate_();
+  }
 
   deactivateTools() {
     this.globalToolBinder.deactivate();
@@ -1057,3 +1073,8 @@ export class Viewer extends RefCounted implements ViewerState {
 registerDimensionToolForViewer(Viewer);
 registerDimensionToolForLayerGroupViewer(LayerGroupViewer);
 registerDimensionToolForUserLayer(UserLayer);
+registerPaintToolsForViewer(Viewer);
+registerBoundingBoxToolForViewer(Viewer);
+registerPointToolForViewer(Viewer);
+registerOrientedBoundingBoxToolForViewer(Viewer);
+registerObliqueSliceToolForViewer(Viewer);

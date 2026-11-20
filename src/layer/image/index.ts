@@ -36,6 +36,7 @@ import {
 import type { LoadedDataSubsource } from "#src/layer/layer_data_source.js";
 import { registerVoxelEditingLayerControls } from "#src/layer/voxel_editing/controls.js";
 import { UserLayerWithVoxelEditingMixin } from "#src/layer/voxel_editing/index.js";
+import { luts } from "#src/luts/luts.js";
 import { Overlay } from "#src/overlay.js";
 import type { RenderLayerTransformOrError } from "#src/render_coordinate_transform.js";
 import { getChannelSpace } from "#src/render_coordinate_transform.js";
@@ -70,6 +71,7 @@ import type { Borrowed } from "#src/util/disposable.js";
 import { makeValueOrError } from "#src/util/error.js";
 import { verifyFloat01, verifyOptionalObjectProperty } from "#src/util/json.js";
 import { TrackableEnum } from "#src/util/trackable_enum.js";
+import { TrackableVolumeClipBounds } from "#src/volume_rendering/trackable_volume_clip_bounds.js";
 import {
   trackableShaderModeValue,
   VolumeRenderingModes,
@@ -128,6 +130,7 @@ const VOLUME_RENDERING_DEPTH_SAMPLES_JSON_KEY = "volumeRenderingDepthSamples";
 const SLICE_SECTION_JSON_KEY = "sliceExpanded";
 const VOLUME_RENDERING_SECTION_JSON_KEY = "volumeRenderingExpanded";
 const SHADER_SECTION_JSON_KEY = "shaderExpanded";
+const VOLUME_RENDERING_CLIP_BOUNDS_JSON_KEY = "volumeRenderingClipBounds";
 
 export interface ImageLayerSelectionState extends UserLayerSelectionState {
   value: any;
@@ -177,6 +180,7 @@ export class ImageUserLayer extends Base {
     ),
   );
   volumeRenderingMode = trackableShaderModeValue();
+  volumeRenderingClipBounds = new TrackableVolumeClipBounds();
 
   renderingAccordionState = this.accordions.add("rendering", {
     sections: [
@@ -304,6 +308,9 @@ void main() {
       this.specificationChanged.dispatch,
     );
     this.volumeRenderingMode.changed.add(this.specificationChanged.dispatch);
+    this.volumeRenderingClipBounds.changed.add(
+      this.specificationChanged.dispatch,
+    );
     this.volumeRenderingDepthSamplesTarget.changed.add(
       this.specificationChanged.dispatch,
     );
@@ -363,6 +370,7 @@ void main() {
             localPosition: this.localPosition,
             channelCoordinateSpace: this.channelCoordinateSpace,
             mode: this.volumeRenderingMode,
+            clipBounds: this.volumeRenderingClipBounds,
           }),
         );
         context.registerDisposer(
@@ -441,6 +449,11 @@ void main() {
           volumeRenderingDepthSamplesTarget,
         ),
     );
+    verifyOptionalObjectProperty(
+      specification,
+      VOLUME_RENDERING_CLIP_BOUNDS_JSON_KEY,
+      (clipBounds) => this.volumeRenderingClipBounds.restoreState(clipBounds),
+    );
   }
   toJSON() {
     const x = super.toJSON();
@@ -458,6 +471,8 @@ void main() {
     x[VOLUME_RENDERING_GAIN_JSON_KEY] = this.volumeRenderingGain.toJSON();
     x[VOLUME_RENDERING_DEPTH_SAMPLES_JSON_KEY] =
       this.volumeRenderingDepthSamplesTarget.toJSON();
+    x[VOLUME_RENDERING_CLIP_BOUNDS_JSON_KEY] =
+      this.volumeRenderingClipBounds.toJSON();
     return x;
   }
 
@@ -688,6 +703,16 @@ class RenderingOptionsTab extends AccordionTab {
         ),
       ).element,
     );
+
+    const lutSelector = document.createElement("div");
+    lutSelector.innerHTML = `
+      <select onchange="window.lutName=this.options[this.selectedIndex].text">
+        ${Object.keys(luts)
+          .map((lut) => `<option>${lut}</option>`)
+          .join("")}
+      </select>
+    `;
+    element.appendChild(lutSelector);
   }
 }
 

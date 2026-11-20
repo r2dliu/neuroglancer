@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { expect, describe, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   PreprocessedSegmentPropertyMap,
   SegmentPropertyMap,

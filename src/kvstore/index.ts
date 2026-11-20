@@ -38,6 +38,7 @@ export interface ReadResponse {
 export interface DriverReadOptions extends Partial<ProgressOptions> {
   byteRange?: ByteRangeRequest;
   throwIfMissing?: boolean;
+  cache?: RequestCache;
 }
 
 export class NotFoundError extends Error {

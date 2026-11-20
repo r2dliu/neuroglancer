@@ -45,7 +45,8 @@ import { defaultStringCompare } from "#src/util/string.js";
 export type InlineSegmentProperty =
   | InlineSegmentStringProperty
   | InlineSegmentTagsProperty
-  | InlineSegmentNumericalProperty;
+  | InlineSegmentNumericalProperty
+  | InlineSegmentColorProperty;
 
 export interface InlineSegmentStringProperty {
   id: string;
@@ -72,6 +73,12 @@ export interface InlineSegmentNumericalProperty {
   description: string | undefined;
   values: TypedNumberArray<ArrayBuffer>;
   bounds: DataTypeInterval;
+}
+
+export interface InlineSegmentColorProperty {
+  id: string;
+  type: "color";
+  values: (string | null)[];
 }
 
 export interface InlineSegmentPropertyMap {
@@ -133,6 +140,12 @@ function makeIndicesArray(size: number, maxValue: number): IndicesArray {
 function makeUint64PermutationHashMap(values: BigUint64Array): IndicesArray {
   // Use twice the next power of 2 as the size.  This ensures a load factor <= 0.5.
   const numEntries = values.length;
+
+  if (numEntries === 0) {
+    // Return a minimal hash table with size 2 for empty arrays
+    return makeIndicesArray(2, 1);
+  }
+
   const hashCodeBits = Math.ceil(Math.log2(numEntries)) + 1;
   const size = 2 ** hashCodeBits;
   const table = makeIndicesArray(size, numEntries + 1);
@@ -235,6 +248,217 @@ export class PreprocessedSegmentPropertyMap {
     }
     if (label.length === 0) return undefined;
     return label;
+  }
+
+  addSegment(id: bigint, properties: Record<string, any> = {}): number {
+    const { segmentPropertyMap } = this;
+    const { inlineProperties } = segmentPropertyMap;
+
+    if (!inlineProperties) {
+      throw new Error(
+        "Cannot add segment to property map without inlineProperties",
+      );
+    }
+
+    const existingIndex = this.getSegmentInlineIndex(id);
+    if (existingIndex !== -1) {
+      return existingIndex;
+    }
+
+    // Ensure color property exists for migration
+    this.ensureColorProperty();
+
+    const numSegments = inlineProperties.ids.length;
+
+    const newIds = new BigUint64Array(inlineProperties.ids.length + 1);
+    newIds.set(inlineProperties.ids);
+    newIds[inlineProperties.ids.length] = id;
+
+    inlineProperties.ids = newIds;
+
+    for (const property of inlineProperties.properties) {
+      if (
+        property.type === "string" ||
+        property.type === "label" ||
+        property.type === "description"
+      ) {
+        const stringProperty = property as InlineSegmentStringProperty;
+        const newValue = (properties[property.id] as string | undefined) || "";
+        stringProperty.values = [...stringProperty.values, newValue];
+      } else if (property.type === "tags") {
+        const tagsProperty = property as InlineSegmentTagsProperty;
+        const newTags = (properties[property.id] as string[] | undefined) || [];
+
+        let tagValue = "";
+        for (const tag of newTags) {
+          let tagIndex = tagsProperty.tags.indexOf(tag);
+          if (tagIndex === -1) {
+            tagIndex = tagsProperty.tags.length;
+            tagsProperty.tags.push(tag);
+            tagsProperty.tagDescriptions.push("");
+          }
+          tagValue += String.fromCharCode(tagIndex);
+        }
+
+        tagValue = [...tagValue].sort().join("");
+
+        tagsProperty.values = [...tagsProperty.values, tagValue];
+      } else if (property.type === "number") {
+        const numProperty = property as InlineSegmentNumericalProperty;
+        const newValue = properties[property.id] as number | undefined;
+
+        const Constructor = numProperty.values.constructor as any;
+        const newValues = new Constructor(numProperty.values.length + 1);
+        newValues.set(numProperty.values);
+
+        newValues[numProperty.values.length] =
+          newValue !== undefined ? newValue : NaN;
+        numProperty.values = newValues;
+      } else if (property.type === "color") {
+        const colorProperty = property as InlineSegmentColorProperty;
+        const newColor =
+          (properties[property.id] as string | undefined) || null;
+        colorProperty.values = [...colorProperty.values, newColor];
+      }
+    }
+
+    this.inlineIdToIndex = makeUint64PermutationHashMap(inlineProperties.ids);
+
+    return numSegments;
+  }
+
+  deleteSegment(id: bigint): boolean {
+    const { segmentPropertyMap } = this;
+    const { inlineProperties } = segmentPropertyMap;
+
+    if (!inlineProperties) {
+      return false;
+    }
+
+    const index = this.getSegmentInlineIndex(id);
+    if (index === -1) {
+      return false;
+    }
+
+    const newIds = new BigUint64Array(inlineProperties.ids.length - 1);
+    let newIndex = 0;
+    for (let i = 0; i < inlineProperties.ids.length; i++) {
+      if (i !== index) {
+        newIds[newIndex] = inlineProperties.ids[i];
+        newIndex++;
+      }
+    }
+    inlineProperties.ids = newIds;
+
+    for (const property of inlineProperties.properties) {
+      if (
+        property.type === "string" ||
+        property.type === "label" ||
+        property.type === "description"
+      ) {
+        const stringProperty = property as InlineSegmentStringProperty;
+        stringProperty.values.splice(index, 1);
+      } else if (property.type === "tags") {
+        const tagsProperty = property as InlineSegmentTagsProperty;
+        tagsProperty.values.splice(index, 1);
+      } else if (property.type === "number") {
+        const numProperty = property as InlineSegmentNumericalProperty;
+        const Constructor = numProperty.values.constructor as any;
+        const newValues = new Constructor(numProperty.values.length - 1);
+        let newIndex = 0;
+        for (let i = 0; i < numProperty.values.length; i++) {
+          if (i !== index) {
+            newValues[newIndex] = numProperty.values[i];
+            newIndex++;
+          }
+        }
+        numProperty.values = newValues;
+      } else if (property.type === "color") {
+        const colorProperty = property as InlineSegmentColorProperty;
+        colorProperty.values.splice(index, 1);
+      }
+    }
+
+    this.inlineIdToIndex = undefined;
+
+    return true;
+  }
+
+  updateSegmentProperty(id: bigint, propertyId: string, value: any): boolean {
+    const index = this.getSegmentInlineIndex(id);
+    if (index === -1) {
+      return false; // Segment not found
+    }
+
+    const { inlineProperties } = this.segmentPropertyMap;
+    if (!inlineProperties) return false;
+
+    const property = inlineProperties.properties.find(
+      (p) => p.id === propertyId,
+    );
+    if (!property) return false;
+
+    if (
+      property.type === "string" ||
+      property.type === "label" ||
+      property.type === "description"
+    ) {
+      (property as InlineSegmentStringProperty).values[index] = String(value);
+      return true;
+    } else if (property.type === "tags") {
+      const tagsProperty = property as InlineSegmentTagsProperty;
+      const tags = value as string[];
+
+      // Encode tags as character codes
+      let tagValue = "";
+      for (const tag of tags) {
+        let tagIndex = tagsProperty.tags.indexOf(tag);
+        if (tagIndex === -1) {
+          // Add new tag to the tags array
+          tagIndex = tagsProperty.tags.length;
+          tagsProperty.tags.push(tag);
+          tagsProperty.tagDescriptions.push(""); // Empty description for new tag
+        }
+        tagValue += String.fromCharCode(tagIndex);
+      }
+
+      // Sort by character code as required
+      tagValue = [...tagValue].sort().join("");
+
+      tagsProperty.values[index] = tagValue;
+      return true;
+    } else if (property.type === "number") {
+      const numProperty = property as InlineSegmentNumericalProperty;
+      numProperty.values[index] = Number(value);
+      return true;
+    } else if (property.type === "color") {
+      const colorProperty = property as InlineSegmentColorProperty;
+      colorProperty.values[index] = value as string | null;
+      return true;
+    }
+
+    return false;
+  }
+
+  ensureColorProperty(): void {
+    const { inlineProperties } = this.segmentPropertyMap;
+    if (!inlineProperties) return;
+
+    // Check if color property already exists
+    const existingColorProperty = inlineProperties.properties.find(
+      (p) => p.id === "color" && p.type === "color",
+    );
+
+    if (!existingColorProperty) {
+      // Create color property with null values for all existing segments
+      const colorProperty: InlineSegmentColorProperty = {
+        id: "color",
+        type: "color",
+        values: new Array(inlineProperties.ids.length).fill(null),
+      };
+
+      inlineProperties.properties.push(colorProperty);
+    }
   }
 }
 
@@ -440,10 +664,14 @@ function propertiesAreCompatible(
       arraysEqual(a.tagDescriptions, other.tagDescriptions)
     );
   }
+  if (a.type === "color") return true;
   return a.description === (b as InlineSegmentStringProperty).description;
 }
 
-function propertyValuesEqual(a: string | number, b: string | number): boolean {
+function propertyValuesEqual(
+  a: string | number | null,
+  b: string | number | null,
+): boolean {
   return (
     a === b || (typeof a === "number" && Number.isNaN(a) && Number.isNaN(b))
   );
@@ -506,9 +734,9 @@ function mergeDuplicateProperties(
   const present = new Uint8Array(mergedIds.length);
   for (const source of sources) {
     const toMerged = getSourceToMergedIndices(source.inlineProperties);
-    remapArray<string | number>(
+    remapArray<string | number | null>(
       source.property.values,
-      merged.values as WritableArrayLike<string | number>,
+      merged.values as WritableArrayLike<string | number | null>,
       toMerged,
     );
     for (const index of toMerged) present[index] = 1;
@@ -1280,7 +1508,8 @@ export function executeSegmentQuery(
     if (property.type !== "number") {
       const { values } = property;
       indices.sort(
-        (a, b) => defaultStringCompare(values[a], values[b]) * orderCoeff,
+        (a, b) =>
+          defaultStringCompare(values[a] ?? "", values[b] ?? "") * orderCoeff,
       );
     } else {
       const values = property.values as TypedNumberArray;

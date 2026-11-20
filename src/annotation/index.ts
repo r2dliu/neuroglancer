@@ -80,6 +80,7 @@ export enum AnnotationType {
   AXIS_ALIGNED_BOUNDING_BOX = 2,
   ELLIPSOID = 3,
   POLYLINE = 4,
+  ORIENTED_BOUNDING_BOX = 5,
 }
 
 export const annotationTypes = [
@@ -88,6 +89,7 @@ export const annotationTypes = [
   AnnotationType.AXIS_ALIGNED_BOUNDING_BOX,
   AnnotationType.ELLIPSOID,
   AnnotationType.POLYLINE,
+  AnnotationType.ORIENTED_BOUNDING_BOX,
 ];
 
 export interface AnnotationPropertySpecBase {
@@ -757,12 +759,37 @@ export interface PolyLine extends AnnotationBase {
   type: AnnotationType.POLYLINE;
 }
 
+/**
+ * An oriented (rotatable) box. Unlike AxisAlignedBoundingBox, this carries an
+ * explicit orientation so the box can be freely rotated in 3D.
+ *
+ * - `center` / `extents` are rank-length vectors in model coordinates (extents
+ *   are the full edge lengths, not half-extents).
+ * - `orientation` is a unit quaternion `[x, y, z, w]` expressing the box's
+ *   rotation in the 3D display subspace. It is intrinsically 3D, so (unlike the
+ *   rank-length geometry vectors) it is not remapped when the coordinate space
+ *   is reordered; reordering dimensions of an oriented box is unsupported.
+ * - `visible` is a per-box visibility flag (1 = shown, 0 = hidden). It travels
+ *   with the box and is serialized into the instance buffer so the box-edge /
+ *   cross-section / gizmo shaders can cull a hidden box in-shader (see
+ *   oriented_bounding_box.ts). This lets a single annotation layer hold many
+ *   boxes with independent visibility, with no per-box layer.
+ */
+export interface OrientedBoundingBox extends AnnotationBase {
+  center: Float32Array;
+  extents: Float32Array;
+  orientation: Float32Array;
+  visible: number;
+  type: AnnotationType.ORIENTED_BOUNDING_BOX;
+}
+
 export type Annotation =
   | Line
   | Point
   | AxisAlignedBoundingBox
   | Ellipsoid
-  | PolyLine;
+  | PolyLine
+  | OrientedBoundingBox;
 
 export interface AnnotationTypeHandler<T extends Annotation = Annotation> {
   icon: string;
@@ -1272,6 +1299,108 @@ export const annotationTypeHandlers: Record<
       return { properties: [], values: [] };
     },
   },
+  [AnnotationType.ORIENTED_BOUNDING_BOX]: {
+    icon: "◫",
+    description: "Oriented Bounding Box",
+    toJSON: (annotation: OrientedBoundingBox) => {
+      return {
+        center: Array.from(annotation.center),
+        extents: Array.from(annotation.extents),
+        orientation: Array.from(annotation.orientation),
+        visible: annotation.visible,
+      };
+    },
+    restoreState: (annotation: OrientedBoundingBox, obj: any, rank: number) => {
+      annotation.center = verifyObjectProperty(obj, "center", (x) =>
+        parseFixedLengthArray(new Float32Array(rank), x, verifyFiniteFloat),
+      );
+      annotation.extents = verifyObjectProperty(obj, "extents", (x) =>
+        parseFixedLengthArray(
+          new Float32Array(rank),
+          x,
+          verifyFiniteNonNegativeFloat,
+        ),
+      );
+      annotation.orientation = verifyObjectProperty(obj, "orientation", (x) =>
+        parseFixedLengthArray(new Float32Array(4), x, verifyFiniteFloat),
+      );
+      // Default to visible: older states (and the common case) omit it.
+      annotation.visible = verifyObjectProperty(obj, "visible", (x) =>
+        x === undefined ? 1 : verifyFiniteFloat(x),
+      );
+    },
+    // center + extents (rank each), the orientation quaternion (4 floats,
+    // independent of rank), then the visibility flag (1 float).
+    serializedBytes: (rank) => 2 * 4 * rank + 4 * 4 + 4,
+    serialize(
+      buffer: DataView,
+      offset: number,
+      isLittleEndian: boolean,
+      rank: number,
+      annotation: OrientedBoundingBox,
+    ) {
+      offset = serializeTwoFloatVectors(
+        buffer,
+        offset,
+        isLittleEndian,
+        rank,
+        annotation.center,
+        annotation.extents,
+      );
+      offset = serializeFloatVector(
+        buffer,
+        offset,
+        isLittleEndian,
+        4,
+        annotation.orientation,
+      );
+      buffer.setFloat32(offset, annotation.visible, isLittleEndian);
+    },
+    deserialize: (
+      buffer: DataView,
+      offset: number,
+      isLittleEndian: boolean,
+      rank: number,
+      id: string,
+    ): OrientedBoundingBox => {
+      const center = new Float32Array(rank);
+      const extents = new Float32Array(rank);
+      const orientation = new Float32Array(4);
+      offset = deserializeTwoFloatVectors(
+        buffer,
+        offset,
+        isLittleEndian,
+        rank,
+        center,
+        extents,
+      );
+      offset = deserializeFloatVector(
+        buffer,
+        offset,
+        isLittleEndian,
+        4,
+        orientation,
+      );
+      const visible = buffer.getFloat32(offset, isLittleEndian);
+      return {
+        type: AnnotationType.ORIENTED_BOUNDING_BOX,
+        center,
+        extents,
+        orientation,
+        visible,
+        id,
+        properties: [],
+      };
+    },
+    visitGeometry(annotation: OrientedBoundingBox, callback) {
+      callback(annotation.center, false);
+      callback(annotation.extents, true);
+    },
+    defaultProperties(annotation: OrientedBoundingBox) {
+      annotation;
+      return { properties: [], values: [] };
+    },
+  },
 };
 
 export interface AnnotationSchema {
@@ -1767,6 +1896,10 @@ export class LocalAnnotationSource extends AnnotationSource {
           annotation.center = mapVector(annotation.center);
           annotation.radii = mapVector(annotation.radii);
           break;
+        case AnnotationType.ORIENTED_BOUNDING_BOX:
+          annotation.center = mapVector(annotation.center);
+          annotation.extents = mapVector(annotation.extents);
+          break;
       }
     }
     if (this.rank_ !== sourceRank) {
@@ -1929,7 +2062,8 @@ export class AnnotationSerializer {
     AxisAlignedBoundingBox[],
     Ellipsoid[],
     PolyLine[],
-  ] = [[], [], [], [], []];
+    OrientedBoundingBox[],
+  ] = [[], [], [], [], [], []];
   constructor(public propertySerializers: AnnotationPropertySerializer[]) {}
   add(annotation: Annotation) {
     (<Annotation[]>this.annotations[annotation.type]).push(annotation);

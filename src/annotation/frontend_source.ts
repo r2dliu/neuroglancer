@@ -877,6 +877,36 @@ export class MultiscaleAnnotationSource
             rank,
           );
           break;
+        case AnnotationType.ORIENTED_BOUNDING_BOX: {
+          matrix.transformPoint(
+            tempLower,
+            source.multiscaleToChunkTransform,
+            rank + 1,
+            annotation.center,
+            rank,
+          );
+          matrix.transformVector(
+            tempUpper,
+            source.multiscaleToChunkTransform,
+            rank + 1,
+            annotation.extents,
+            rank,
+          );
+          // Conservative bound independent of orientation: the box fits within a
+          // sphere of radius 0.5 * |extents| about its center.
+          let radiusSq = 0;
+          for (let i = 0; i < rank; ++i) {
+            const h = tempUpper[i] * 0.5;
+            radiusSq += h * h;
+          }
+          const radius = Math.sqrt(radiusSq);
+          for (let i = 0; i < rank; ++i) {
+            const c = tempLower[i];
+            tempLower[i] = c - radius;
+            tempUpper[i] = c + radius;
+          }
+          break;
+        }
       }
       let totalChunks = 1;
       for (let i = 0; i < rank; ++i) {

@@ -76,6 +76,12 @@ export class ToolActivation<ToolType extends Tool = Tool> extends RefCounted {
   bindInputEventMap(inputEventMap: EventActionMap) {
     this.inputEventMapBinder(inputEventMap, this);
   }
+  pushInputLayer(panelBindings: EventActionMap, inputEventMap: EventActionMap) {
+    this.registerDisposer(
+      panelBindings.addParent(inputEventMap, Number.POSITIVE_INFINITY),
+    );
+    this.bindInputEventMap(inputEventMap);
+  }
   cancel() {
     const { globalBinder } = this.tool;
     if (this === globalBinder.activeTool_) {
@@ -106,6 +112,12 @@ export abstract class Tool<Context extends object = object> extends RefCounted {
     super();
   }
   abstract activate(activation: ToolActivation<this>): void;
+  // The action a primary press over a data panel should fire while this tool
+  // is active, or undefined to leave the press to navigation.
+  primaryAction(panel: "slice" | "perspective"): string | undefined {
+    panel;
+    return undefined;
+  }
   renderInPalette(context: RefCounted): HTMLElement | undefined {
     context;
     const content = document.createElement("div");
@@ -337,6 +349,23 @@ export class GlobalToolBinder extends RefCounted {
 
   isActive(tool: Tool | undefined) {
     return tool !== undefined && this.activeTool_?.tool === tool;
+  }
+
+  get activeTool(): Borrowed<Tool> | undefined {
+    return this.activeTool_?.tool;
+  }
+
+  // Activates a tool that has no key binding, until another tool replaces it or
+  // it is deactivated. The activation owns the tool.
+  activateUnbound(tool: Owned<Tool>): Borrowed<Tool> {
+    this.debounceDeactivate.cancel();
+    this.queuedTool = undefined;
+    this.deactivate_();
+    const activation = new ToolActivation(tool, this.inputEventMapBinder);
+    activation.registerDisposer(tool);
+    this.activeTool_ = activation;
+    tool.activate(activation);
+    return tool;
   }
 
   private deleteBinding(tool: Tool) {

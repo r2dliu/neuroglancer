@@ -212,6 +212,7 @@ function getCenterPosition(center: Float32Array, annotation: Annotation) {
       center.set(annotation.point);
       break;
     case AnnotationType.ELLIPSOID:
+    case AnnotationType.ORIENTED_BOUNDING_BOX:
       center.set(annotation.center);
       break;
   }
@@ -2027,6 +2028,25 @@ export function UserLayerWithAnnotationsMixin<
       this.annotationDisplayState.shaderControls.changed.add(
         this.specificationChanged.dispatch,
       );
+
+      const syncSelectedAnnotation = () => {
+        // Ichnaea specific concept; if controlledSelection is set, don't allow
+        // neuroglancer internals to clobber selectedAnnotation's value
+        if (this.annotationDisplayState.controlledSelection) return;
+        const selectionState = this.manager.root.selectionState.value;
+        const layerState = selectionState?.layers.find(
+          (s) => s.layer === this,
+        )?.state;
+        const annotationId = layerState?.annotationId;
+        if (annotationId !== undefined) {
+          this.annotationDisplayState.selectedAnnotation.value = annotationId;
+        }
+      };
+      this.registerDisposer(
+        this.manager.root.selectionState.changed.add(syncSelectedAnnotation),
+      );
+      syncSelectedAnnotation();
+
       this.tabs.add("annotations", {
         label: "Annotations",
         order: 10,
@@ -2050,6 +2070,9 @@ export function UserLayerWithAnnotationsMixin<
       const { mouseState } = this.manager.layerSelectedValues;
       this.registerDisposer(
         mouseState.changed.add(() => {
+          // While a drag pins the hover, keep the dragged part highlighted and
+          // ignore mouse-driven hover changes until the drag ends.
+          if (this.annotationDisplayState.hoverPinned) return;
           if (mouseState.active) {
             const { pickedAnnotationLayer } = mouseState;
             if (
@@ -2713,19 +2736,20 @@ export function UserLayerWithAnnotationsMixin<
       loadedSubsource: LoadedDataSubsource,
       source: AnnotationSource,
       role: RenderLayerRole,
+      displayState: AnnotationDisplayState = this.annotationDisplayState,
     ) {
       const { subsourceEntry } = loadedSubsource;
       const state = new AnnotationLayerState({
         localPosition: this.localPosition,
         transform: loadedSubsource.getRenderLayerTransform(),
         source,
-        displayState: this.annotationDisplayState,
+        displayState,
         dataSource: loadedSubsource.loadedDataSource.layerDataSource,
         subsourceIndex: loadedSubsource.subsourceIndex,
         subsourceId: subsourceEntry.id,
         role,
       });
-      this.annotationDisplayState.annotationProperties.value = [];
+      displayState.annotationProperties.value = source.properties.value;
       this.addAnnotationLayerState(state, loadedSubsource);
     }
 
@@ -2733,11 +2757,19 @@ export function UserLayerWithAnnotationsMixin<
       const { subsourceEntry } = loadedSubsource;
       const { staticAnnotations } = subsourceEntry.subsource;
       if (staticAnnotations === undefined) return false;
-      loadedSubsource.activate(() => {
+      loadedSubsource.activate((refCounted) => {
+        // Hard code a soft grey for default bounds box to d make it less obstructive
+        const displayState = refCounted.registerDisposer(
+          new AnnotationDisplayState(),
+        );
+        displayState.color.value = vec3.fromValues(0.5, 0.5, 0.5);
+        displayState.shader.value =
+          "void main() {\n  setColor(vec4(defaultColor(), 0.1));\n}\n";
         this.addLocalAnnotations(
           loadedSubsource,
           staticAnnotations,
           RenderLayerRole.DEFAULT_ANNOTATION,
+          displayState,
         );
       });
       return true;

@@ -18,6 +18,7 @@ import { ChunkState } from "#src/chunk_manager/base.js";
 import { ChunkRenderLayerFrontend } from "#src/chunk_manager/frontend.js";
 import type { CoordinateSpace } from "#src/coordinate_transform.js";
 import type { VisibleLayerInfo } from "#src/layer/index.js";
+import { luts } from "#src/luts/luts.js";
 import type { PerspectivePanel } from "#src/perspective_view/panel.js";
 import type {
   PerspectiveViewReadyRenderContext,
@@ -65,11 +66,12 @@ import {
   VOLUME_RENDERING_RENDER_LAYER_RPC_ID,
   VOLUME_RENDERING_RENDER_LAYER_UPDATE_SOURCES_RPC_ID,
 } from "#src/volume_rendering/base.js";
+import type { TrackableVolumeClipBounds } from "#src/volume_rendering/trackable_volume_clip_bounds.js";
 import type { TrackableVolumeRenderingModeValue } from "#src/volume_rendering/trackable_volume_rendering_mode.js";
 import {
-  VolumeRenderingModes,
   isProjectionMode,
   trackableShaderModeValue,
+  VolumeRenderingModes,
 } from "#src/volume_rendering/trackable_volume_rendering_mode.js";
 import {
   drawBoxEdges,
@@ -156,6 +158,7 @@ export interface VolumeRenderingRenderLayerOptions {
   depthSamplesTarget: WatchableValueInterface<number>;
   chunkResolutionHistogram: RenderScaleHistogram;
   mode: TrackableVolumeRenderingModeValue;
+  clipBounds: TrackableVolumeClipBounds;
 }
 
 interface VolumeRenderingShaderParameters {
@@ -194,6 +197,8 @@ interface PerChunkShaderUniforms {
 
 const tempMat4 = mat4.create();
 const tempVisibleVolumetricClippingPlanes = new Float32Array(24);
+const tempEffectiveLowerClipBound = vec3.create();
+const tempEffectiveUpperClipBound = vec3.create();
 
 export function getVolumeRenderingDepthSamplesBoundsLogScale(): [
   number,
@@ -226,6 +231,7 @@ export class VolumeRenderingRenderLayer extends PerspectiveViewRenderLayer {
   depthSamplesTarget: WatchableValueInterface<number>;
   chunkResolutionHistogram: RenderScaleHistogram;
   mode: TrackableVolumeRenderingModeValue;
+  clipBounds: TrackableVolumeClipBounds;
   backend: ChunkRenderLayerFrontend;
   highestResolutionLoadedVoxelSize: Float32Array | undefined;
   private modeOverride: TrackableVolumeRenderingModeValue;
@@ -275,6 +281,10 @@ export class VolumeRenderingRenderLayer extends PerspectiveViewRenderLayer {
     this.depthSamplesTarget = options.depthSamplesTarget;
     this.chunkResolutionHistogram = options.chunkResolutionHistogram;
     this.mode = options.mode;
+    this.clipBounds = options.clipBounds;
+    this.registerDisposer(
+      this.clipBounds.changed.add(() => this.redrawNeeded.dispatch()),
+    );
     this.modeOverride = trackableShaderModeValue();
     this.dataHistogramSpecifications =
       this.shaderControlState.histogramSpecifications;
@@ -392,6 +402,8 @@ void emitRGBA(vec4 rgba) {
           // Far limit in [0, 1] as fraction of full limit.
           builder.addUniform("highp float", "uFarLimitFraction");
           builder.addUniform("highp int", "uMaxSteps");
+          // Indexed 256-entry RGBA lookup table used by LUT shader
+          builder.addUniform("vec4", "lut", 256);
 
           // Specifies translation of the current chunk.
           builder.addUniform("highp vec3", "uTranslation");
@@ -424,18 +436,39 @@ vNormalizedPosition = gl_Position = uModelViewProjectionMatrix * vec4(position, 
 gl_Position.z = 0.0;
 `);
           builder.addFragmentCode(`
+uniform highp sampler3D uBrushTexture;
+uniform bool uBrushEnabled;
+
 vec3 curChunkPosition;
 float depthAtRayPosition;
 vec4 outputColor;
 float revealage;
 void userMain();
+
+float getBrushValue(vec3 position) {
+  if (!uBrushEnabled) return -1.0;
+  vec3 texCoord = position / uChunkDataSize;
+  return texture(uBrushTexture, texCoord).r;
+}
+
+void userMain();
 `);
+
+          builder.addFragmentCode(`
+  float getDataValue(vec3 position) {
+    float brushValue = getBrushValue(position);
+    if (brushValue >= 0.0) {
+      return brushValue;
+    }
+  }   
+  `);
           defineChunkDataShaderAccess(
             builder,
             chunkFormat,
             shaderParametersState.numChannelDimensions,
             "curChunkPosition",
           );
+
           builder.addFragmentCode([
             glsl_emitIntensity,
             glsl_rgbaEmit,
@@ -931,6 +964,14 @@ gl_Position = uModelViewProjectionMatrix * vec4(position, 1.0);
                 this.shaderControlState,
                 shaderResult.parameters.parseResult,
               );
+              const lutName =
+                (window as any).lutName === undefined
+                  ? "Tricolor 1"
+                  : (window as any).lutName;
+              gl.uniform4fv(
+                shader.uniform("lut"),
+                new Float32Array((luts as any)[lutName]),
+              );
               this.bindDepthBufferTexture(renderContext, shader);
               chunkFormat.beginDrawing(gl, shader);
               chunkFormat.beginSource(gl, shader);
@@ -953,11 +994,31 @@ gl_Position = uModelViewProjectionMatrix * vec4(position, 1.0);
         getFrustumPlanes(clippingPlanes, modelViewProjection);
         const inverseModelViewProjection = mat4.create();
         mat4.invert(inverseModelViewProjection, modelViewProjection);
+        // Intersect the source's full clip-display bounds with the user's
+        // per-axis fractional override. Identity case skips the math and
+        // hands the source bounds straight to the shader.
+        const sourceLower = transformedSource.lowerClipDisplayBound;
+        const sourceUpper = transformedSource.upperClipDisplayBound;
+        let effectiveLower: vec3;
+        let effectiveUpper: vec3;
+        if (this.clipBounds.isIdentity) {
+          effectiveLower = sourceLower;
+          effectiveUpper = sourceUpper;
+        } else {
+          const { lower: userLo, upper: userHi } = this.clipBounds;
+          for (let i = 0; i < 3; ++i) {
+            const span = sourceUpper[i] - sourceLower[i];
+            tempEffectiveLowerClipBound[i] = sourceLower[i] + userLo[i] * span;
+            tempEffectiveUpperClipBound[i] = sourceLower[i] + userHi[i] * span;
+          }
+          effectiveLower = tempEffectiveLowerClipBound;
+          effectiveUpper = tempEffectiveUpperClipBound;
+        }
         const { near, far, adjustedNear, adjustedFar } =
           getVolumeRenderingNearFarBounds(
             clippingPlanes,
-            transformedSource.lowerClipDisplayBound,
-            transformedSource.upperClipDisplayBound,
+            effectiveLower,
+            effectiveUpper,
           );
         const optimalSampleRate = optimalSamples;
         const actualSampleRate = this.depthSamplesTarget.value;
@@ -971,8 +1032,8 @@ gl_Position = uModelViewProjectionMatrix * vec4(position, 1.0);
           uBrightnessFactor: brightnessFactor,
           uGain: Math.exp(this.gain.value),
           uPickId: pickId,
-          uLowerClipBound: transformedSource.lowerClipDisplayBound,
-          uUpperClipBound: transformedSource.upperClipDisplayBound,
+          uLowerClipBound: effectiveLower,
+          uUpperClipBound: effectiveUpper,
           uModelViewProjectionMatrix: modelViewProjection,
           uInvModelViewProjectionMatrix: inverseModelViewProjection,
         };
@@ -1129,6 +1190,14 @@ gl_Position = uModelViewProjectionMatrix * vec4(position, 1.0);
                 shader,
                 this.shaderControlState,
                 shaderResult.parameters.parseResult,
+              );
+              const lutName =
+                (window as any).lutName === undefined
+                  ? "Tricolor 1"
+                  : (window as any).lutName;
+              gl.uniform4fv(
+                shader.uniform("lut"),
+                new Float32Array((luts as any)[lutName]),
               );
               this.bindDepthBufferTexture(renderContext, shader);
               this.setShaderUniforms(shader, shaderSetupUniforms);

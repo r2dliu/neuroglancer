@@ -103,6 +103,7 @@ import {
   parseArray,
   parseFixedLengthArray,
   parseQueryStringParameters,
+  parseUint64,
   unparseQueryStringParameters,
   verifyEnumString,
   verifyFiniteFloat,
@@ -110,13 +111,12 @@ import {
   verifyInt,
   verifyObject,
   verifyObjectProperty,
+  verifyOptionalBoolean,
   verifyOptionalObjectProperty,
   verifyOptionalString,
   verifyPositiveInt,
   verifyString,
   verifyStringArray,
-  verifyOptionalBoolean,
-  parseUint64,
 } from "#src/util/json.js";
 import * as matrix from "#src/util/matrix.js";
 import type { ProgressOptions } from "#src/util/progress_listener.js";
@@ -502,11 +502,26 @@ function parseMeshMetadata(data: any): ParsedMeshMetadata {
       "sharding",
       parseShardingParameters,
     );
+    const nodeFragments =
+      verifyOptionalObjectProperty(data, "fragments", (x) => {
+        if (x !== "nodes") {
+          throw new Error(`Unsupported fragments: ${JSON.stringify(x)}`);
+        }
+        return true;
+      }) ?? false;
+    const vertexFeatureIds =
+      verifyOptionalObjectProperty(
+        data,
+        "vertex_feature_ids",
+        verifyOptionalBoolean,
+      ) ?? false;
     metadata = {
       lodScaleMultiplier,
       transform,
       sharding,
       vertexQuantizationBits,
+      nodeFragments,
+      vertexFeatureIds,
     };
   }
   const segmentPropertyMap = verifyObjectProperty(
@@ -1158,7 +1173,8 @@ function parseInlinePropertyMap(data: unknown): InlineSegmentPropertyMap {
           type !== "description" &&
           type !== "string" &&
           type !== "tags" &&
-          type !== "number"
+          type !== "number" &&
+          type !== "color"
         ) {
           throw new Error(`Invalid property type: ${JSON.stringify(type)}`);
         }
@@ -1232,6 +1248,32 @@ function parseInlinePropertyMap(data: unknown): InlineSegmentPropertyMap {
           if (v > max) max = v;
         }
         return { id, description, type, dataType, values, bounds: [min, max] };
+      }
+      if (type === "color") {
+        const values = verifyObjectProperty(
+          propertyObj,
+          "values",
+          (valuesObj) => {
+            if (!Array.isArray(valuesObj) || valuesObj.length !== numIds) {
+              throw new Error(
+                `Expected ${numIds} values, but received: ${valuesObj.length}`,
+              );
+            }
+            return valuesObj.map((value) => {
+              if (value === null || value === "") {
+                return null;
+              }
+              if (
+                typeof value === "string" &&
+                /^#[0-9A-Fa-f]{6}$/.test(value)
+              ) {
+                return value;
+              }
+              throw new Error(`Invalid color value: ${JSON.stringify(value)}`);
+            });
+          },
+        );
+        return { id, type, values };
       }
       const values = verifyObjectProperty(
         propertyObj,

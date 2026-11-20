@@ -15,6 +15,7 @@
  */
 
 import { debounce } from "lodash-es";
+import type { BrushStrokeLayer } from "#src/brush_stroke/renderlayer.js";
 import { ChunkState } from "#src/chunk_manager/base.js";
 import type {
   ChunkManager,
@@ -23,6 +24,8 @@ import type {
 } from "#src/chunk_manager/frontend.js";
 import { ChunkSource } from "#src/chunk_manager/frontend.js";
 import { applyRenderViewportToProjectionMatrix } from "#src/display_context.js";
+import type { HashMapUint64 } from "#src/gpu_hash/hash_table.js";
+import { GPUHashTable, HashMapShaderManager } from "#src/gpu_hash/shader.js";
 import type { LayerManager } from "#src/layer/index.js";
 import type {
   DisplayDimensionRenderInfo,
@@ -40,10 +43,17 @@ import {
   getChunkTransformParameters,
   getLayerDisplayDimensionMapping,
 } from "#src/render_coordinate_transform.js";
+import type { RenderLayer } from "#src/renderlayer.js";
 import {
   DerivedProjectionParameters,
   SharedProjectionParameters,
 } from "#src/renderlayer.js";
+import {
+  SegmentColorShaderManager,
+  SegmentStatedColorShaderManager,
+} from "#src/segment_color.js";
+import type { SegmentAttributeTables } from "#src/segmentation_display_state/attributes.js";
+import { AttributeShader } from "#src/segmentation_display_state/attributes_shader.js";
 import type {
   SliceViewChunkSource as SliceViewChunkSourceInterface,
   SliceViewChunkSpecification,
@@ -63,6 +73,7 @@ import {
 import type { SliceViewChunk } from "#src/sliceview/chunk_base.js";
 import { ChunkLayout } from "#src/sliceview/chunk_layout.js";
 import type { SliceViewerState } from "#src/sliceview/panel.js";
+import type { SliceViewRenderContext } from "#src/sliceview/renderlayer.js";
 import { SliceViewRenderLayer } from "#src/sliceview/renderlayer.js";
 import type { WatchableValueInterface } from "#src/trackable_value.js";
 import { extractScalesFromAffineMatrix } from "#src/util/affine.js";
@@ -86,7 +97,11 @@ import {
   FramebufferConfiguration,
   makeTextureBuffers,
 } from "#src/webgl/offscreen.js";
-import type { ShaderModule, ShaderBuilder } from "#src/webgl/shader.js";
+import type {
+  ShaderBuilder,
+  ShaderModule,
+  ShaderProgram,
+} from "#src/webgl/shader.js";
 import { getSquareCornersBuffer } from "#src/webgl/square_corners_buffer.js";
 import type { RPC } from "#src/worker_rpc.js";
 import { registerSharedObjectOwner } from "#src/worker_rpc.js";
@@ -101,6 +116,9 @@ class FrontendSliceViewBase extends SliceViewBase<
   FrontendTransformedSource
 > {}
 const Base = withSharedVisibility(FrontendSliceViewBase);
+
+const NO_CLIP_LOWER = vec3.fromValues(-1e30, -1e30, -1e30);
+const NO_CLIP_UPPER = vec3.fromValues(1e30, 1e30, 1e30);
 
 export interface FrontendTransformedSource<
   RLayer extends SliceViewRenderLayer = SliceViewRenderLayer,
@@ -171,6 +189,14 @@ export class SliceView extends Base {
   declare rpcId: number;
 
   renderingStale = true;
+
+  // Display-space box outside which the 3D panel discards this view's quad.
+  clipBounds: { lower: vec3; upper: vec3 } | undefined = undefined;
+
+  // When set, the 3D panel makes this view's quad pickable as `part` of
+  // `renderLayer`.
+  pickTarget: { renderLayer: RenderLayer; part: number } | undefined =
+    undefined;
 
   visibleChunksStale = true;
 
@@ -554,7 +580,9 @@ export class SliceView extends Base {
     let renderLayerNum = 0;
     const wireFrame = this.wireFrame.value;
     const renderContext = { sliceView: this, projectionParameters, wireFrame };
+    renderLayerNum = this.drawUnderlay(renderContext);
     for (const renderLayer of this.visibleLayerList) {
+      if (!this.shouldDrawLayer(renderLayer)) continue;
       const histogramCount = wireFrame
         ? 0
         : renderLayer.getDataHistogramCount();
@@ -575,6 +603,18 @@ export class SliceView extends Base {
     gl.disable(WebGL2RenderingContext.BLEND);
     gl.disable(WebGL2RenderingContext.DEPTH_TEST);
     offscreenFramebuffer.unbind();
+  }
+
+  // Subclass hooks: draw beneath the layers (into the bound offscreen
+  // framebuffer), returning how many layers it drew; and skip layers.
+  protected drawUnderlay(renderContext: SliceViewRenderContext): number {
+    renderContext;
+    return 0;
+  }
+
+  protected shouldDrawLayer(renderLayer: SliceViewRenderLayer): boolean {
+    renderLayer;
+    return true;
   }
 
   disposed() {
@@ -645,7 +685,7 @@ export abstract class SliceViewChunkSource<
 
   static encodeOptions(options: SliceViewChunkSourceOptions): any {
     const encoding = ChunkSource.encodeOptions(options);
-    encoding.spec = SliceViewChunkSource.encodeSpec(options.spec);
+    encoding.spec = this.encodeSpec(options.spec);
     return encoding;
   }
 
@@ -723,27 +763,64 @@ export class SliceViewRenderHelper extends RefCounted {
 
   private textureCoordinateAdjustment = new Float32Array(4);
   private shaderGetter: ParameterizedContextDependentShaderGetter<
-    { emitter: ShaderModule; isProjection: boolean },
+    {
+      emitter: ShaderModule;
+      isProjection: boolean;
+      hasBrush: boolean;
+      brushOverlayOnly: boolean;
+      attributeShader: AttributeShader | undefined;
+    },
     boolean
   >;
+  private brushHashTableManager = new HashMapShaderManager("brushStroke");
+  private attributeShaders = new Map<SegmentAttributeTables, AttributeShader>();
+  private segmentColorShaderManager = new SegmentColorShaderManager(
+    "segmentColorHash",
+  );
+  private segmentStatedColorShaderManager = new SegmentStatedColorShaderManager(
+    "segmentStatedColor",
+  );
 
   defineShader(
     builder: ShaderBuilder,
     hideTransparent: boolean,
     isProjection: boolean,
     emitter: ShaderModule,
+    hasBrush: boolean,
+    brushOverlayOnly: boolean,
+    attributeShader: AttributeShader | undefined,
   ) {
     builder.addVarying("vec2", "vTexCoord");
-    builder.addUniform("sampler2D", "uSampler");
-    builder.addInitializer((shader) => {
-      this.gl.uniform1i(shader.uniform("uSampler"), 0);
-    });
+    builder.addTextureSampler("sampler2D", "uSampler", "uSamplerUnit");
     builder.addUniform("vec4", "uColorFactor");
     builder.addUniform("vec4", "uBackgroundColor");
     builder.addUniform("mat4", "uProjectionMatrix");
     builder.addUniform("vec4", "uTextureCoordinateAdjustment");
+    builder.addUniform("highp uint", "uPickID");
+    if (isProjection) {
+      builder.addUniform("mat4", "uSliceViewInvViewProj");
+      builder.addUniform("vec3", "uClipLower");
+      builder.addUniform("vec3", "uClipUpper");
+      if (hasBrush) {
+        this.brushHashTableManager.defineShader(builder);
+        this.segmentColorShaderManager.defineShader(builder);
+        this.segmentStatedColorShaderManager.defineShader(builder);
+        builder.addUniform("highp float", "uSaturation");
+        attributeShader?.defineShader(builder);
+      }
+    }
     builder.require(emitter);
-    const glsl_fragmentMainStart = `
+    const glsl_fragmentMainStart = `${
+      isProjection
+        ? `
+vec4 clipPos = vec4(2.0 * vTexCoord - 1.0, 0.0, 1.0);
+vec4 worldPos4 = uSliceViewInvViewProj * clipPos;
+vec3 worldPos = worldPos4.xyz / worldPos4.w;
+if (any(lessThan(worldPos, uClipLower)) || any(greaterThan(worldPos, uClipUpper))) {
+  discard;
+}`
+        : ""
+    }
 vec4 sampledColor = texture(uSampler, vTexCoord);
 if (sampledColor.a == 0.0) {`;
     let glsl_fragmentMainEnd: string;
@@ -752,14 +829,90 @@ if (sampledColor.a == 0.0) {`;
   discard;
 }
 else {
-  emit(sampledColor * uColorFactor, 0u);
+  emit(sampledColor * uColorFactor, uPickID);
 }
+`;
+    } else if (isProjection && hasBrush) {
+      // 3D cross-section + brush overlay. Recover the world voxel
+      // position from `vTexCoord` via the slice view's inverse
+      // view-projection, hash it with the same multipliers as the
+      // CPU-side `BrushHashTable.getBrushKey` and the slice-view
+      // brush overlay shader. On a hit, resolve segment colour the
+      // same way the 2D brush overlay does in its single-layer
+      // branch: stated-color override → segment colour hash, mixed
+      // with saturation, emitted at full opacity. Visibility-gated
+      // alpha (the 2D multi-layer branch) intentionally not used —
+      // an actively-painted segment isn't yet in the visible set, so
+      // alpha would round to zero and the brush would draw invisible
+      // until persistence promoted it into canonical chunks.
+      //
+      // Two sub-variants:
+      //   `brushOverlayOnly=false` — inline: brush hit emits, miss
+      //     falls through to `sampledColor`. Used for the first
+      //     segmentation layer's brush.
+      //   `brushOverlayOnly=true`  — overlay: brush hit emits, miss
+      //     `discard`s so the framebuffer already drawn (by an inline
+      //     draw or a previous overlay) shows through. Used for
+      //     subsequent segmentation layers on the same cross-section.
+      const missEmit = brushOverlayOnly
+        ? "discard;"
+        : "emit(sampledColor * uColorFactor, uPickID);";
+      // Under attributes the brush takes its class color, and draws nothing
+      // where the attributes say the id doesn't draw, as in 2D.
+      const brushColor = attributeShader
+        ? `
+      vec4 attributeColor;
+      if (!getAttributeColor(brushValue, attributeColor)) {
+        ${missEmit}
+        return;
+      }
+      segmentColor = attributeColor.rgb;`
+        : `
+      vec4 rgba;
+      if (${this.segmentStatedColorShaderManager.getFunctionName}(brushValue, rgba)) {
+        segmentColor = rgba.rgb;
+      } else {
+        segmentColor = segmentColorHash(brushValue);
+      }`;
+      glsl_fragmentMainEnd = `
+  sampledColor = uBackgroundColor;
+}
+// round: worldPos is in GLOBAL coordinates, where this app's OME
+// datasets put voxel centers at INTEGERS (voxel i spans [i-0.5, i+0.5)), and
+// the CPU brush key truncates those integer center coords. floor() here keys
+// the lower half of every voxel one off -- on an oblique cross-section that
+// renders as diagonal stripes. (The 2D overlay path floors instead because it
+// works in the corner-based chunk grid, whose +0.5 shift is baked into the
+// chunk transform -- two conventions, each correct in its own frame.)
+// Revisit to handle different voxel centers in future if necessary
+ivec3 voxelPos = ivec3(round(worldPos));
+if (voxelPos.x >= 0 && voxelPos.y >= 0 && voxelPos.z >= 0) {
+  uint x1 = uint(voxelPos.x);
+  uint y1 = uint(voxelPos.y);
+  uint z1 = uint(voxelPos.z);
+  uint h1 = ((x1 * 73u) * 1271u) ^ ((y1 * 513u) * 1345u) ^ ((z1 * 421u) * 675u);
+  uint h2 = ((x1 * 127u) * 337u) ^ ((y1 * 111u) * 887u) ^ ((z1 * 269u) * 325u);
+  uint64_t brushKey;
+  brushKey.value[0] = h1;
+  brushKey.value[1] = h2;
+  uint64_t brushValue;
+  if (${this.brushHashTableManager.getFunctionName}(brushKey, brushValue)) {
+    // value=0 marks "erased"
+    if (brushValue.value[0] != 0u || brushValue.value[1] != 0u) {
+      vec3 segmentColor;${brushColor}
+      vec3 baseColor = mix(vec3(1.0, 1.0, 1.0), segmentColor, uSaturation);
+      emit(vec4(baseColor, 1.0), uPickID);
+      return;
+    }
+  }
+}
+${missEmit}
 `;
     } else {
       glsl_fragmentMainEnd = `
   sampledColor = uBackgroundColor;
 }
-emit(sampledColor * uColorFactor, 0u);
+emit(sampledColor * uColorFactor, uPickID);
 `;
     }
     builder.setFragmentMain(`${glsl_fragmentMainStart}${glsl_fragmentMainEnd}`);
@@ -785,14 +938,23 @@ gl_Position = uProjectionMatrix * aVertexPosition;
       {
         memoizeKey: "sliceview/SliceViewRenderHelper",
         parameters: this.viewer.hideCrossSectionBackground3D,
-        getContextKey: ({ emitter, isProjection }) =>
-          `${getObjectId(emitter)}${isProjection}`,
+        getContextKey: ({
+          emitter,
+          isProjection,
+          hasBrush,
+          brushOverlayOnly,
+          attributeShader,
+        }) =>
+          `${getObjectId(emitter)}${isProjection}${hasBrush}${brushOverlayOnly}${attributeShader !== undefined}`,
         defineShader: (builder, context, hideTransparent) => {
           this.defineShader(
             builder,
             hideTransparent,
             context.isProjection,
             context.emitter,
+            context.hasBrush,
+            context.brushOverlayOnly,
+            context.attributeShader,
           );
         },
       },
@@ -808,22 +970,43 @@ gl_Position = uProjectionMatrix * aVertexPosition;
     yStart: number,
     xEnd: number,
     yEnd: number,
+    sliceViewInvViewProj?: mat4,
+    brushStrokeLayer?: BrushStrokeLayer,
+    brushOverlayOnly = false,
+    clipBounds?: { lower: vec3; upper: vec3 },
+    pickID = 0,
   ) {
     const { gl, textureCoordinateAdjustment } = this;
     textureCoordinateAdjustment[0] = xStart;
     textureCoordinateAdjustment[1] = yStart;
     textureCoordinateAdjustment[2] = xEnd - xStart;
     textureCoordinateAdjustment[3] = yEnd - yStart;
+    const hasBrush = brushStrokeLayer !== undefined;
+    const tables = brushStrokeLayer?.displayState.segmentAttributes;
+    let attributeShader: AttributeShader | undefined;
+    if (this.isProjection && tables?.enabled.value) {
+      attributeShader = this.attributeShaders.get(tables);
+      if (attributeShader === undefined) {
+        attributeShader = this.registerDisposer(
+          new AttributeShader(this.gl, tables),
+        );
+        this.attributeShaders.set(tables, attributeShader);
+      }
+    }
     const shaderResult = this.shaderGetter({
       emitter: this.emitter,
       isProjection: this.isProjection,
+      hasBrush,
+      brushOverlayOnly: hasBrush && brushOverlayOnly,
+      attributeShader,
     });
     const shader = shaderResult.shader;
     if (shader === null) {
       throw new Error("Shader compilation failed in SliceViewRenderHelper.");
     }
     shader.bind();
-    gl.activeTexture(gl.TEXTURE0);
+    const uSamplerUnit = shader.textureUnit("uSamplerUnit")!;
+    gl.activeTexture(WebGL2RenderingContext.TEXTURE0 + uSamplerUnit);
     gl.bindTexture(gl.TEXTURE_2D, texture);
     gl.disable(WebGL2RenderingContext.BLEND);
     gl.uniformMatrix4fv(
@@ -837,6 +1020,26 @@ gl_Position = uProjectionMatrix * aVertexPosition;
       shader.uniform("uTextureCoordinateAdjustment"),
       textureCoordinateAdjustment,
     );
+    gl.uniform1ui(shader.uniform("uPickID"), pickID);
+    if (this.isProjection && sliceViewInvViewProj !== undefined) {
+      gl.uniformMatrix4fv(
+        shader.uniform("uSliceViewInvViewProj"),
+        false,
+        sliceViewInvViewProj,
+      );
+      gl.uniform3fv(
+        shader.uniform("uClipLower"),
+        clipBounds?.lower ?? NO_CLIP_LOWER,
+      );
+      gl.uniform3fv(
+        shader.uniform("uClipUpper"),
+        clipBounds?.upper ?? NO_CLIP_UPPER,
+      );
+    }
+    if (this.isProjection && brushStrokeLayer !== undefined) {
+      this.bindBrushResources(gl, shader, brushStrokeLayer);
+    }
+    attributeShader?.enable(gl, shader);
 
     const aVertexPosition = shader.attribute("aVertexPosition");
     this.copyVertexPositionsBuffer.bindToVertexAttrib(
@@ -846,8 +1049,40 @@ gl_Position = uProjectionMatrix * aVertexPosition;
 
     gl.drawArrays(gl.TRIANGLE_FAN, 0, 4);
 
+    attributeShader?.disable(gl, shader);
     gl.disableVertexAttribArray(aVertexPosition);
     gl.bindTexture(gl.TEXTURE_2D, null);
+  }
+
+  private bindBrushResources(
+    gl: GL,
+    shader: ShaderProgram,
+    brushStrokeLayer: BrushStrokeLayer,
+  ) {
+    const gpuBrushHashTable: GPUHashTable<HashMapUint64> = GPUHashTable.get(
+      gl,
+      brushStrokeLayer.brushHashTable,
+    );
+    this.brushHashTableManager.enable(gl, shader, gpuBrushHashTable);
+
+    const displayState = brushStrokeLayer.displayState as any;
+    const colorGroupState = displayState.segmentationColorGroupState.value;
+    this.segmentColorShaderManager.enable(
+      gl,
+      shader,
+      colorGroupState.segmentColorHash.value,
+    );
+
+    const segmentStatedColors = displayState.useTempSegmentStatedColors2d.value
+      ? displayState.tempSegmentStatedColors2d.value
+      : displayState.segmentStatedColors.value;
+    this.segmentStatedColorShaderManager.enable(
+      gl,
+      shader,
+      GPUHashTable.get(gl, segmentStatedColors.hashTable),
+    );
+
+    gl.uniform1f(shader.uniform("uSaturation"), displayState.saturation.value);
   }
 
   static get(

@@ -20,11 +20,15 @@ import type {
   LayerChunkProgressInfo,
 } from "#src/chunk_manager/base.js";
 import {
-  CHUNK_SOURCE_INVALIDATE_CHUNKS_RPC_ID,
+  CHUNK_FAILED_RPC_ID,
   CHUNK_LAYER_STATISTICS_RPC_ID,
   CHUNK_MANAGER_RPC_ID,
   CHUNK_QUEUE_MANAGER_RPC_ID,
+  CHUNK_SOURCE_INVALIDATE_CHUNKS_RPC_ID,
+  CHUNK_SOURCE_INVALIDATE_INDEX_RPC_ID,
   CHUNK_SOURCE_INVALIDATE_RPC_ID,
+  CHUNK_SOURCE_SOFT_INVALIDATE_RPC_ID,
+  CHUNK_SOURCE_SOFT_INVALIDATE_COMPLETE_RPC_ID,
   ChunkDownloadStatistics,
   ChunkMemoryStatistics,
   ChunkPriorityTier,
@@ -135,6 +139,9 @@ export class Chunk implements Disposable {
    */
   staleOnFrontend = false;
 
+  // Re-queued by a soft invalidate; the frontend may still hold the old copy.
+  softRefetch = false;
+
   initialize(key: string) {
     this.key = key;
     this.staleOnFrontend = false;
@@ -146,6 +153,7 @@ export class Chunk implements Disposable {
     this.state = ChunkState.NEW;
     this.requestedState = ChunkState.NEW;
     this.newRequestedState = ChunkState.NEW;
+    this.softRefetch = false;
   }
 
   /**
@@ -179,6 +187,14 @@ export class Chunk implements Disposable {
   downloadFailed(error: any) {
     this.error = error;
     this.queueManager.updateChunkState(this, ChunkState.FAILED);
+    const { rpcId } = this.source!;
+    if (rpcId != null) {
+      this.queueManager.rpc!.invoke(CHUNK_FAILED_RPC_ID, {
+        source: rpcId,
+        key: this.key,
+      });
+    }
+    this.queueManager.settleSoftRefetch(this);
   }
 
   downloadSucceeded() {
@@ -296,12 +312,23 @@ export class ChunkSourceBase extends SharedObject {
   freeChunks: Chunk[] = new Array<Chunk>();
   statistics = new Float64Array(numChunkStatistics);
 
+  // In-flight soft invalidates and their chunks not yet shipped or dropped.
+  softRefetchTokens: number[] = [];
+  softRefetchPending = 0;
+
   /**
    * sourceQueueLevel must be greater than the sourceQueueLevel of any ChunkSource whose download
    * method depends on chunks from this source.  A normal ChunkSource with no other dependencies
    * should have a level of 0.
    */
   sourceQueueLevel = 0;
+
+  /**
+   * Optional hook called when the source's cache is invalidated.
+   * Subclasses can override this to invalidate related caches
+   * (e.g. shard index caches for sharded zarr3 sources).
+   */
+  onInvalidateCache?(): void;
 
   constructor(public chunkManager: Borrowed<ChunkManager>) {
     super();
@@ -348,6 +375,15 @@ export class ChunkSourceBase extends SharedObject {
    * If the chunk cache becomes empty, also call this.dispose() to decrement the reference count.
    */
   removeChunk(chunk: Chunk) {
+    if (chunk.softRefetch) {
+      const { queueManager } = this.chunkManager;
+      queueManager.rpc!.invoke("Chunk.update", {
+        id: chunk.key,
+        state: ChunkState.EXPIRED,
+        source: this.rpcId,
+      });
+      queueManager.settleSoftRefetch(chunk);
+    }
     const { chunks, freeChunks } = this;
     chunks.delete(chunk.key!);
     chunk.dispose();
@@ -1007,6 +1043,7 @@ export class ChunkQueueManager extends SharedObjectCounterpart {
       chunk.serialize(msg, transfers);
       msg.state = ChunkState.GPU_MEMORY;
       rpc.invoke("Chunk.update", msg, transfers);
+      this.settleSoftRefetch(chunk);
     }
   }
 
@@ -1018,6 +1055,7 @@ export class ChunkQueueManager extends SharedObjectCounterpart {
     chunk.serialize(msg, transfers);
     msg.state = ChunkState.SYSTEM_MEMORY;
     rpc.invoke("Chunk.update", msg, transfers);
+    this.settleSoftRefetch(chunk);
   }
 
   private processQueuePromotions_() {
@@ -1149,9 +1187,61 @@ export class ChunkQueueManager extends SharedObjectCounterpart {
   }
 
   invalidateSourceCache(source: ChunkSource) {
+    source.onInvalidateCache?.();
     this.invalidateCachedChunks(source, [...source.chunks.keys()]);
     this.rpc!.invoke("Chunk.update", { source: source.rpcId });
     this.scheduleUpdate();
+  }
+
+  // Like invalidateSourceCache, but the frontend keeps its chunks until each
+  // refetched chunk ships and replaces its copy, so nothing blanks. The
+  // tokens complete once every re-queued chunk has shipped or been dropped.
+  // With `keys`, only the chunks with those keys are re-queued.
+  softInvalidateSourceCache(
+    source: ChunkSource,
+    token: number,
+    keys?: readonly string[],
+  ) {
+    let chunks: Iterable<Chunk> = source.chunks.values();
+    if (keys === undefined) {
+      source.onInvalidateCache?.();
+    } else {
+      chunks = keys.flatMap((key) => source.chunks.get(key) ?? []);
+    }
+    source.softRefetchTokens.push(token);
+    for (const chunk of chunks) {
+      if (!chunk.softRefetch) ++source.softRefetchPending;
+      switch (chunk.state) {
+        case ChunkState.DOWNLOADING:
+          cancelChunkDownload(chunk);
+          break;
+        case ChunkState.SYSTEM_MEMORY_WORKER:
+          chunk.freeSystemMemory();
+          break;
+      }
+      chunk.softRefetch = true;
+      // Note: After calling this, chunk may no longer be valid.
+      this.updateChunkState(chunk, ChunkState.QUEUED);
+    }
+    if (source.softRefetchPending === 0) this.completeSoftRefetch(source);
+    this.scheduleUpdate();
+  }
+
+  settleSoftRefetch(chunk: Chunk) {
+    if (!chunk.softRefetch) return;
+    chunk.softRefetch = false;
+    const source = chunk.source as ChunkSource;
+    if (--source.softRefetchPending === 0) this.completeSoftRefetch(source);
+  }
+
+  private completeSoftRefetch(source: ChunkSource) {
+    for (const token of source.softRefetchTokens) {
+      this.rpc!.invoke(CHUNK_SOURCE_SOFT_INVALIDATE_COMPLETE_RPC_ID, {
+        source: source.rpcId,
+        token,
+      });
+    }
+    source.softRefetchTokens.length = 0;
   }
 }
 
@@ -1409,6 +1499,20 @@ registerRPC(CHUNK_SOURCE_INVALIDATE_CHUNKS_RPC_ID, function (x) {
   const source = <ChunkSource>this.get(x.id);
   source.chunkManager.queueManager.invalidateCachedChunks(source, x.keys);
   source.chunkManager.queueManager.scheduleUpdate();
+});
+
+registerRPC(CHUNK_SOURCE_SOFT_INVALIDATE_RPC_ID, function (x) {
+  const source = <ChunkSource>this.get(x.id);
+  source.chunkManager.queueManager.softInvalidateSourceCache(
+    source,
+    x.token,
+    x.keys,
+  );
+});
+
+registerRPC(CHUNK_SOURCE_INVALIDATE_INDEX_RPC_ID, function (x) {
+  const source = <ChunkSource>this.get(x.id);
+  source.onInvalidateCache?.();
 });
 
 registerPromiseRPC(

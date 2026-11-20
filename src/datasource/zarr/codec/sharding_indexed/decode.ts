@@ -15,6 +15,7 @@
  */
 
 import type { ChunkManager } from "#src/chunk_manager/backend.js";
+import { ChunkState } from "#src/chunk_manager/base.js";
 import { SimpleAsyncCache } from "#src/chunk_manager/generic_file_source.js";
 import {
   decodeArray,
@@ -178,6 +179,18 @@ class ShardedKvStore<BaseKey>
 
   getUrl(key: { base: BaseKey; subChunk: number[] }): string {
     return `subchunk ${JSON.stringify(key.subChunk)} within shard ${this.base.getUrl(key.base)}`;
+  }
+
+  invalidateIndexCache() {
+    const { indexCache } = this;
+    for (const chunk of indexCache.chunks.values()) {
+      // Always drop the memoized shard index
+      chunk.freeSystemMemory();
+      indexCache.chunkManager.queueManager.updateChunkState(
+        chunk,
+        ChunkState.QUEUED,
+      );
+    }
   }
 
   get supportsOffsetReads() {

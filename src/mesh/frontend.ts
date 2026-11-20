@@ -17,7 +17,12 @@
 import { ChunkState } from "#src/chunk_manager/base.js";
 import type { ChunkManager } from "#src/chunk_manager/frontend.js";
 import { Chunk, ChunkSource } from "#src/chunk_manager/frontend.js";
-import type { VisibleLayerInfo } from "#src/layer/index.js";
+import type { HashMapUint64 } from "#src/gpu_hash/hash_table.js";
+import { GPUHashTable, HashMapShaderManager } from "#src/gpu_hash/shader.js";
+import type {
+  MouseSelectionState,
+  VisibleLayerInfo,
+} from "#src/layer/index.js";
 import type {
   EncodedMeshData,
   MultiscaleFragmentFormat,
@@ -49,6 +54,7 @@ import {
   encodeSegmentPropertyShaderDefinition,
   SegmentColorShaderManager,
 } from "#src/segment_color.js";
+import { AttributeShader } from "#src/segmentation_display_state/attributes_shader.js";
 import {
   forEachVisibleSegment,
   getObjectKey,
@@ -59,9 +65,11 @@ import {
   registerRedrawWhenSegmentationDisplayState3DChanged,
   SegmentationLayerSharedObject,
 } from "#src/segmentation_display_state/frontend.js";
+import { EquivalencesHashMap } from "#src/sliceview/volume/segmentation_renderlayer.js";
 import type { WatchableValueInterface } from "#src/trackable_value.js";
 import {
   AggregateWatchableValue,
+  constantWatchableValue,
   makeCachedDerivedWatchableValue,
   WatchableValue,
 } from "#src/trackable_value.js";
@@ -118,12 +126,23 @@ function copyMeshDataToGpu(
     gl.ARRAY_BUFFER,
     gl.STATIC_DRAW,
   );
+  const { featureIds, featureIndices } = chunk.meshData;
+  chunk.featureBuffer =
+    featureIds === undefined
+      ? undefined
+      : GLBuffer.fromData(gl, featureIds, gl.ARRAY_BUFFER, gl.STATIC_DRAW);
+  chunk.featureIndexBuffer =
+    featureIndices === undefined
+      ? undefined
+      : GLBuffer.fromData(gl, featureIndices, gl.ARRAY_BUFFER, gl.STATIC_DRAW);
 }
 
 function freeGpuMeshData(chunk: FragmentChunk | MultiscaleFragmentChunk) {
   chunk.vertexBuffer.dispose();
   chunk.indexBuffer.dispose();
   chunk.normalBuffer.dispose();
+  chunk.featureBuffer?.dispose();
+  chunk.featureIndexBuffer?.dispose();
 }
 
 /**
@@ -255,6 +274,16 @@ highp vec3 getVertexPosition() {
 export class MeshShaderManager {
   private tempLightVec = new Float32Array(4);
   private vertexPositionHandler: VertexPositionFormatHandler;
+  // Layer meshes: each vertex's feature id is looked up in the layer's
+  // attribute tables for its color, and hidden features are discarded.
+  private attributeShader: AttributeShader | undefined;
+  private featureEquivalences: EquivalencesHashMap | undefined;
+  private gpuFeatureEquivalences: GPUHashTable<HashMapUint64> | undefined;
+  private featureEquivalencesManager = new HashMapShaderManager(
+    "featureEquivalences",
+  );
+  private featureIdLocation = -1;
+  private featureIndexLocation = -1;
   constructor(
     public fragmentRelativeVertices: boolean,
     public vertexPositionFormat: VertexPositionFormat,
@@ -274,14 +303,70 @@ export class MeshShaderManager {
     vec3.scale(lightVec, lightDirection, directionalLighting);
     lightVec[3] = ambientLighting;
     gl.uniform4fv(shader.uniform("uLightDirection"), lightVec);
+    const clip = meshClipBounds.value;
+    gl.uniform3fv(
+      shader.uniform("uClipLower"),
+      clip ? clip.lower : NO_CLIP_LOWER,
+    );
+    gl.uniform3fv(
+      shader.uniform("uClipUpper"),
+      clip ? clip.upper : NO_CLIP_UPPER,
+    );
     const silhouetteRendering = displayState.silhouetteRendering.value;
     if (silhouetteRendering > 0) {
       gl.uniform1f(shader.uniform("uSilhouettePower"), silhouetteRendering);
+    }
+    this.featureIdLocation = shader.attribute("aFeatureId") ?? -1;
+    this.featureIndexLocation = shader.attribute("aFeatureIndex") ?? -1;
+    if (this.featureIdLocation >= 0) {
+      this.attributeShader!.enable(gl, shader);
+      this.featureEquivalences!.update();
+      this.featureEquivalencesManager.enable(
+        gl,
+        shader,
+        this.gpuFeatureEquivalences!,
+      );
+      const selection = displayState.segmentSelectionState;
+      const highlight =
+        displayState.hoverHighlight.value && selection.hasSelectedSegment;
+      const saturation = displayState.saturation.value;
+      const byBase = displayState.baseSegmentHighlighting.value;
+      const seg = byBase
+        ? selection.baseSelectedSegment
+        : selection.selectedSegment;
+      gl.uniform2ui(
+        shader.uniform("uSelectedFeature"),
+        highlight && seg >> 32n === 0n ? Number(seg) : 0,
+        byBase ? 1 : 0,
+      );
+      gl.uniform2f(
+        shader.uniform("uFeatureSaturation"),
+        saturation,
+        saturation > 0.5 ? saturation - 0.5 : saturation + 0.5,
+      );
     }
   }
 
   setPickID(gl: GL, shader: ShaderProgram, pickID: number) {
     gl.uniform1ui(shader.uniform("uPickID"), pickID);
+  }
+
+  setAttributeColor(
+    gl: GL,
+    shader: ShaderProgram,
+    color: Float32Array | undefined,
+  ) {
+    if (color === undefined) {
+      gl.uniform4f(shader.uniform("uAttributeColor"), 0, 0, 0, -1);
+    } else {
+      gl.uniform4f(
+        shader.uniform("uAttributeColor"),
+        color[0],
+        color[1],
+        color[2],
+        1,
+      );
+    }
   }
 
   setID(gl: GL, shader: ShaderProgram, id: bigint) {
@@ -330,6 +415,19 @@ export class MeshShaderManager {
       WebGL2RenderingContext.BYTE,
       /*normalized=*/ true,
     );
+    // Without a layer mesh's buffers: feature 0, colored and picked by its segment.
+    for (const [location, buffer] of [
+      [this.featureIdLocation, fragmentChunk.featureBuffer],
+      [this.featureIndexLocation, fragmentChunk.featureIndexBuffer],
+    ] as const) {
+      if (location < 0) continue;
+      if (buffer !== undefined) {
+        buffer.bindToVertexAttribI(location, 1);
+      } else {
+        gl.disableVertexAttribArray(location);
+        gl.vertexAttribI4ui(location, 0, 0, 0, 0);
+      }
+    }
     fragmentChunk.indexBuffer.bind();
     const { indices } = meshData;
     gl.drawElements(
@@ -375,9 +473,30 @@ export class MeshShaderManager {
     );
     this.vertexPositionHandler.endLayer(gl, shader);
     gl.disableVertexAttribArray(shader.attribute("aVertexNormal"));
+    if (this.featureIdLocation >= 0) {
+      gl.disableVertexAttribArray(this.featureIdLocation);
+      this.attributeShader!.disable(gl, shader);
+      this.featureEquivalencesManager.disable(gl, shader);
+    }
+    if (this.featureIndexLocation >= 0) {
+      gl.disableVertexAttribArray(this.featureIndexLocation);
+    }
   }
 
   makeGetter(layer: RefCounted & { gl: GL; displayState: MeshDisplayState }) {
+    const tables = layer.displayState.segmentAttributes;
+    if (tables !== undefined) {
+      this.attributeShader = layer.registerDisposer(
+        new AttributeShader(layer.gl, tables),
+      );
+      this.featureEquivalences = new EquivalencesHashMap(
+        layer.displayState.segmentationGroupState.value.segmentEquivalences.disjointSets,
+      );
+      this.gpuFeatureEquivalences = layer.registerDisposer(
+        GPUHashTable.get(layer.gl, this.featureEquivalences.hashMap),
+      );
+    }
+    const featureAttributes = tables?.enabled ?? constantWatchableValue(false);
     const parameters = layer.registerDisposer(
       new AggregateWatchableValue((refCounted) => ({
         segmentColorParameters:
@@ -392,6 +511,7 @@ export class MeshShaderManager {
             [layer.displayState.silhouetteRendering],
           ),
         ),
+        featureAttributes,
       })),
     );
     const fallbackParameters = new WatchableValue({
@@ -403,13 +523,14 @@ export class MeshShaderManager {
       ),
       silhouetteRenderingEnabled:
         layer.displayState.silhouetteRendering.value > 0,
+      featureAttributes: featureAttributes.value,
     });
 
     return parameterizedEmitterDependentShaderGetter(layer, layer.gl, {
       memoizeKey: `mesh/MeshShaderManager/${this.fragmentRelativeVertices}/${this.vertexPositionFormat}`,
       parameters,
       encodeParameters: (p) => {
-        return `${p.shaderBuilderState.key}/${JSON.stringify(p.segmentColorParameters)}/${JSON.stringify(p.segmentColorProperties.map(encodeSegmentPropertyShaderDefinition))}/${p.silhouetteRenderingEnabled}`;
+        return `${p.shaderBuilderState.key}/${JSON.stringify(p.segmentColorParameters)}/${JSON.stringify(p.segmentColorProperties.map(encodeSegmentPropertyShaderDefinition))}/${p.silhouetteRenderingEnabled}/${p.featureAttributes}`;
       },
       fallbackParameters,
       shaderError: layer.displayState.meshShaderError,
@@ -419,6 +540,7 @@ export class MeshShaderManager {
           segmentColorParameters,
           shaderBuilderState,
           silhouetteRenderingEnabled,
+          featureAttributes,
         },
       ) => {
         this.vertexPositionHandler.defineShader(builder);
@@ -428,6 +550,17 @@ export class MeshShaderManager {
           shaderBuilderState,
           segmentColorParameters,
         );
+        if (featureAttributes) {
+          this.attributeShader!.defineShader(builder);
+          this.featureEquivalencesManager.defineShader(builder);
+          builder.addAttribute("highp uint", "aFeatureId");
+          builder.addAttribute("highp uint", "aFeatureIndex");
+          builder.addVarying("highp uint", "vFeatureId", "flat");
+          builder.addVarying("highp uint", "vFeatureIndex", "flat");
+          builder.addVarying("highp float", "vLighting");
+          builder.addUniform("highp uvec2", "uSelectedFeature");
+          builder.addUniform("highp vec2", "uFeatureSaturation");
+        }
         builder.addAttribute("highp vec2", "aVertexNormal");
         builder.addVarying("highp vec4", "vColor");
         builder.addUniform("highp vec4", "uLightDirection");
@@ -436,7 +569,15 @@ export class MeshShaderManager {
         builder.addUniform("highp uint", "uPickID");
         builder.addUniform("highp uvec2", "uID");
         builder.addUniform("highp float", "uAlpha");
-
+        // The segment's attribute class color while the layer's attribute
+        // tables are enabled; alpha < 0 means none (use the color shader).
+        builder.addUniform("highp vec4", "uAttributeColor");
+        // Per-axis clip box in the mesh's model (nm) space; fragments outside
+        // are discarded. Set to +/-1e30 when clipping is off, so no branch flag
+        // or shader variant is needed. Mirrors the volume clip (§ clipBounds).
+        builder.addUniform("highp vec3", "uClipLower");
+        builder.addUniform("highp vec3", "uClipUpper");
+        builder.addVarying("highp vec3", "vModelPosition");
         if (silhouetteRenderingEnabled) {
           builder.addUniform("highp float", "uSilhouettePower");
         }
@@ -460,23 +601,76 @@ highp vec3 normalMultiplier = vec3(1.0, 1.0, 1.0);
         }
         vertexMain += `
 gl_Position = uModelViewProjection * vec4(vertexPosition, 1.0);
+vModelPosition = vertexPosition;
 vec3 origNormal = decodeNormalOctahedronSnorm8(aVertexNormal);
 vec3 normal = normalize(uNormalMatrix * (normalMultiplier * origNormal));
 float absCosAngle = abs(dot(normal, uLightDirection.xyz));
 float lightingFactor = absCosAngle + uLightDirection.w;
-vColor = segmentColorUserShader(uint64_t(uID));
+if (uAttributeColor.a >= 0.0) {
+  float saturation = uSaturation;
+  if (uHasSelectedSegment && uSelectedSegment == uID) {
+    saturation += saturation > 0.5 ? -0.5 : 0.5;
+  }
+  vColor = vec4(mix(vec3(1.0), uAttributeColor.rgb, saturation), 1.0);
+} else {
+  vColor = segmentColorUserShader(uint64_t(uID));
+}
 float alpha = uAlpha * vColor.a;
 vColor = vec4(lightingFactor * vColor.rgb * alpha, alpha);
 `;
+        if (featureAttributes) {
+          vertexMain += `
+vFeatureId = aFeatureId;
+vFeatureIndex = aFeatureIndex;
+vLighting = lightingFactor;
+`;
+        }
         if (silhouetteRenderingEnabled) {
           vertexMain += `
 vColor *= pow(1.0 - absCosAngle, uSilhouettePower);
 `;
+          if (featureAttributes) {
+            vertexMain += `
+vLighting *= pow(1.0 - absCosAngle, uSilhouettePower);
+`;
+          }
         }
         builder.setVertexMain(vertexMain);
         const shaderManager = new SegmentColorShaderManager("getColor");
         shaderManager.defineShader(builder);
-        builder.setFragmentMain("emit(vColor, uPickID);");
+        let fragmentMain = `
+if (any(lessThan(vModelPosition, uClipLower)) ||
+    any(greaterThan(vModelPosition, uClipUpper))) {
+  discard;
+}
+vec4 color = vColor;
+uint pickID = uPickID;
+`;
+        if (featureAttributes) {
+          fragmentMain += `
+if (vFeatureId != 0u) {
+  uint64_t featureId;
+  featureId.value = uvec2(vFeatureId, 0u);
+  vec4 featureColor;
+  if (!getAttributeColor(featureId, featureColor)) discard;
+  uint highlightId = vFeatureId;
+  uint64_t root;
+  if (uSelectedFeature.y == 0u &&
+      ${this.featureEquivalencesManager.getFunctionName}(featureId, root)) {
+    highlightId = root.value[0];
+  }
+  float saturation = uSelectedFeature.x != 0u && highlightId == uSelectedFeature.x
+      ? uFeatureSaturation.y : uFeatureSaturation.x;
+  vec3 rgb = featureColor.rgb * saturation + (1.0 - saturation);
+  color = vec4(vLighting * uAlpha * rgb, vColor.a);
+  pickID += vFeatureIndex;
+}
+`;
+        }
+        fragmentMain += `
+emit(color, pickID);
+`;
+        builder.setFragmentMain(fragmentMain);
       },
     });
   }
@@ -486,6 +680,24 @@ export interface MeshDisplayState extends SegmentationDisplayState3D {
   silhouetteRendering: WatchableValueInterface<number>;
   shaderError: WatchableShaderError;
 }
+
+// Viewer-global "show meshes" switch, read each frame by both mesh draw paths.
+// One toggle for all meshes (not per-layer); the app sets `.value` and each
+// mesh layer registers a redraw on `.changed`.
+export const meshesVisible = new WatchableValue<boolean>(true);
+
+export interface MeshClipBounds {
+  lower: Float32Array;
+  upper: Float32Array;
+}
+
+// Viewer-global mesh clip box, in the mesh's model (nm) space. `null` = no clip
+// (the shader receives the ±NO_CLIP sentinel bounds). Driven from the app's 3D
+// clipBounds; one box for all meshes, like `meshesVisible`.
+export const meshClipBounds = new WatchableValue<MeshClipBounds | null>(null);
+
+const NO_CLIP_LOWER = new Float32Array([-1e30, -1e30, -1e30]);
+const NO_CLIP_UPPER = new Float32Array([1e30, 1e30, 1e30]);
 
 export class MeshLayer extends PerspectiveViewRenderLayer<ThreeDimensionalRenderLayerAttachmentState> {
   protected meshShaderManager;
@@ -507,6 +719,12 @@ export class MeshLayer extends PerspectiveViewRenderLayer<ThreeDimensionalRender
     registerRedrawWhenSegmentationDisplayState3DChanged(displayState, this);
     this.registerDisposer(
       displayState.silhouetteRendering.changed.add(this.redrawNeeded.dispatch),
+    );
+    this.registerDisposer(
+      meshesVisible.changed.add(this.redrawNeeded.dispatch),
+    );
+    this.registerDisposer(
+      meshClipBounds.changed.add(this.redrawNeeded.dispatch),
     );
 
     const sharedObject = (this.backend = this.registerDisposer(
@@ -559,6 +777,10 @@ export class MeshLayer extends PerspectiveViewRenderLayer<ThreeDimensionalRender
       // Skip drawing.
       return;
     }
+    if (!meshesVisible.value) {
+      // Global "show meshes" toggle is off.
+      return;
+    }
     const modelMatrix = update3dRenderLayerAttachment(
       displayState.transform.value,
       renderContext.projectionParameters.displayDimensionRenderInfo,
@@ -593,7 +815,7 @@ export class MeshLayer extends PerspectiveViewRenderLayer<ThreeDimensionalRender
       displayState,
       this,
       renderContext.emitPickID ? renderContext.pickIDs : undefined,
-      (objectId, pickIndex, colorObjectId) => {
+      (objectId, pickIndex, colorObjectId, attributeColor) => {
         const key = getObjectKey(objectId);
         const manifestChunk = manifestChunks.get(key);
         ++totalChunks;
@@ -609,6 +831,7 @@ export class MeshLayer extends PerspectiveViewRenderLayer<ThreeDimensionalRender
           meshShaderManager.setPickID(gl, shader, pickIndex!);
         }
         meshShaderManager.setID(gl, shader, colorObjectId);
+        meshShaderManager.setAttributeColor(gl, shader, attributeColor);
         totalChunks += manifestChunk.fragmentIds.length;
 
         for (const fragmentId of manifestChunk.fragmentIds) {
@@ -776,6 +999,8 @@ export class FragmentChunk extends Chunk {
   vertexBuffer: GLBuffer;
   indexBuffer: GLBuffer;
   normalBuffer: GLBuffer;
+  featureBuffer: GLBuffer | undefined;
+  featureIndexBuffer: GLBuffer | undefined;
   meshData: EncodedMeshData;
 
   constructor(source: FragmentSource, x: any) {
@@ -867,6 +1092,12 @@ export class MultiscaleMeshLayer extends PerspectiveViewRenderLayer<ThreeDimensi
     this.registerDisposer(
       displayState.silhouetteRendering.changed.add(this.redrawNeeded.dispatch),
     );
+    this.registerDisposer(
+      meshesVisible.changed.add(this.redrawNeeded.dispatch),
+    );
+    this.registerDisposer(
+      meshClipBounds.changed.add(this.redrawNeeded.dispatch),
+    );
 
     const sharedObject = (this.backend = this.registerDisposer(
       new SegmentationLayerSharedObject(
@@ -883,6 +1114,19 @@ export class MultiscaleMeshLayer extends PerspectiveViewRenderLayer<ThreeDimensi
     this.registerDisposer(
       displayState.renderScaleHistogram.visibility.add(this.visibility),
     );
+  }
+
+  updateMouseState(
+    mouseState: MouseSelectionState,
+    _pickedValue: bigint,
+    pickedOffset: number,
+    data: any,
+  ) {
+    const features = (data as MultiscaleFragmentChunk | null)?.meshData
+      ?.features;
+    if (features !== undefined) {
+      mouseState.pickedValue = BigInt(features[pickedOffset]);
+    }
   }
 
   get isTransparent() {
@@ -916,6 +1160,10 @@ export class MultiscaleMeshLayer extends PerspectiveViewRenderLayer<ThreeDimensi
     const { gl, displayState, meshShaderManager } = this;
     if (displayState.objectAlpha.value <= 0.0) {
       // Skip drawing.
+      return;
+    }
+    if (!meshesVisible.value) {
+      // Global "show meshes" toggle is off.
       return;
     }
     const modelMatrix = update3dRenderLayerAttachment(
@@ -976,12 +1224,19 @@ export class MultiscaleMeshLayer extends PerspectiveViewRenderLayer<ThreeDimensi
 
     let totalManifestChunks = 0;
     let presentManifestChunks = 0;
+    // Per-feature pick IDs only when the shader adds the feature index, and
+    // once per fragment per frame: a fragment can draw as several sub-ranges.
+    const featurePickIDs =
+      renderContext.emitPickID &&
+      displayState.segmentAttributes?.enabled.value === true
+        ? new Map<MultiscaleFragmentChunk, number>()
+        : undefined;
 
     forEachVisibleSegmentToDraw(
       displayState,
       this,
       renderContext.emitPickID ? renderContext.pickIDs : undefined,
-      (objectId, pickIndex, colorObjectId) => {
+      (objectId, pickIndex, colorObjectId, attributeColor) => {
         const key = getObjectKey(objectId);
         const manifestChunk = chunks.get(key);
         ++totalManifestChunks;
@@ -1007,6 +1262,7 @@ export class MultiscaleMeshLayer extends PerspectiveViewRenderLayer<ThreeDimensi
           meshShaderManager.setPickID(gl, shader, pickIndex!);
         }
         meshShaderManager.setID(gl, shader, colorObjectId);
+        meshShaderManager.setAttributeColor(gl, shader, attributeColor);
 
         getMultiscaleChunksToDraw(
           manifest,
@@ -1079,6 +1335,26 @@ export class MultiscaleMeshLayer extends PerspectiveViewRenderLayer<ThreeDimensi
               if (renderContext.emitPickID) {
                 meshShaderManager.setPickID(gl, shader, pickIndex!);
               }
+            }
+            if (renderContext.emitPickID) {
+              // A layer-mesh fragment picks per feature: one pick ID per distinct
+              // feature, resolved in `updateMouseState`.
+              const { features } = fragmentChunk.meshData;
+              let pickID = pickIndex!;
+              if (features !== undefined && featurePickIDs !== undefined) {
+                let base = featurePickIDs.get(fragmentChunk);
+                if (base === undefined) {
+                  base = renderContext.pickIDs.register(
+                    this,
+                    features.length,
+                    objectId,
+                    fragmentChunk,
+                  );
+                  featurePickIDs.set(fragmentChunk, base);
+                }
+                pickID = base;
+              }
+              meshShaderManager.setPickID(gl, shader, pickID);
             }
             meshShaderManager.drawMultiscaleFragment(
               gl,
@@ -1214,6 +1490,8 @@ export class MultiscaleFragmentChunk extends Chunk {
   vertexBuffer: GLBuffer;
   indexBuffer: GLBuffer;
   normalBuffer: GLBuffer;
+  featureBuffer: GLBuffer | undefined;
+  featureIndexBuffer: GLBuffer | undefined;
 
   constructor(source: MultiscaleFragmentSource, x: any) {
     super(source);

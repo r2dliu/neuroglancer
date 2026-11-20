@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { DataType } from "#src/util/data_type.js";
 import { computePercentilesFromEmpiricalHistogram } from "#src/util/empirical_cdf.js";
 import type { DataTypeInterval } from "#src/util/lerp.js";

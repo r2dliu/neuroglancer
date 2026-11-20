@@ -168,8 +168,10 @@ let savedModifiers:
     }
   | undefined = undefined;
 
-// Apply Linux Wayland-specific workarounds.
+// Apply Linux Wayland-specific workarounds. Skipped outside a browser (e.g.
+// server-side rendering of an embedding app), where `navigator` is undefined.
 if (
+  typeof navigator !== "undefined" &&
   navigator.platform.startsWith("Linux ") &&
   !navigator.userAgent.includes("CrOs") &&
   !navigator.userAgent.includes("Android") &&

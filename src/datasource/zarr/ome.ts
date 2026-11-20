@@ -17,8 +17,8 @@
 import type { CoordinateSpace } from "#src/coordinate_transform.js";
 import { makeCoordinateSpace } from "#src/coordinate_transform.js";
 import type {
-  SingleChannelMetadata,
   ChannelMetadata,
+  SingleChannelMetadata,
 } from "#src/datasource/index.js";
 import {
   joinBaseUrlAndPath,
