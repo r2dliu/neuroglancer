@@ -4,3 +4,4 @@ import "#layer/image";
 import "#layer/oblique_slice";
 import "#layer/segmentation";
 import "#layer/single_mesh";
+import "#layer/slice";

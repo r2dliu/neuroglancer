@@ -1,0 +1,201 @@
+import { ProjectionParameters } from "#src/projection_parameters.js";
+import type { TransformedSource } from "#src/sliceview/base.js";
+import { forEachVisibleVolumetricChunk } from "#src/sliceview/base.js";
+import type { ChunkLayout } from "#src/sliceview/chunk_layout.js";
+import type { VolumeChunkSource } from "#src/sliceview/volume/base.js";
+import type { quat, vec4 } from "#src/util/geom.js";
+import { kAxes, mat4, transformVectorByMat4, vec3 } from "#src/util/geom.js";
+
+export const SLICE_PROJECTION_RENDER_LAYER_RPC_ID =
+  "slice_projection/SliceProjectionRenderLayer";
+export const SLICE_PROJECTION_RENDER_LAYER_UPDATE_SOURCES_RPC_ID =
+  "slice_projection/SliceProjectionRenderLayer/update";
+
+export const SLICE_PROJECTION_MAX_TEXTURE_SIZE = 1024;
+
+export enum SliceProjectionMode {
+  NONE = 0,
+  MIN = 1,
+  MAX = 2,
+}
+
+export interface SliceParameters {
+  position: Float32Array;
+  orientation: Float32Array;
+  voxelRange: number;
+  projectionMode: SliceProjectionMode;
+  backgroundColor: vec4;
+  width: number;
+  height: number;
+}
+
+export interface SliceScaleInfo<Transformed> {
+  tsource: Transformed;
+  scaleIndex: number;
+  sliceToWorld: mat4;
+  voxelSpacing: number;
+  finestSpacing: number;
+  halfThickness: number;
+}
+
+const tempScale = vec3.create();
+const tempNormal = vec3.create();
+const tempAxis = vec3.create();
+const tempVoxelVector = vec3.create();
+const tempSliceToWorld = mat4.create();
+const tempWorldToSlice = mat4.create();
+const tempProjectionParameters = new ProjectionParameters();
+
+export function getSliceTargetSpacing(parameters: SliceParameters) {
+  return (
+    Math.max(parameters.width, parameters.height) /
+    SLICE_PROJECTION_MAX_TEXTURE_SIZE
+  );
+}
+
+export function getSliceTextureSize(parameters: SliceParameters) {
+  const spacing = getSliceTargetSpacing(parameters);
+  const clamp = (x: number) =>
+    Math.max(1, Math.min(SLICE_PROJECTION_MAX_TEXTURE_SIZE, Math.round(x)));
+  return {
+    width: clamp(parameters.width / spacing),
+    height: clamp(parameters.height / spacing),
+  };
+}
+
+export function getSliceNormal(out: vec3, parameters: SliceParameters) {
+  return vec3.transformQuat(
+    out,
+    kAxes[2],
+    parameters.orientation as unknown as quat,
+  );
+}
+
+export function globalToIsotropic(
+  out: vec3,
+  global: vec3,
+  canonicalVoxelFactors: Float64Array,
+) {
+  for (let i = 0; i < 3; ++i) out[i] = global[i] * canonicalVoxelFactors[i];
+  return out;
+}
+
+export function isotropicToGlobal(
+  out: vec3,
+  isotropic: vec3,
+  canonicalVoxelFactors: Float64Array,
+) {
+  for (let i = 0; i < 3; ++i) out[i] = isotropic[i] / canonicalVoxelFactors[i];
+  return out;
+}
+
+export function computeSliceFrame(
+  out: mat4,
+  parameters: SliceParameters,
+  canonicalVoxelFactors: Float64Array,
+) {
+  const { position, orientation } = parameters;
+  mat4.fromQuat(out, orientation as unknown as quat);
+  for (let i = 0; i < 3; ++i) {
+    const inverseFactor = 1 / canonicalVoxelFactors[i];
+    out[i] *= inverseFactor;
+    out[4 + i] *= inverseFactor;
+    out[8 + i] *= inverseFactor;
+    out[12 + i] = position[i];
+  }
+  return out;
+}
+
+export function computeSliceToWorld(
+  out: mat4,
+  parameters: SliceParameters,
+  canonicalVoxelFactors: Float64Array,
+  halfThickness: number,
+) {
+  const { width, height } = parameters;
+  computeSliceFrame(out, parameters, canonicalVoxelFactors);
+  vec3.set(tempScale, width / 2, height / 2, halfThickness);
+  return mat4.scale(out, out, tempScale);
+}
+
+export function getVoxelSpacingAlongNormal(
+  chunkLayout: ChunkLayout,
+  normal: vec3,
+) {
+  transformVectorByMat4(tempVoxelVector, normal, chunkLayout.invTransform);
+  const length = vec3.length(tempVoxelVector);
+  return length === 0 ? 0 : 1 / length;
+}
+
+function getEffectiveVoxelRange(parameters: SliceParameters) {
+  return parameters.projectionMode === SliceProjectionMode.NONE
+    ? 0
+    : parameters.voxelRange;
+}
+
+export function getSliceSampleCount(
+  parameters: SliceParameters,
+  info: SliceScaleInfo<unknown>,
+) {
+  if (getEffectiveVoxelRange(parameters) === 0 || info.voxelSpacing === 0) {
+    return 1;
+  }
+  const count = Math.round((2 * info.halfThickness) / info.voxelSpacing) + 1;
+  return Math.max(1, Math.min(512, count));
+}
+
+export function forEachChunkInSlice<
+  Transformed extends TransformedSource<any, VolumeChunkSource>,
+>(
+  parameters: SliceParameters,
+  globalPosition: Float32Array,
+  localPosition: Float32Array,
+  canonicalVoxelFactors: Float64Array,
+  transformedSources: readonly Transformed[],
+  beginScale: (info: SliceScaleInfo<Transformed>) => void,
+  callback: (source: Transformed, positionInChunks: vec3) => void,
+) {
+  const { width, height } = parameters;
+  if (transformedSources.length === 0 || !(width > 0) || !(height > 0)) return;
+  getSliceNormal(tempNormal, parameters);
+  isotropicToGlobal(tempAxis, tempNormal, canonicalVoxelFactors);
+  const finestSpacing = getVoxelSpacingAlongNormal(
+    transformedSources[0].chunkLayout,
+    tempAxis,
+  );
+  if (finestSpacing === 0) return;
+  const halfThickness =
+    Math.max(getEffectiveVoxelRange(parameters), 0.5) * finestSpacing;
+  const targetVolume = getSliceTargetSpacing(parameters) ** 3;
+  let scaleIndex = transformedSources.length - 1;
+  for (let i = scaleIndex; i >= 0; --i) {
+    const voxelVolume = Math.abs(
+      transformedSources[i].chunkLayout.detTransform,
+    );
+    if (voxelVolume >= targetVolume) scaleIndex = i;
+  }
+  const tsource = transformedSources[scaleIndex];
+  computeSliceToWorld(
+    tempSliceToWorld,
+    parameters,
+    canonicalVoxelFactors,
+    halfThickness,
+  );
+  mat4.invert(tempWorldToSlice, tempSliceToWorld);
+  beginScale({
+    tsource,
+    scaleIndex,
+    sliceToWorld: tempSliceToWorld,
+    voxelSpacing: getVoxelSpacingAlongNormal(tsource.chunkLayout, tempAxis),
+    finestSpacing,
+    halfThickness,
+  });
+  tempProjectionParameters.globalPosition = globalPosition;
+  mat4.copy(tempProjectionParameters.viewProjectionMat, tempWorldToSlice);
+  forEachVisibleVolumetricChunk(
+    tempProjectionParameters,
+    localPosition,
+    tsource,
+    (positionInChunks) => callback(tsource, positionInChunks),
+  );
+}
