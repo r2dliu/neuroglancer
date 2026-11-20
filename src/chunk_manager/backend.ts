@@ -376,13 +376,7 @@ export class ChunkSourceBase extends SharedObject {
    */
   removeChunk(chunk: Chunk) {
     if (chunk.softRefetch) {
-      const { queueManager } = this.chunkManager;
-      queueManager.rpc!.invoke("Chunk.update", {
-        id: chunk.key,
-        state: ChunkState.EXPIRED,
-        source: this.rpcId,
-      });
-      queueManager.settleSoftRefetch(chunk);
+      this.chunkManager.queueManager.settleSoftRefetch(chunk);
     }
     const { chunks, freeChunks } = this;
     chunks.delete(chunk.key!);
@@ -1202,27 +1196,16 @@ export class ChunkQueueManager extends SharedObjectCounterpart {
     token: number,
     keys?: readonly string[],
   ) {
-    let chunks: Iterable<Chunk> = source.chunks.values();
-    if (keys === undefined) {
-      source.onInvalidateCache?.();
-    } else {
-      chunks = keys.flatMap((key) => source.chunks.get(key) ?? []);
-    }
+    if (keys === undefined) source.onInvalidateCache?.();
+    const requeued = [...(keys ?? source.chunks.keys())];
     source.softRefetchTokens.push(token);
-    for (const chunk of chunks) {
-      if (!chunk.softRefetch) ++source.softRefetchPending;
-      switch (chunk.state) {
-        case ChunkState.DOWNLOADING:
-          cancelChunkDownload(chunk);
-          break;
-        case ChunkState.SYSTEM_MEMORY_WORKER:
-          chunk.freeSystemMemory();
-          break;
-      }
+    for (const key of requeued) {
+      const chunk = source.chunks.get(key);
+      if (chunk === undefined || chunk.softRefetch) continue;
       chunk.softRefetch = true;
-      // Note: After calling this, chunk may no longer be valid.
-      this.updateChunkState(chunk, ChunkState.QUEUED);
+      ++source.softRefetchPending;
     }
+    this.invalidateCachedChunks(source, requeued);
     if (source.softRefetchPending === 0) this.completeSoftRefetch(source);
     this.scheduleUpdate();
   }
