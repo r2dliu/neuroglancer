@@ -50,7 +50,11 @@ import type {
   WatchableSet,
   WatchableValueInterface,
 } from "#src/trackable_value.js";
-import { registerNested, TrackableValue } from "#src/trackable_value.js";
+import {
+  registerNested,
+  TrackableValue,
+  WatchableValue,
+} from "#src/trackable_value.js";
 import type { TrackableRGB } from "#src/util/color.js";
 import type { Borrowed, Owned } from "#src/util/disposable.js";
 import { RefCounted } from "#src/util/disposable.js";
@@ -204,12 +208,63 @@ function getCommonPerspectiveViewerState(container: DataPanelLayoutContainer) {
   };
 }
 
-function getCommonSliceViewerState(viewer: ViewerUIState) {
+export function getCommonSliceViewerState(viewer: ViewerUIState) {
   return {
     ...getCommonViewerState(viewer),
     navigationState: viewer.navigationState,
     inputEventMap: viewer.inputEventBindings.sliceView,
   };
+}
+
+// Builds a 2D pane in place of a named-axes slice view panel.
+export type PaneOverride = (
+  element: HTMLElement,
+  viewer: ViewerUIState,
+) => RefCounted;
+
+class PaneSlot extends RefCounted implements DataDisplayLayout {
+  constructor(
+    public container: DataPanelLayoutContainer,
+    public rootElement: HTMLElement,
+  ) {
+    super();
+  }
+}
+
+// A named-axes pane: its override if set, else its axis panel. Rebuilt in
+// place when its override changes, without rebuilding the rest of the layout.
+function makeAxesPane(
+  layout: DataDisplayLayout,
+  axes: NamedAxes,
+  element: HTMLElement,
+  buildAxisPanel: (slot: DataDisplayLayout, element: HTMLElement) => void,
+) {
+  const { container } = layout;
+  element.style.display = "flex";
+  let slot: PaneSlot | undefined;
+  let built: PaneOverride | undefined;
+  const build = () => {
+    const override = container.paneOverrides.value.get(axes);
+    if (slot !== undefined && override === built) return;
+    built = override;
+    slot?.dispose();
+    removeChildren(element);
+    const child = document.createElement("div");
+    child.style.flex = "1";
+    child.style.minWidth = "0";
+    child.style.minHeight = "0";
+    child.style.display = "flex";
+    element.appendChild(child);
+    slot = new PaneSlot(container, child);
+    if (override !== undefined) {
+      slot.registerDisposer(override(child, container.viewer));
+    } else {
+      buildAxisPanel(slot, child);
+    }
+  };
+  build();
+  layout.registerDisposer(container.paneOverrides.changed.add(build));
+  layout.registerDisposer(() => slot?.dispose());
 }
 
 /**
@@ -387,6 +442,9 @@ export class FourPanelLayout extends RefCounted {
     super();
 
     const sliceViews = makeOrthogonalSliceViews(viewer);
+    for (const sliceView of sliceViews.values()) {
+      this.registerDisposer(sliceView);
+    }
     const { display } = viewer;
 
     const perspectiveViewerState = {
@@ -410,14 +468,20 @@ export class FourPanelLayout extends RefCounted {
       state: SliceViewerState,
       displayDimensionsWidget: boolean,
     ) => {
-      const panel = this.registerDisposer(
-        new SliceViewPanel(display, element, sliceViews.get(axes)!, state),
-      );
-      if (displayDimensionsWidget) {
-        addDisplayDimensionsWidget(this, panel);
-      }
-      registerRelatedLayouts(this, panel, [axes, `${axes}-3d`]);
-      return panel;
+      makeAxesPane(this, axes, element, (slot, element) => {
+        const panel = slot.registerDisposer(
+          new SliceViewPanel(
+            display,
+            element,
+            sliceViews.get(axes)!.addRef(),
+            state,
+          ),
+        );
+        if (displayDimensionsWidget) {
+          addDisplayDimensionsWidget(slot, panel);
+        }
+        registerRelatedLayouts(slot, panel, [axes, `${axes}-3d`]);
+      });
     };
     const mainDisplayContents = [
       L.withFlex(
@@ -490,6 +554,9 @@ export class FourPanelAltLayout extends RefCounted {
     super();
 
     const sliceViews = makeOrthogonalSliceViews(viewer);
+    for (const sliceView of sliceViews.values()) {
+      this.registerDisposer(sliceView);
+    }
     const { display } = viewer;
 
     const perspectiveViewerState = {
@@ -513,14 +580,20 @@ export class FourPanelAltLayout extends RefCounted {
       state: SliceViewerState,
       displayDimensionsWidget: boolean,
     ) => {
-      const panel = this.registerDisposer(
-        new SliceViewPanel(display, element, sliceViews.get(axes)!, state),
-      );
-      if (displayDimensionsWidget) {
-        addDisplayDimensionsWidget(this, panel);
-      }
-      registerRelatedLayouts(this, panel, [axes, `${axes}-3d`]);
-      return panel;
+      makeAxesPane(this, axes, element, (slot, element) => {
+        const panel = slot.registerDisposer(
+          new SliceViewPanel(
+            display,
+            element,
+            sliceViews.get(axes)!.addRef(),
+            state,
+          ),
+        );
+        if (displayDimensionsWidget) {
+          addDisplayDimensionsWidget(slot, panel);
+        }
+        registerRelatedLayouts(slot, panel, [axes, `${axes}-3d`]);
+      });
     };
     const mainDisplayContents = [
       L.withFlex(
@@ -594,7 +667,7 @@ export class SliceViewPerspectiveTwoPanelLayout extends RefCounted {
   ) {
     super();
 
-    const sliceView = makeNamedSliceView(viewer, axes);
+    const sliceView = this.registerDisposer(makeNamedSliceView(viewer, axes));
     const { display } = viewer;
 
     const perspectiveViewerState = {
@@ -611,11 +684,18 @@ export class SliceViewPerspectiveTwoPanelLayout extends RefCounted {
       1,
       L.box(direction, [
         L.withFlex(1, (element) => {
-          const panel = this.registerDisposer(
-            new SliceViewPanel(display, element, sliceView, sliceViewerState),
-          );
-          addDisplayDimensionsWidget(this, panel);
-          registerRelatedLayouts(this, panel, [axes, "4panel-alt"]);
+          makeAxesPane(this, axes, element, (slot, element) => {
+            const panel = slot.registerDisposer(
+              new SliceViewPanel(
+                display,
+                element,
+                sliceView.addRef(),
+                sliceViewerState,
+              ),
+            );
+            addDisplayDimensionsWidget(slot, panel);
+            registerRelatedLayouts(slot, panel, [axes, "4panel-alt"]);
+          });
         }),
         L.withFlex(1, (element) => {
           const panel = this.registerDisposer(
@@ -645,7 +725,7 @@ export class SinglePanelLayout extends RefCounted {
     axes: NamedAxes,
   ) {
     super();
-    const sliceView = makeNamedSliceView(viewer, axes);
+    const sliceView = this.registerDisposer(makeNamedSliceView(viewer, axes));
     const sliceViewerState = {
       ...getCommonSliceViewerState(viewer),
       showScaleBar: viewer.showScaleBar,
@@ -653,16 +733,18 @@ export class SinglePanelLayout extends RefCounted {
 
     L.box("row", [
       L.withFlex(1, (element) => {
-        const panel = this.registerDisposer(
-          new SliceViewPanel(
-            viewer.display,
-            element,
-            sliceView,
-            sliceViewerState,
-          ),
-        );
-        addDisplayDimensionsWidget(this, panel);
-        registerRelatedLayouts(this, panel, ["4panel-alt", `${axes}-3d`]);
+        makeAxesPane(this, axes, element, (slot, element) => {
+          const panel = slot.registerDisposer(
+            new SliceViewPanel(
+              viewer.display,
+              element,
+              sliceView.addRef(),
+              sliceViewerState,
+            ),
+          );
+          addDisplayDimensionsWidget(slot, panel);
+          registerRelatedLayouts(slot, panel, ["4panel-alt", `${axes}-3d`]);
+        });
       }),
     ])(rootElement);
   }
@@ -953,6 +1035,11 @@ export class DataPanelLayoutContainer extends RefCounted {
   specification: Owned<DataPanelLayoutSpecification>;
 
   private layout: DataDisplayLayout | undefined;
+
+  // Named-axes panes ("xy" / "xz" / "yz") built by a factory instead.
+  paneOverrides = new WatchableValue<ReadonlyMap<string, PaneOverride>>(
+    new Map(),
+  );
 
   get name() {
     return this.specification.type.value;

@@ -25,6 +25,34 @@ import { NullarySignal } from "#src/util/signal.js";
 
 const MAX_SLICE_VIEW_PIXELS = 4096;
 
+// Keeps a slicer view's slab and depth range in step with the slicer's
+// thickness and projection. Returns the unsubscriber.
+export function bindSlab(
+  slicer: ObliqueSliceUserLayer,
+  sliceView: SlabSliceView,
+  depthRange: TrackableDepthRange,
+) {
+  const update = () => {
+    const halfThickness = slicer.voxelRange.value;
+    const projection = slicer.projection.value;
+    depthRange.value = Math.max(1, halfThickness);
+    sliceView.setSlab(
+      halfThickness > 0 && projection !== ObliqueSliceProjection.NONE
+        ? {
+            mode: projection === ObliqueSliceProjection.MIN ? "min" : "max",
+            halfThickness,
+          }
+        : undefined,
+    );
+  };
+  update();
+  const unsubscribes = [
+    slicer.voxelRange.changed.add(update),
+    slicer.projection.changed.add(update),
+  ];
+  return () => unsubscribes.forEach((unsubscribe) => unsubscribe());
+}
+
 class ObliqueSliceRenderLayer extends PerspectiveViewRenderLayer {
   constructor(
     public slicer: ObliqueSliceUserLayer,
@@ -64,22 +92,7 @@ class ObliqueSliceRenderLayer extends PerspectiveViewRenderLayer {
     updatePickTarget();
     attachment.registerDisposer(slicer.selected.changed.add(updatePickTarget));
 
-    const updateSlab = () => {
-      const halfThickness = slicer.voxelRange.value;
-      const projection = slicer.projection.value;
-      depthRange.value = Math.max(1, halfThickness);
-      sliceView.setSlab(
-        halfThickness > 0 && projection !== ObliqueSliceProjection.NONE
-          ? {
-              mode: projection === ObliqueSliceProjection.MIN ? "min" : "max",
-              halfThickness,
-            }
-          : undefined,
-      );
-    };
-    updateSlab();
-    attachment.registerDisposer(slicer.voxelRange.changed.add(updateSlab));
-    attachment.registerDisposer(slicer.projection.changed.add(updateSlab));
+    attachment.registerDisposer(bindSlab(slicer, sliceView, depthRange));
 
     const update = () => {
       const frame = slicerFrame(

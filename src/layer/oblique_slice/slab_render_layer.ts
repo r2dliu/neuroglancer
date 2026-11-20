@@ -124,6 +124,12 @@ void main() {
   vec4 farH = uInvModelViewProjectionMatrix * vec4(ndc, 1.0, 1.0);
   vec3 nearPoint = nearH.xyz / nearH.w;
   vec3 farPoint = farH.xyz / farH.w;
+  // The slab shows only where the slicer plane (the ray's midpoint) cuts the volume.
+  vec3 planePoint = mix(nearPoint, farPoint, 0.5);
+  if (any(lessThan(planePoint, uLowerClipBound)) ||
+      any(greaterThan(planePoint, uUpperClipBound))) {
+    discard;
+  }
   vec3 boxStart = max(uLowerClipBound, uTranslation);
   vec3 boxEnd = min(uTranslation + uChunkDataSize, uUpperClipBound);
   vec2 range = slabRayBox(nearPoint, farPoint, boxStart, boxEnd);
