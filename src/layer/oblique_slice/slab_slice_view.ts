@@ -1,4 +1,5 @@
 import {
+  type SlabLevelRule,
   type SlabMode,
   SlabRenderLayer,
 } from "#src/layer/oblique_slice/slab_render_layer.js";
@@ -22,6 +23,7 @@ interface SlabEntry {
 // plane on top. Without one it is a plain SliceView.
 export class SlabSliceView extends SliceView {
   slab: { mode: SlabMode; halfThickness: number } | undefined = undefined;
+  levelRule: SlabLevelRule = "volume";
   private slabLayers = new Map<ImageRenderLayer, SlabEntry>();
 
   setSlab(slab: SlabSliceView["slab"]) {
@@ -89,7 +91,7 @@ export class SlabSliceView extends SliceView {
     }
     for (const image of images) {
       if (this.slabLayers.has(image)) continue;
-      const layer = new SlabRenderLayer(image);
+      const layer = new SlabRenderLayer(image, this.levelRule);
       const { owner, sources } = layer.attachTo(this);
       owner.registerDisposer(
         layer.redrawNeeded.add(() => this.viewChanged.dispatch()),

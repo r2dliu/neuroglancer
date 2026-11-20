@@ -55,6 +55,7 @@ class SlicerPane extends RefCounted {
       navigationState,
       viewer.wireFrame,
     );
+    sliceView.levelRule = "slice";
     this.registerDisposer(bindSlab(slicer, sliceView, depthRange));
     this.registerDisposer(
       new SliceViewPanel(viewer.display, element, sliceView, {

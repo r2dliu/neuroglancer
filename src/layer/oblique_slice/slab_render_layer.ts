@@ -8,7 +8,12 @@ import {
 import { luts } from "#src/luts/luts.js";
 import { RenderLayer } from "#src/renderlayer.js";
 import { SharedWatchableValue } from "#src/shared_watchable_value.js";
-import { getNormalizedChunkLayout } from "#src/sliceview/base.js";
+import type { TransformedSource } from "#src/sliceview/base.js";
+import {
+  filterVisibleSources,
+  forEachVisibleVolumetricChunk,
+  getNormalizedChunkLayout,
+} from "#src/sliceview/base.js";
 import type {
   FrontendTransformedSource,
   SliceView,
@@ -44,23 +49,37 @@ import {
   makeWatchableShaderError,
   parameterizedContextDependentShaderGetter,
 } from "#src/webgl/dynamic_shader.js";
-import type { ShaderBuilder } from "#src/webgl/shader.js";
+import type { ShaderBuilder, ShaderProgram } from "#src/webgl/shader.js";
 import type { ShaderControlsBuilderState } from "#src/webgl/shader_ui_controls.js";
 import { setControlsInShader } from "#src/webgl/shader_ui_controls.js";
 import { defineVertexId, VertexIdHelper } from "#src/webgl/vertex_id.js";
 
 export type SlabMode = "max" | "min";
 
+// "volume": one level, picked like 3D volume rendering (the slicer in 3D).
+// "slice": the levels a 2D panel would load for its zoom, coarse to fine, each
+// sample taken from the finest level loaded there (the slicer's 2D pane).
+export type SlabLevelRule = "volume" | "slice";
+
+const OWNER_TEXTURE = Symbol("oblique_slice/ownerTexture");
+const NO_OWNER = 255;
+
 const tempMat4 = mat4.create();
 const tempInvMat4 = mat4.create();
+const tempScale = mat4.create();
+const tempNear = vec3.create();
+const tempFar = vec3.create();
+const tempPoint = vec3.create();
 
 // The slab: like 3D volume rendering, but through the slicer's orthographic
 // camera (depth = the slab). Each chunk draws its box; each fragment marches
 // the normal segment inside that chunk, running the image layer's own shader
-// per sample, and the best sample's depth merges chunks.
+// per sample, and the best sample's depth merges chunks. With `fallback`, a
+// sample is skipped where a finer level owns it (per finest-level chunk cell).
 function defineSlabShader(
   builder: ShaderBuilder,
   mode: SlabMode,
+  fallback: boolean,
   chunkFormat: ChunkFormat,
   numChannelDimensions: number,
   builderState: ShaderControlsBuilderState,
@@ -93,6 +112,21 @@ void emit(vec4 color) {
   slabColor = color;
 }
 `);
+  if (fallback) {
+    builder.addTextureSampler("usampler3D", "uOwnerSampler", OWNER_TEXTURE);
+    builder.addUniform("highp mat4", "uLevelToOwnerCell");
+    builder.addUniform("highp ivec3", "uOwnerSize");
+    builder.addUniform("highp uint", "uLevelRank");
+    builder.addFragmentCode(`
+bool ownedByFiner(vec3 levelPosition) {
+  ivec3 cell = ivec3(floor((uLevelToOwnerCell * vec4(levelPosition, 1.0)).xyz));
+  if (any(lessThan(cell, ivec3(0))) || any(greaterThanEqual(cell, uOwnerSize))) {
+    return false;
+  }
+  return texelFetch(uOwnerSampler, cell, 0).r < uLevelRank;
+}
+`);
+  }
   defineChunkDataShaderAccess(
     builder,
     chunkFormat,
@@ -142,7 +176,9 @@ void main() {
   for (int i = first; i < last; ++i) {
     float t = (float(i) + 0.5) / samples;
     if (t < range.x || t >= range.y) continue;
-    curChunkPosition = mix(nearPoint, farPoint, t) - uTranslation;
+    vec3 samplePoint = mix(nearPoint, farPoint, t);
+    ${fallback ? "if (ownedByFiner(samplePoint)) continue;" : ""}
+    curChunkPosition = samplePoint - uTranslation;
     defaultMaxProjectionIntensity = 0.0;
     slabColor = vec4(0.0);
     userMain();
@@ -167,12 +203,34 @@ void main() {
 interface SlabShaderContext {
   chunkFormat: ChunkFormat;
   mode: SlabMode;
+  fallback: boolean;
 }
+
+interface LevelDraw {
+  shader: ShaderProgram;
+  source: VolumeChunkSource;
+  chunkFormat: ChunkFormat;
+  chunkSize: vec3;
+  chunkDataSize: Uint32Array | undefined;
+  newSource: boolean;
+}
+
+// A level's chunk layout in the slab's view, with its loaded chunk cells.
+interface LevelChunks {
+  tsource: FrontendTransformedSource;
+  size: vec3;
+  transform: mat4;
+  invTransform: mat4;
+  loaded: Set<string>;
+  cells: vec3[];
+  missing: number;
+}
+
+const cellKey = (cell: ArrayLike<number>) => `${cell[0]},${cell[1]},${cell[2]}`;
 
 // One image layer's slab, built from that layer's own volume, transform and
 // shader state (read-only), so its chunk sources are the same memoized ones
-// the 2D panels and 3D volume rendering use. Like 3D volume rendering, it
-// draws one resolution level, chosen from the layer's depth-samples setting.
+// the 2D panels and 3D volume rendering use.
 export class SlabRenderLayer extends RenderLayer {
   private shaderGetter: ParameterizedContextDependentShaderGetter<
     SlabShaderContext,
@@ -180,10 +238,15 @@ export class SlabRenderLayer extends RenderLayer {
     number
   >;
   private vertexIdHelper: VertexIdHelper;
+  private ownerTexture: WebGLTexture | null = null;
   backend: ChunkRenderLayerFrontend;
   depthSamplesTarget: WatchableValueInterface<number>;
+  renderScaleTarget: WatchableValueInterface<number>;
 
-  constructor(public image: Borrowed<ImageRenderLayer>) {
+  constructor(
+    public image: Borrowed<ImageRenderLayer>,
+    public levelRule: SlabLevelRule,
+  ) {
     super();
     const { multiscaleSource, shaderControlState } = image;
     const { chunkManager } = multiscaleSource;
@@ -191,6 +254,7 @@ export class SlabRenderLayer extends RenderLayer {
     this.depthSamplesTarget = (
       image.userLayer as ImageUserLayer
     ).volumeRenderingDepthSamplesTarget;
+    this.renderScaleTarget = image.renderScaleTarget;
     this.vertexIdHelper = this.registerDisposer(VertexIdHelper.get(gl));
     const numChannelDimensions = this.registerDisposer(
       makeCachedDerivedWatchableValue(
@@ -204,13 +268,25 @@ export class SlabRenderLayer extends RenderLayer {
       parameters: shaderControlState.builderState,
       encodeParameters: (p) => p.key,
       extraParameters: numChannelDimensions,
-      getContextKey: ({ chunkFormat, mode }) =>
-        `${chunkFormat.shaderKey}/${mode}`,
-      defineShader: (builder, { chunkFormat, mode }, builderState, rank) => {
+      getContextKey: ({ chunkFormat, mode, fallback }) =>
+        `${chunkFormat.shaderKey}/${mode}/${fallback}`,
+      defineShader: (
+        builder,
+        { chunkFormat, mode, fallback },
+        builderState,
+        rank,
+      ) => {
         if (builderState.parseResult.errors.length !== 0) {
           throw new Error("Invalid UI control specification");
         }
-        defineSlabShader(builder, mode, chunkFormat, rank, builderState);
+        defineSlabShader(
+          builder,
+          mode,
+          fallback,
+          chunkFormat,
+          rank,
+          builderState,
+        );
       },
     });
     const rpc = chunkManager.rpc!;
@@ -220,11 +296,15 @@ export class SlabRenderLayer extends RenderLayer {
     backend.RPC_TYPE_ID = SLAB_RENDER_LAYER_RPC_ID;
     backend.initializeCounterpart(rpc, {
       chunkManager: chunkManager.rpcId,
+      levelRule,
       localPosition: this.registerDisposer(
         SharedWatchableValue.makeFromExisting(rpc, image.localPosition),
       ).rpcId,
       depthSamplesTarget: this.registerDisposer(
         SharedWatchableValue.makeFromExisting(rpc, this.depthSamplesTarget),
+      ).rpcId,
+      renderScaleTarget: this.registerDisposer(
+        SharedWatchableValue.makeFromExisting(rpc, this.renderScaleTarget),
       ).rpcId,
     });
     this.backend = backend;
@@ -233,9 +313,15 @@ export class SlabRenderLayer extends RenderLayer {
       image.transform.changed,
       image.opacity.changed,
       this.depthSamplesTarget.changed,
+      this.renderScaleTarget.changed,
     ]) {
       this.registerDisposer(signal.add(this.redrawNeeded.dispatch));
     }
+  }
+
+  disposed() {
+    this.image.gl.deleteTexture(this.ownerTexture);
+    super.disposed();
   }
 
   // Attaches to the slicer's SliceView as its view (front and worker), and
@@ -296,137 +382,358 @@ export class SlabRenderLayer extends RenderLayer {
     sources: FrontendTransformedSource[][],
     mode: SlabMode,
   ) {
-    const { projectionParameters } = renderContext;
     const scales = sources[0];
     if (scales === undefined || scales.length === 0) return;
     const { gl } = this.image;
-    const chunkDataDisplaySize = vec3.create();
-    const chunkPosition = vec3.create();
-    let shader: ReturnType<typeof this.shaderGetter>["shader"] = null;
-    let source: VolumeChunkSource | undefined;
-    let chunkFormat: ChunkFormat | undefined;
-    let originalChunkSize = vec3.create();
-    let chunkDataSize: Uint32Array | undefined;
-    let newSource = true;
-
     this.vertexIdHelper.enable();
     const wasCulling = gl.isEnabled(WebGL2RenderingContext.CULL_FACE);
     gl.enable(WebGL2RenderingContext.CULL_FACE);
     gl.cullFace(WebGL2RenderingContext.FRONT);
+    if (this.levelRule === "volume") {
+      this.drawVolumeLevel(renderContext, scales, mode);
+    } else {
+      this.drawSliceLevels(renderContext, scales, mode);
+    }
+    if (!wasCulling) gl.disable(WebGL2RenderingContext.CULL_FACE);
+    gl.cullFace(WebGL2RenderingContext.BACK);
+    this.vertexIdHelper.disable();
+  }
+
+  private drawVolumeLevel(
+    renderContext: SliceViewRenderContext,
+    scales: FrontendTransformedSource[],
+    mode: SlabMode,
+  ) {
+    let level: LevelDraw | undefined;
     forEachVisibleVolumeRenderingChunk(
-      projectionParameters,
+      renderContext.projectionParameters,
       this.image.localPosition.value,
       this.depthSamplesTarget.value,
       scales as FrontendTransformedSource<any, VolumeChunkSource>[],
       (tsource, _scaleIndex, _physicalSpacing, optimalSamples) => {
-        source = tsource.source as VolumeChunkSource;
-        chunkFormat = source.chunkFormat;
-        const shaderResult = this.shaderGetter({ chunkFormat, mode });
-        shader = shaderResult.shader;
-        if (shader === null) return;
-        shader.bind();
-        setControlsInShader(
-          gl,
-          shader,
-          this.image.shaderControlState,
-          shaderResult.parameters.parseResult,
-        );
-        gl.uniform1f(shader.uniform("uOpacity"), this.image.opacity.value);
-        const lutName = (window as any).lutName ?? "Tricolor 1";
-        gl.uniform4fv(
-          shader.uniform("lut"),
-          new Float32Array((luts as any)[lutName]),
-        );
-        gl.uniform1i(
-          shader.uniform("uSlabSamples"),
+        level = this.beginLevel(
+          renderContext,
+          tsource,
+          mode,
+          false,
           Math.max(1, Math.ceil(optimalSamples)),
         );
-
-        const chunkLayout = getNormalizedChunkLayout(
-          projectionParameters,
-          tsource.chunkLayout,
-        );
-        originalChunkSize = vec3.clone(chunkLayout.size);
-        mat4.multiply(
-          tempMat4,
-          projectionParameters.viewProjectionMat,
-          chunkLayout.transform,
-        );
-        mat4.invert(tempInvMat4, tempMat4);
-        gl.uniformMatrix4fv(
-          shader.uniform("uModelViewProjectionMatrix"),
-          false,
-          tempMat4,
-        );
-        gl.uniformMatrix4fv(
-          shader.uniform("uInvModelViewProjectionMatrix"),
-          false,
-          tempInvMat4,
-        );
-        gl.uniform3fv(
-          shader.uniform("uLowerClipBound"),
-          tsource.lowerClipDisplayBound,
-        );
-        gl.uniform3fv(
-          shader.uniform("uUpperClipBound"),
-          tsource.upperClipDisplayBound,
-        );
-        const { fixedPositionWithinChunk, chunkDisplayDimensionIndices } =
-          tsource;
-        for (const chunkDim of chunkDisplayDimensionIndices) {
-          fixedPositionWithinChunk[chunkDim] = 0;
-        }
-        chunkFormat.beginDrawing(gl, shader);
-        chunkFormat.beginSource(gl, shader);
       },
       (tsource) => {
-        if (shader === null) return;
-        const chunk = source!.chunks.get(tsource.curPositionInChunks.join());
-        if (chunk === undefined || chunk.state !== ChunkState.GPU_MEMORY) {
-          return;
-        }
-        const {
-          fixedPositionWithinChunk,
-          chunkDisplayDimensionIndices,
-          chunkTransform: { channelToChunkDimensionIndices },
-        } = tsource;
-        const chunkRank = source!.spec.rank;
-        if (chunk.chunkDataSize !== chunkDataSize) {
-          chunkDataSize = chunk.chunkDataSize;
-          for (let i = 0; i < 3; ++i) {
-            const chunkDim = chunkDisplayDimensionIndices[i];
-            chunkDataDisplaySize[i] =
-              chunkDim === -1 || chunkDim >= chunkRank
-                ? 1
-                : chunkDataSize[chunkDim];
-          }
-          gl.uniform3fv(shader.uniform("uChunkDataSize"), chunkDataDisplaySize);
-        }
-        const { chunkGridPosition } = chunk;
-        for (let i = 0; i < 3; ++i) {
-          const chunkDim = chunkDisplayDimensionIndices[i];
-          chunkPosition[i] =
-            chunkDim === -1 || chunkDim >= chunkRank
-              ? 0
-              : originalChunkSize[i] * chunkGridPosition[chunkDim];
-        }
-        gl.uniform3fv(shader.uniform("uTranslation"), chunkPosition);
-        chunkFormat!.bindChunk(
-          gl,
-          shader,
-          chunk,
-          fixedPositionWithinChunk,
-          chunkDisplayDimensionIndices,
-          channelToChunkDimensionIndices,
-          newSource,
-        );
-        newSource = false;
-        drawBoxes(gl, 1, 1);
+        if (level !== undefined) this.drawChunk(level, tsource);
       },
     );
-    if (shader !== null) chunkFormat?.endDrawing(gl, shader);
-    if (!wasCulling) gl.disable(WebGL2RenderingContext.CULL_FACE);
-    gl.cullFace(WebGL2RenderingContext.BACK);
-    this.vertexIdHelper.disable();
+    if (level !== undefined) this.endLevel(level);
+  }
+
+  private drawSliceLevels(
+    renderContext: SliceViewRenderContext,
+    scales: FrontendTransformedSource[],
+    mode: SlabMode,
+  ) {
+    const { sliceView, projectionParameters } = renderContext;
+    // Coarsest first; reversed so rank 0 is the level the zoom asks for.
+    const levels = (
+      Array.from(
+        filterVisibleSources(
+          sliceView,
+          this as any,
+          scales as TransformedSource[],
+        ),
+      ) as FrontendTransformedSource[]
+    ).reverse();
+    if (levels.length === 0) return;
+    const chunks: LevelChunks[] = [];
+    for (const tsource of levels) {
+      const layout = getNormalizedChunkLayout(
+        projectionParameters,
+        tsource.chunkLayout,
+      );
+      const level: LevelChunks = {
+        tsource,
+        size: vec3.clone(layout.size),
+        transform: mat4.clone(layout.transform),
+        invTransform: mat4.clone(layout.invTransform),
+        loaded: new Set(),
+        cells: [],
+        missing: 0,
+      };
+      const source = tsource.source as VolumeChunkSource;
+      const isFinest = chunks.length === 0;
+      forEachVisibleVolumetricChunk(
+        projectionParameters,
+        this.image.localPosition.value,
+        tsource,
+        (positionInChunks) => {
+          const chunk = source.chunks.get(tsource.curPositionInChunks.join());
+          if (isFinest) level.cells.push(vec3.clone(positionInChunks));
+          if (chunk !== undefined && chunk.state === ChunkState.GPU_MEMORY) {
+            level.loaded.add(cellKey(positionInChunks));
+          } else {
+            ++level.missing;
+          }
+        },
+      );
+      chunks.push(level);
+      // Coarser levels own nothing once this one is complete.
+      if (level.missing === 0) break;
+    }
+    const fallback = chunks.length > 1;
+    const owner = fallback ? this.updateOwnerTexture(chunks) : undefined;
+
+    chunks.forEach((level, rank) => {
+      const { tsource } = level;
+      const draw = this.beginLevel(
+        renderContext,
+        tsource,
+        mode,
+        fallback,
+        this.samplesAcrossSlab(renderContext, tsource),
+      );
+      if (draw === undefined) return;
+      if (owner !== undefined) {
+        const { gl } = this.image;
+        const { shader } = draw;
+        const unit = shader.textureUnit(OWNER_TEXTURE)!;
+        gl.activeTexture(WebGL2RenderingContext.TEXTURE0 + unit);
+        gl.bindTexture(WebGL2RenderingContext.TEXTURE_3D, this.ownerTexture);
+        const finest = chunks[0];
+        const m = mat4.multiply(tempMat4, finest.invTransform, level.transform);
+        mat4.fromScaling(tempScale, [
+          1 / finest.size[0],
+          1 / finest.size[1],
+          1 / finest.size[2],
+        ]);
+        mat4.multiply(m, tempScale, m);
+        mat4.fromTranslation(tempScale, [
+          -owner.origin[0],
+          -owner.origin[1],
+          -owner.origin[2],
+        ]);
+        mat4.multiply(m, tempScale, m);
+        gl.uniformMatrix4fv(shader.uniform("uLevelToOwnerCell"), false, m);
+        gl.uniform3i(
+          shader.uniform("uOwnerSize"),
+          owner.size[0],
+          owner.size[1],
+          owner.size[2],
+        );
+        gl.uniform1ui(shader.uniform("uLevelRank"), rank);
+      }
+      forEachVisibleVolumetricChunk(
+        projectionParameters,
+        this.image.localPosition.value,
+        tsource,
+        () => this.drawChunk(draw, tsource),
+      );
+      this.endLevel(draw);
+    });
+  }
+
+  // For each finest-level chunk cell in view: the finest level (rank) whose
+  // chunk there is loaded, as a 3D texture over the cells' bounding box.
+  private updateOwnerTexture(chunks: LevelChunks[]) {
+    const finest = chunks[0];
+    const origin = vec3.fromValues(Infinity, Infinity, Infinity);
+    const upper = vec3.fromValues(-Infinity, -Infinity, -Infinity);
+    for (const cell of finest.cells) {
+      vec3.min(origin, origin, cell);
+      vec3.max(upper, upper, cell);
+    }
+    const size = [0, 1, 2].map((i) => Math.max(0, upper[i] - origin[i] + 1));
+    const data = new Uint8Array(size[0] * size[1] * size[2]).fill(NO_OWNER);
+    for (const cell of finest.cells) {
+      let owner = NO_OWNER;
+      for (let i = 0; i < 3; ++i) {
+        tempPoint[i] = (cell[i] + 0.5) * finest.size[i];
+      }
+      vec3.transformMat4(tempPoint, tempPoint, finest.transform);
+      for (let rank = 0; rank < chunks.length; ++rank) {
+        const level = chunks[rank];
+        vec3.transformMat4(tempNear, tempPoint, level.invTransform);
+        for (let i = 0; i < 3; ++i) {
+          tempNear[i] = Math.floor(tempNear[i] / level.size[i]);
+        }
+        if (level.loaded.has(cellKey(tempNear))) {
+          owner = rank;
+          break;
+        }
+      }
+      const x = cell[0] - origin[0];
+      const y = cell[1] - origin[1];
+      const z = cell[2] - origin[2];
+      data[(z * size[1] + y) * size[0] + x] = owner;
+    }
+    const { gl } = this.image;
+    if (this.ownerTexture === null) this.ownerTexture = gl.createTexture();
+    gl.activeTexture(WebGL2RenderingContext.TEXTURE0);
+    gl.bindTexture(WebGL2RenderingContext.TEXTURE_3D, this.ownerTexture);
+    gl.pixelStorei(WebGL2RenderingContext.UNPACK_ALIGNMENT, 1);
+    gl.texImage3D(
+      WebGL2RenderingContext.TEXTURE_3D,
+      0,
+      WebGL2RenderingContext.R8UI,
+      size[0],
+      size[1],
+      size[2],
+      0,
+      WebGL2RenderingContext.RED_INTEGER,
+      WebGL2RenderingContext.UNSIGNED_BYTE,
+      data,
+    );
+    for (const parameter of [
+      WebGL2RenderingContext.TEXTURE_MIN_FILTER,
+      WebGL2RenderingContext.TEXTURE_MAG_FILTER,
+    ]) {
+      gl.texParameteri(
+        WebGL2RenderingContext.TEXTURE_3D,
+        parameter,
+        WebGL2RenderingContext.NEAREST,
+      );
+    }
+    gl.bindTexture(WebGL2RenderingContext.TEXTURE_3D, null);
+    return { origin, size };
+  }
+
+  // One sample per voxel of this level across the slab.
+  private samplesAcrossSlab(
+    renderContext: SliceViewRenderContext,
+    tsource: FrontendTransformedSource,
+  ) {
+    const { projectionParameters } = renderContext;
+    const layout = getNormalizedChunkLayout(
+      projectionParameters,
+      tsource.chunkLayout,
+    );
+    mat4.multiply(
+      tempMat4,
+      projectionParameters.viewProjectionMat,
+      layout.transform,
+    );
+    mat4.invert(tempInvMat4, tempMat4);
+    vec3.transformMat4(tempNear, vec3.set(tempNear, 0, 0, -1), tempInvMat4);
+    vec3.transformMat4(tempFar, vec3.set(tempFar, 0, 0, 1), tempInvMat4);
+    return Math.max(1, Math.ceil(vec3.distance(tempNear, tempFar)));
+  }
+
+  private beginLevel(
+    renderContext: SliceViewRenderContext,
+    tsource: FrontendTransformedSource,
+    mode: SlabMode,
+    fallback: boolean,
+    samples: number,
+  ): LevelDraw | undefined {
+    const { projectionParameters } = renderContext;
+    const { gl } = this.image;
+    const source = tsource.source as VolumeChunkSource;
+    const { chunkFormat } = source;
+    const shaderResult = this.shaderGetter({ chunkFormat, mode, fallback });
+    const { shader } = shaderResult;
+    if (shader === null) return undefined;
+    shader.bind();
+    setControlsInShader(
+      gl,
+      shader,
+      this.image.shaderControlState,
+      shaderResult.parameters.parseResult,
+    );
+    gl.uniform1f(shader.uniform("uOpacity"), this.image.opacity.value);
+    const lutName = (window as any).lutName ?? "Tricolor 1";
+    gl.uniform4fv(
+      shader.uniform("lut"),
+      new Float32Array((luts as any)[lutName]),
+    );
+    gl.uniform1i(shader.uniform("uSlabSamples"), samples);
+    const chunkLayout = getNormalizedChunkLayout(
+      projectionParameters,
+      tsource.chunkLayout,
+    );
+    const chunkSize = vec3.clone(chunkLayout.size);
+    mat4.multiply(
+      tempMat4,
+      projectionParameters.viewProjectionMat,
+      chunkLayout.transform,
+    );
+    mat4.invert(tempInvMat4, tempMat4);
+    gl.uniformMatrix4fv(
+      shader.uniform("uModelViewProjectionMatrix"),
+      false,
+      tempMat4,
+    );
+    gl.uniformMatrix4fv(
+      shader.uniform("uInvModelViewProjectionMatrix"),
+      false,
+      tempInvMat4,
+    );
+    gl.uniform3fv(
+      shader.uniform("uLowerClipBound"),
+      tsource.lowerClipDisplayBound,
+    );
+    gl.uniform3fv(
+      shader.uniform("uUpperClipBound"),
+      tsource.upperClipDisplayBound,
+    );
+    const { fixedPositionWithinChunk, chunkDisplayDimensionIndices } = tsource;
+    for (const chunkDim of chunkDisplayDimensionIndices) {
+      fixedPositionWithinChunk[chunkDim] = 0;
+    }
+    chunkFormat.beginDrawing(gl, shader);
+    chunkFormat.beginSource(gl, shader);
+    return {
+      shader,
+      source,
+      chunkFormat,
+      chunkSize,
+      chunkDataSize: undefined,
+      newSource: true,
+    };
+  }
+
+  private drawChunk(level: LevelDraw, tsource: FrontendTransformedSource) {
+    const { gl } = this.image;
+    const { shader, source, chunkFormat, chunkSize } = level;
+    const chunk = source.chunks.get(tsource.curPositionInChunks.join());
+    if (chunk === undefined || chunk.state !== ChunkState.GPU_MEMORY) return;
+    const {
+      fixedPositionWithinChunk,
+      chunkDisplayDimensionIndices,
+      chunkTransform: { channelToChunkDimensionIndices },
+    } = tsource;
+    const chunkRank = source.spec.rank;
+    if (chunk.chunkDataSize !== level.chunkDataSize) {
+      level.chunkDataSize = chunk.chunkDataSize;
+      for (let i = 0; i < 3; ++i) {
+        const chunkDim = chunkDisplayDimensionIndices[i];
+        tempPoint[i] =
+          chunkDim === -1 || chunkDim >= chunkRank
+            ? 1
+            : chunk.chunkDataSize[chunkDim];
+      }
+      gl.uniform3fv(shader.uniform("uChunkDataSize"), tempPoint);
+    }
+    const { chunkGridPosition } = chunk;
+    for (let i = 0; i < 3; ++i) {
+      const chunkDim = chunkDisplayDimensionIndices[i];
+      tempPoint[i] =
+        chunkDim === -1 || chunkDim >= chunkRank
+          ? 0
+          : chunkSize[i] * chunkGridPosition[chunkDim];
+    }
+    gl.uniform3fv(shader.uniform("uTranslation"), tempPoint);
+    chunkFormat.bindChunk(
+      gl,
+      shader,
+      chunk,
+      fixedPositionWithinChunk,
+      chunkDisplayDimensionIndices,
+      channelToChunkDimensionIndices,
+      level.newSource,
+    );
+    level.newSource = false;
+    drawBoxes(gl, 1, 1);
+  }
+
+  private endLevel(level: LevelDraw) {
+    level.chunkFormat.endDrawing(this.image.gl, level.shader);
   }
 }

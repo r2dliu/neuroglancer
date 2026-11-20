@@ -4,6 +4,7 @@ import {
   SLAB_RENDER_LAYER_RPC_ID,
   SLAB_RENDER_LAYER_UPDATE_SOURCES_RPC_ID,
 } from "#src/layer/oblique_slice/base.js";
+import type { SlabLevelRule } from "#src/layer/oblique_slice/slab_render_layer.js";
 import type {
   RenderedViewBackend,
   RenderLayerBackendAttachment,
@@ -13,8 +14,17 @@ import type { SharedWatchableValue } from "#src/shared_watchable_value.js";
 import {
   BASE_PRIORITY,
   deserializeTransformedSources,
+  SCALE_PRIORITY_MULTIPLIER,
 } from "#src/sliceview/backend.js";
-import type { TransformedSource } from "#src/sliceview/base.js";
+import type {
+  SliceViewBase,
+  SliceViewRenderLayer,
+  TransformedSource,
+} from "#src/sliceview/base.js";
+import {
+  filterVisibleSources,
+  forEachVisibleVolumetricChunk,
+} from "#src/sliceview/base.js";
 import type { VolumeChunkSource } from "#src/sliceview/volume/backend.js";
 import { vec3 } from "#src/util/geom.js";
 import {
@@ -43,14 +53,19 @@ export class SlabRenderLayerBackend extends withChunkManager(
 ) {
   localPosition: SharedWatchableValue<Float32Array>;
   depthSamplesTarget: SharedWatchableValue<number>;
+  renderScaleTarget: SharedWatchableValue<number>;
+  levelRule: SlabLevelRule;
 
   constructor(rpc: RPC, options: any) {
     super(rpc, options);
+    this.levelRule = options.levelRule;
     this.localPosition = rpc.get(options.localPosition);
     this.depthSamplesTarget = rpc.get(options.depthSamplesTarget);
+    this.renderScaleTarget = rpc.get(options.renderScaleTarget);
     const schedule = () => this.chunkManager.scheduleUpdateChunkPriorities();
     this.registerDisposer(this.localPosition.changed.add(schedule));
     this.registerDisposer(this.depthSamplesTarget.changed.add(schedule));
+    this.registerDisposer(this.renderScaleTarget.changed.add(schedule));
     this.registerDisposer(
       this.chunkManager.recomputeChunkPriorities.add(() =>
         this.recomputeChunkPriorities(),
@@ -87,6 +102,51 @@ export class SlabRenderLayerBackend extends withChunkManager(
       const basePriority = getBasePriority(visibility) + BASE_PRIORITY;
       const { chunkManager } = this;
       chunkManager.registerLayer(this);
+      const request = (
+        tsource: TransformedSource<any, any>,
+        priority: number,
+      ) => {
+        const source = tsource.source as unknown as VolumeChunkSource;
+        const chunk = source.getChunk(tsource.curPositionInChunks);
+        ++this.numVisibleChunksNeeded;
+        chunkManager.requestChunk(chunk, priorityTier, priority);
+        if (chunk.state === ChunkState.GPU_MEMORY) {
+          ++this.numVisibleChunksAvailable;
+        }
+      };
+      if (this.levelRule === "slice") {
+        // Like the 2D panels: every level the zoom allows, coarser first.
+        const levels = Array.from(
+          filterVisibleSources(
+            view as unknown as SliceViewBase,
+            this as unknown as SliceViewRenderLayer,
+            sources,
+          ),
+        );
+        levels.forEach((tsource, i) => {
+          const levelPriority =
+            basePriority + SCALE_PRIORITY_MULTIPLIER * (levels.length - 1 - i);
+          const { chunkLayout } = tsource;
+          chunkLayout.globalToLocalSpatial(
+            tempCenter,
+            (projectionParameters as any).centerDataPosition,
+          );
+          vec3.copy(tempChunkSize, chunkLayout.size);
+          forEachVisibleVolumetricChunk(
+            projectionParameters as any,
+            this.localPosition.value,
+            tsource,
+            (positionInChunks) => {
+              vec3.multiply(tempChunkPosition, positionInChunks, tempChunkSize);
+              request(
+                tsource,
+                levelPriority - vec3.distance(tempCenter, tempChunkPosition),
+              );
+            },
+          );
+        });
+        continue;
+      }
       forEachVisibleVolumeRenderingChunk(
         projectionParameters as any,
         this.localPosition.value,
@@ -102,17 +162,10 @@ export class SlabRenderLayerBackend extends withChunkManager(
         },
         (tsource, _, positionInChunks) => {
           vec3.multiply(tempChunkPosition, positionInChunks, tempChunkSize);
-          const source = tsource.source as unknown as VolumeChunkSource;
-          const chunk = source.getChunk(tsource.curPositionInChunks);
-          ++this.numVisibleChunksNeeded;
-          chunkManager.requestChunk(
-            chunk,
-            priorityTier,
+          request(
+            tsource,
             basePriority - vec3.distance(tempCenter, tempChunkPosition),
           );
-          if (chunk.state === ChunkState.GPU_MEMORY) {
-            ++this.numVisibleChunksAvailable;
-          }
         },
       );
     }
