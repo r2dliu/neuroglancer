@@ -6,22 +6,24 @@ import {
   GizmoPart,
   ObliqueSliceGizmoRenderLayer,
 } from "#src/layer/oblique_slice/gizmo.js";
+import { SlabSliceView } from "#src/layer/oblique_slice/slab_slice_view.js";
 import {
   DisplayPose,
   NavigationState,
   OrientationState,
   Position,
   TrackableCrossSectionZoom,
+  TrackableDepthRange,
 } from "#src/navigation_state.js";
 import type { PerspectivePanel } from "#src/perspective_view/panel.js";
 import { PerspectiveViewRenderLayer } from "#src/perspective_view/render_layer.js";
-import { SliceView } from "#src/sliceview/frontend.js";
+import type { WatchableValueInterface } from "#src/trackable_value.js";
 import { WatchableValue } from "#src/trackable_value.js";
 import type { Borrowed } from "#src/util/disposable.js";
 import { quat, vec3 } from "#src/util/geom.js";
 import { NullarySignal } from "#src/util/signal.js";
 
-const MAX_SLICE_VIEW_PIXELS = 2048;
+const MAX_SLICE_VIEW_PIXELS = 4096;
 
 class ObliqueSliceRenderLayer extends PerspectiveViewRenderLayer {
   constructor(
@@ -39,12 +41,14 @@ class ObliqueSliceRenderLayer extends PerspectiveViewRenderLayer {
     const position = new Position(parent.coordinateSpace);
     const orientation = new OrientationState();
     const zoom = new TrackableCrossSectionZoom(displayInfo.addRef());
+    // In slab mode the SliceView's orthographic camera spans the slab.
+    const depthRange = new TrackableDepthRange(1, displayInfo);
     const navigationState = new NavigationState(
       new DisplayPose(position, displayInfo.addRef(), orientation),
       zoom,
-      parent.depthRange.addRef(),
+      depthRange,
     );
-    const sliceView = new SliceView(
+    const sliceView = new SlabSliceView(
       slicer.manager.chunkManager,
       panel.viewer.layerManager,
       navigationState,
@@ -59,6 +63,23 @@ class ObliqueSliceRenderLayer extends PerspectiveViewRenderLayer {
     };
     updatePickTarget();
     attachment.registerDisposer(slicer.selected.changed.add(updatePickTarget));
+
+    const updateSlab = () => {
+      const halfThickness = slicer.voxelRange.value;
+      const projection = slicer.projection.value;
+      depthRange.value = Math.max(1, halfThickness);
+      sliceView.setSlab(
+        halfThickness > 0 && projection !== ObliqueSliceProjection.NONE
+          ? {
+              mode: projection === ObliqueSliceProjection.MIN ? "min" : "max",
+              halfThickness,
+            }
+          : undefined,
+      );
+    };
+    updateSlab();
+    attachment.registerDisposer(slicer.voxelRange.changed.add(updateSlab));
+    attachment.registerDisposer(slicer.projection.changed.add(updateSlab));
 
     const update = () => {
       const frame = slicerFrame(
@@ -102,7 +123,10 @@ class ObliqueSliceRenderLayer extends PerspectiveViewRenderLayer {
 
       const width = uMax - uMin;
       const height = vMax - vMin;
+      // The nav panels' pixel size, so the slicer samples the same resolution
+      // (and chunks) as the 2D views, capped to a GPU-safe texture.
       const pixelSize = Math.max(
+        slicer.crossSectionZoom?.value ?? 1,
         1,
         Math.max(width, height) / MAX_SLICE_VIEW_PIXELS,
       );
@@ -130,6 +154,9 @@ class ObliqueSliceRenderLayer extends PerspectiveViewRenderLayer {
     ]) {
       attachment.registerDisposer(signal.add(update));
     }
+    if (slicer.crossSectionZoom !== undefined) {
+      attachment.registerDisposer(slicer.crossSectionZoom.changed.add(update));
+    }
     panel.sliceViews.set(sliceView, true);
     attachment.registerDisposer(() => panel.sliceViews.delete(sliceView));
   }
@@ -143,6 +170,9 @@ export class ObliqueSliceUserLayer extends UserLayer {
     ObliqueSliceProjection.MAX,
   );
   selected = new WatchableValue<boolean>(false);
+  // The nav panels' zoom (the viewer's cross-section scale), set by the app
+  // before the layer is added; the slab samples at that resolution.
+  crossSectionZoom: WatchableValueInterface<number> | undefined = undefined;
   // Fires when a gizmo drag ends, so the app can save the new pose.
   committed = new NullarySignal();
 

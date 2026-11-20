@@ -72,6 +72,7 @@ import {
 } from "#src/sliceview/base.js";
 import { ChunkLayout } from "#src/sliceview/chunk_layout.js";
 import type { SliceViewerState } from "#src/sliceview/panel.js";
+import type { SliceViewRenderContext } from "#src/sliceview/renderlayer.js";
 import { SliceViewRenderLayer } from "#src/sliceview/renderlayer.js";
 import type { WatchableValueInterface } from "#src/trackable_value.js";
 import type { Borrowed, Disposer, Owned } from "#src/util/disposable.js";
@@ -572,7 +573,9 @@ export class SliceView extends Base {
     let renderLayerNum = 0;
     const wireFrame = this.wireFrame.value;
     const renderContext = { sliceView: this, projectionParameters, wireFrame };
+    renderLayerNum = this.drawUnderlay(renderContext);
     for (const renderLayer of this.visibleLayerList) {
+      if (!this.shouldDrawLayer(renderLayer)) continue;
       const histogramCount = wireFrame
         ? 0
         : renderLayer.getDataHistogramCount();
@@ -593,6 +596,18 @@ export class SliceView extends Base {
     gl.disable(WebGL2RenderingContext.BLEND);
     gl.disable(WebGL2RenderingContext.DEPTH_TEST);
     offscreenFramebuffer.unbind();
+  }
+
+  // Subclass hooks: draw beneath the layers (into the bound offscreen
+  // framebuffer), returning how many layers it drew; and skip layers.
+  protected drawUnderlay(renderContext: SliceViewRenderContext): number {
+    renderContext;
+    return 0;
+  }
+
+  protected shouldDrawLayer(renderLayer: SliceViewRenderLayer): boolean {
+    renderLayer;
+    return true;
   }
 
   disposed() {
