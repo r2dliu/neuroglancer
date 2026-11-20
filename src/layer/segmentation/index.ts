@@ -1284,14 +1284,6 @@ export class SegmentationUserLayer extends Base {
             });
           }
         }
-      } else if (local === LocalDataSource.brushStrokes) {
-        if (!isGroupRoot) {
-          loadedSubsource.deactivate(
-            "Not supported on non-root linked segmentation layers",
-          );
-        } else {
-          loadedSubsource.activate(() => {});
-        }
       } else {
         loadedSubsource.deactivate("Not compatible with segmentation layer");
       }

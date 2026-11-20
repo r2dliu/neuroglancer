@@ -31,7 +31,6 @@ import type {
   KvStoreBasedDataSourceProvider,
 } from "#src/datasource/index.js";
 import { getKvStorePathCompletions } from "#src/datasource/kvstore_completions.js";
-import { LocalDataSource } from "#src/datasource/local.js";
 import { VolumeChunkSourceParameters } from "#src/datasource/zarr/base.js";
 import { codecChainSupportsWriting } from "#src/datasource/zarr/codec/index.js";
 import "#src/datasource/zarr/codec/bytes/resolve.js";
@@ -637,12 +636,6 @@ export class ZarrDataSource implements KvStoreBasedDataSourceProvider {
                   volume.modelSpace.bounds,
                 ),
               },
-            },
-            {
-              id: "brush_strokes",
-              default: true,
-              url: undefined,
-              subsource: { local: LocalDataSource.brushStrokes },
             },
           ],
         };
