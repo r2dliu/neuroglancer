@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-import type { BrushHashTable } from "#src/brush_stroke/index.js";
 import { HashMapUint64 } from "#src/gpu_hash/hash_table.js";
 import {
   GPUHashTable,
@@ -36,8 +35,8 @@ import type {
 } from "#src/segmentation_display_state/frontend.js";
 import { registerRedrawWhenSegmentationDisplayStateChanged } from "#src/segmentation_display_state/frontend.js";
 import type { SliceViewSourceOptions } from "#src/sliceview/base.js";
+import { DataType } from "#src/sliceview/base.js";
 import type {
-  FrontendTransformedSource,
   SliceView,
   SliceViewSingleResolutionSource,
 } from "#src/sliceview/frontend.js";
@@ -56,7 +55,6 @@ import {
 } from "#src/trackable_value.js";
 import type { Uint64Map } from "#src/uint64_map.js";
 import type { DisjointUint64Sets } from "#src/util/disjoint_sets.js";
-import { kOneVec, vec3 } from "#src/util/geom.js";
 import {
   EMPTY_VOXEL_VALUE,
   SEGMENTATION_ERASE_SENTINEL,
@@ -67,9 +65,6 @@ import {
   parseShaderUiControls,
   type ShaderControlsBuilderState,
 } from "#src/webgl/shader_ui_controls.js";
-
-// Scratch for setupSourceUniforms' per-source downsample factor.
-const tempBrushSourceScale = vec3.create();
 
 function glslUint64Equals(name: string, value: bigint) {
   const v = BigInt.asUintN(64, value);
@@ -101,7 +96,6 @@ export interface SliceViewSegmentationDisplayState
   notSelectedAlpha: WatchableValueInterface<number>;
   hideSegmentZero: WatchableValueInterface<boolean>;
   ignoreNullVisibleSet: WatchableValueInterface<boolean>;
-  brushHashTable?: BrushHashTable;
 }
 
 interface ShaderParameters {
@@ -162,12 +156,6 @@ export class SegmentationRenderLayer extends SliceViewVolumeRenderLayer<ShaderPa
   private gpuTemporaryEquivalencesHashTable;
   private voxelEditingPreviewLayer: SegmentationRenderLayer | undefined;
   public isVoxelEditingPreview: WatchableValue<boolean>;
-  // Brush-overlay machinery. Same prefix ("brushStroke") as the 2D
-  // `BrushStrokeLayer`'s manager, so the GLSL helper functions are
-  // named identically and `GPUHashTable.get(gl, table)` memoization
-  // shares the underlying GPU resource across consumers.
-  private brushHashTableManager = new HashMapShaderManager("brushStroke");
-  private gpuBrushHashTable: GPUHashTable<HashMapUint64> | undefined;
   private attributeShader: AttributeShader | undefined;
 
   constructor(
@@ -283,18 +271,6 @@ export class SegmentationRenderLayer extends SliceViewVolumeRenderLayer<ShaderPa
       );
     }
 
-    const { brushHashTable } = displayState;
-    if (brushHashTable !== undefined) {
-      this.gpuBrushHashTable = this.registerDisposer(
-        GPUHashTable.get(this.gl, brushHashTable),
-      );
-      this.registerDisposer(
-        brushHashTable.changed.add(() => {
-          this.redrawNeeded.dispatch();
-        }),
-      );
-    }
-
     this.registerDisposer(
       this.shaderParameters as AggregateWatchableValue<ShaderParameters>,
     );
@@ -342,56 +318,14 @@ export class SegmentationRenderLayer extends SliceViewVolumeRenderLayer<ShaderPa
       parameters.segmentColorParameters,
     );
 
-    const hasBrushOverlay = this.gpuBrushHashTable !== undefined;
-    if (hasBrushOverlay) {
-      this.brushHashTableManager.defineShader(builder);
-      // The vertex's un-nudged position (before the parent's
-      // CHUNK_POSITION_EPSILON along the normal), so the hash key matches
-      // what the CPU brush emit's Math.round saw at click time.
-      builder.addVarying("highp vec3", "vBrushWorldPos");
-      builder.addVertexMain("vBrushWorldPos = position;");
-      // `vBrushWorldPos` is in THIS source's voxel grid; the brush hash is
-      // keyed in full-res voxels, so it is scaled by the source's downsample
-      // factor (set per source in `setupSourceUniforms`).
-      builder.addUniform("highp vec3", "uBrushSourceScale");
-    }
-    const brushLookup = hasBrushOverlay
-      ? `
-  {
-    // Integer full-res voxel index under this fragment, matching the CPU
-    // brush hash (getBrushKey does coord >>> 0).
-    uvec3 brushVoxel = uvec3(floor(vBrushWorldPos * uBrushSourceScale));
-    uint x1 = brushVoxel.x;
-    uint y1 = brushVoxel.y;
-    uint z1 = brushVoxel.z;
-    uint h1 = ((x1 * 73u) * 1271u) ^ ((y1 * 513u) * 1345u) ^ ((z1 * 421u) * 675u);
-    uint h2 = ((x1 * 127u) * 337u) ^ ((y1 * 111u) * 887u) ^ ((z1 * 269u) * 325u);
-    uint64_t brushKey;
-    brushKey.value[0] = h1;
-    brushKey.value[1] = h2;
-    uint64_t brushValue;
-    if (${this.brushHashTableManager.getFunctionName}(brushKey, brushValue)) {
-      // value=0 marks "erased": report segment 0, whose transparent emit
-      // (forced on with a brush overlay) reveals the layer underneath, which
-      // a discard would not. value>0 paints optimistically.
-      if (brushValue.value[0] == 0u && brushValue.value[1] == 0u) {
-        uint64_t erased;
-        erased.value[0] = 0u;
-        erased.value[1] = 0u;
-        return erased;
-      }
-      return brushValue;
-    }
-  }
-`
-      : "";
-    builder.addFragmentCode(`
+    let getUint64Code = `
 uint64_t getUint64DataValue() {
-${brushLookup}
   uint64_t x = toUint64(getDataValue());
-  return x;
+`;
+    getUint64Code += `return x;
 }
-`);
+`;
+    builder.addFragmentCode(getUint64Code);
     if (parameters.hasEquivalences) {
       this.equivalencesShaderManager.defineShader(builder);
       builder.addFragmentCode(`
@@ -433,7 +367,13 @@ uint64_t getMappedObjectId(uint64_t value) {
 `;
     if (parameters.isVoxelEditingPreview)
       fragmentMain += `
-  if (${glslUint64Equals("baseValue", SEGMENTATION_ERASE_SENTINEL)}) {
+  if (${glslUint64Equals(
+    "baseValue",
+    BigInt.asUintN(
+      this.dataType === DataType.UINT64 ? 64 : 32,
+      SEGMENTATION_ERASE_SENTINEL,
+    ),
+  )}) {
     emit(vec4(0, 0, 0, 0));
     return;
   }
@@ -441,9 +381,7 @@ uint64_t getMappedObjectId(uint64_t value) {
     discard;
   }
       `;
-    // With a brush overlay, erased voxels read as segment 0 (see brushLookup)
-    // and rely on this transparent emit to reveal the layer underneath.
-    if (parameters.hideSegmentZero || hasBrushOverlay) {
+    if (parameters.hideSegmentZero) {
       fragmentMain += `
   if (value.value[0] == 0u && value.value[1] == 0u) {
     emit(vec4(vec4(0, 0, 0, 0)));
@@ -580,9 +518,6 @@ uint64_t getMappedObjectId(uint64_t value) {
       shader.uniform("uFocusDim"),
       displayState.focusDim?.value ?? 0.15,
     );
-    if (this.gpuBrushHashTable !== undefined) {
-      this.brushHashTableManager.enable(gl, shader, this.gpuBrushHashTable);
-    }
     if (parameters.hasAttributes) {
       this.attributeShader?.enable(gl, shader);
     }
@@ -644,29 +579,6 @@ uint64_t getMappedObjectId(uint64_t value) {
       this.voxelEditingPreviewLayer.draw(renderContext);
     }
     super.draw(renderContext);
-  }
-
-  override setupSourceUniforms(
-    gl: WebGL2RenderingContext,
-    shader: ShaderProgram,
-    transformedSource: FrontendTransformedSource,
-  ) {
-    if (this.gpuBrushHashTable === undefined) return;
-    // The brush hash is keyed in full-res (level-0) voxel indices, while
-    // `vBrushWorldPos` is in THIS source's voxel grid: one source voxel spans
-    // |localSpatialVectorToGlobal(1⃗)| global voxel-index units. Not derived
-    // from `effectiveVoxelSize`, which folds in display scales. No offset: the
-    // level's translation is already in the projection.
-    const scale = transformedSource.chunkLayout.localSpatialVectorToGlobal(
-      tempBrushSourceScale,
-      kOneVec,
-    );
-    gl.uniform3f(
-      shader.uniform("uBrushSourceScale"),
-      Math.abs(scale[0]) || 1,
-      Math.abs(scale[1]) || 1,
-      Math.abs(scale[2]) || 1,
-    );
   }
 
   // Never falls back to a coarser scale; null = full-res chunk not resident,

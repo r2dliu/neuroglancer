@@ -16,8 +16,6 @@
 
 import "#src/layer/segmentation/style.css";
 
-import { BrushHashTable } from "#src/brush_stroke/index.js";
-import { BrushStrokeLayer } from "#src/brush_stroke/renderlayer.js";
 import type { CoordinateTransformSpecification } from "#src/coordinate_transform.js";
 import { emptyValidCoordinateSpace } from "#src/coordinate_transform.js";
 import type { DataSourceSpecification } from "#src/datasource/index.js";
@@ -94,6 +92,7 @@ import {
   SkeletonRenderingOptions,
   SliceViewPanelSkeletonLayer,
 } from "#src/skeleton/frontend.js";
+import type { SliceViewRenderContext } from "#src/sliceview/renderlayer.js";
 import { DataType, VolumeType } from "#src/sliceview/volume/base.js";
 import { MultiscaleVolumeChunkSource } from "#src/sliceview/volume/frontend.js";
 import { SegmentationRenderLayer } from "#src/sliceview/volume/segmentation_renderlayer.js";
@@ -153,6 +152,7 @@ import {
   type PaintValueGetter,
 } from "#src/voxel_editing/base.js";
 import { VoxelEditingPreviewRenderLayerMixin } from "#src/voxel_editing/preview_render_layer.js";
+import { VoxelOverlay } from "#src/voxel_overlay/index.js";
 import { GLBuffer } from "#src/webgl/buffer.js";
 import type { WatchableShaderError } from "#src/webgl/dynamic_shader.js";
 import {
@@ -868,6 +868,21 @@ class SegmentationPreviewRenderLayer extends VoxelEditingPreviewRenderLayerMixin
 ) {
   drawnByHostLayer = true;
 }
+
+class VoxelOverlayRenderLayer extends SegmentationPreviewRenderLayer {
+  constructor(
+    private overlay: VoxelOverlay,
+    ...args: ConstructorParameters<typeof SegmentationPreviewRenderLayer>
+  ) {
+    super(...args);
+    this.registerDisposer(overlay.changed.add(this.redrawNeeded.dispatch));
+  }
+
+  draw(renderContext: SliceViewRenderContext) {
+    this.overlay.flush();
+    super.draw(renderContext);
+  }
+}
 const Base = UserLayerWithVoxelEditingMixin(
   UserLayerWithAnnotationsMixin(UserLayer),
 );
@@ -876,9 +891,8 @@ export class SegmentationUserLayer extends Base {
   voxelEditingPreviewRenderScaleHistogram = new RenderScaleHistogram();
   sliceViewRenderScaleTarget = trackableRenderScaleTarget(1);
   codeVisible = new TrackableBoolean(true);
-  brushHashTable = new BrushHashTable();
+  voxelOverlay = this.registerDisposer(new VoxelOverlay());
   segmentAttributes = new SegmentAttributeTables();
-  brushStrokeLayer: BrushStrokeLayer | null = null;
 
   graphConnection = new WatchableValue<
     SegmentationGraphSourceConnection | undefined
@@ -1140,9 +1154,24 @@ export class SegmentationUserLayer extends Base {
             renderScaleTarget: this.sliceViewRenderScaleTarget,
             renderScaleHistogram: this.sliceViewRenderScaleHistogram,
             localPosition: this.localPosition,
-            brushHashTable: this.brushHashTable,
           });
           loadedSubsource.addRenderLayer(segmentationRenderLayer);
+          const overlayRenderLayer = new VoxelOverlayRenderLayer(
+            this.voxelOverlay,
+            this.voxelOverlay.bind(this.manager.chunkManager, volume),
+            {
+              ...this.displayState,
+              transform: loadedSubsource.getRenderLayerTransform(),
+              renderScaleTarget: this.sliceViewRenderScaleTarget,
+              renderScaleHistogram:
+                this.voxelEditingPreviewRenderScaleHistogram,
+              localPosition: this.localPosition,
+            },
+          );
+          segmentationRenderLayer.setVoxelEditingPreviewLayer(
+            overlayRenderLayer,
+          );
+          loadedSubsource.addRenderLayer(overlayRenderLayer);
           context.registerDisposer(
             registerNested((context, writingEnabled) => {
               this.initializeVoxelEditingForSubsource(
@@ -1261,25 +1290,7 @@ export class SegmentationUserLayer extends Base {
             "Not supported on non-root linked segmentation layers",
           );
         } else {
-          loadedSubsource.activate((refCounted) => {
-            // Optimistic paint has no dedicated render layer: in 2D the
-            // canonical SegmentationRenderLayer's brush hijack draws painted
-            // voxels through its own shader (so they get the layer opacity + the
-            // focused-instance highlight and stay in lock-step with disk data),
-            // and in 3D the perspective panel reads this BrushStrokeLayer
-            // directly. We just keep the BrushStrokeLayer alive as the
-            // brush-data + redraw hub; repaints on edits come from
-            // brushHashTable.changed, wired in SegmentationRenderLayer.
-            const brushStrokeLayer = new BrushStrokeLayer(
-              this.brushHashTable,
-              this.displayState,
-            );
-            this.brushStrokeLayer = brushStrokeLayer;
-            refCounted.registerDisposer(brushStrokeLayer);
-            refCounted.registerDisposer(() => {
-              this.brushStrokeLayer = null;
-            });
-          });
+          loadedSubsource.activate(() => {});
         }
       } else {
         loadedSubsource.deactivate("Not compatible with segmentation layer");

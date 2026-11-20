@@ -337,6 +337,13 @@ export class InMemoryVolumeChunkSource extends VolumeChunkSource {
     super.deleteChunk(key);
   }
 
+  // No worker counterpart and nothing stored to refetch.
+  invalidateCache() {}
+  invalidateIndexCache() {}
+  softInvalidateCache(): Promise<void> {
+    return Promise.resolve();
+  }
+
   private invalidateGpuData(chunks: Set<VolumeChunk>): void {
     if (chunks.size === 0) return;
     for (const chunk of chunks) {

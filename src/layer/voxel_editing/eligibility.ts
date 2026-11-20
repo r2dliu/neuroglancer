@@ -18,7 +18,7 @@ import type { SliceViewSourceOptions } from "#src/sliceview/base.js";
 import { DataType } from "#src/sliceview/base.js";
 import type { MultiscaleVolumeChunkSource } from "#src/sliceview/volume/frontend.js";
 
-function getIdentitySourceOptions(rank: number): SliceViewSourceOptions {
+export function getIdentitySourceOptions(rank: number): SliceViewSourceOptions {
   const multiscaleToViewTransform = new Float32Array(rank * rank);
   for (let i = 0; i < rank; ++i) {
     multiscaleToViewTransform[rank * i + i] = 1;
