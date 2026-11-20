@@ -444,6 +444,13 @@ emit(getCircleColor(color, color), uPickID);
         const delta = this.trackballDelta(start, anchor, dragged);
         if (delta === undefined) return;
         const rotation = quat.multiply(quat.create(), delta, frame.rotation);
+        // Pivot on the visible cross-section's center, where the gizmo is.
+        slicer.position.value = displayToSlicerPosition(
+          frame,
+          start.nav,
+          frame.center,
+          start.position,
+        );
         slicer.orientation.value = Array.from(
           quat.normalize(rotation, rotation),
         );

@@ -53,7 +53,7 @@ export function slicerFrame(
     quat.create(),
     pose.orientation as unknown as quat,
   );
-  return {
+  const frame = {
     global,
     displayDims,
     center,
@@ -64,6 +64,40 @@ export function slicerFrame(
     lower,
     upper,
   };
+  // The center is the middle of the visible cross-section (the plane's cut
+  // through the volume), wherever the stored point lies on the plane.
+  // Area centroid: unlike the corners' average, it moves continuously as the
+  // plane gains or loses a corner of the volume.
+  const cap = capPolygon(frame, 0);
+  if (cap.length !== 0) {
+    const origin = vec3.clone(cap[0]);
+    const offset = vec3.create();
+    let area = 0;
+    let cu = 0;
+    let cv = 0;
+    for (let i = 0; i < cap.length; ++i) {
+      vec3.subtract(offset, cap[i], origin);
+      const u0 = vec3.dot(frame.u, offset);
+      const v0 = vec3.dot(frame.v, offset);
+      vec3.subtract(offset, cap[(i + 1) % cap.length], origin);
+      const u1 = vec3.dot(frame.u, offset);
+      const v1 = vec3.dot(frame.v, offset);
+      const cross = u0 * v1 - u1 * v0;
+      area += cross;
+      cu += (u0 + u1) * cross;
+      cv += (v0 + v1) * cross;
+    }
+    if (Math.abs(area) > 1e-9) {
+      vec3.scaleAndAdd(center, origin, frame.u, cu / (3 * area));
+      vec3.scaleAndAdd(center, center, frame.v, cv / (3 * area));
+    } else {
+      vec3.set(center, 0, 0, 0);
+      for (const p of cap) vec3.add(center, center, p);
+      vec3.scale(center, center, 1 / cap.length);
+    }
+    for (let i = 0; i < 3; ++i) global[displayDims[i]] = center[i];
+  }
+  return frame;
 }
 
 export function displayToSlicerPosition(

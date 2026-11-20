@@ -1,7 +1,11 @@
 import type { ManagedUserLayer, VisibleLayerInfo } from "#src/layer/index.js";
 import { registerLayerType, UserLayer } from "#src/layer/index.js";
 import { ObliqueSliceProjection } from "#src/layer/oblique_slice/base.js";
-import { capPolygon, slicerFrame } from "#src/layer/oblique_slice/frame.js";
+import {
+  capPolygon,
+  displayToSlicerPosition,
+  slicerFrame,
+} from "#src/layer/oblique_slice/frame.js";
 import {
   GizmoPart,
   ObliqueSliceGizmoRenderLayer,
@@ -103,6 +107,19 @@ class ObliqueSliceRenderLayer extends PerspectiveViewRenderLayer {
         parent,
       );
       if (frame === undefined) return;
+      // The slicer's position is its visible cross-section's center: an
+      // in-plane move, which leaves the plane as it is.
+      const stored = slicer.position.value;
+      const centered = displayToSlicerPosition(
+        frame,
+        parent,
+        frame.center,
+        stored,
+      );
+      if (centered.some((x, i) => Math.abs(x - stored[i]) > 1e-3)) {
+        slicer.position.value = centered;
+        return;
+      }
       vec3.copy(clipBounds.lower, frame.lower);
       vec3.copy(clipBounds.upper, frame.upper);
 
