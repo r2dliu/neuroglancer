@@ -765,6 +765,12 @@ export class ChunkQueueManager extends SharedObjectCounterpart {
 
   gpuMemoryChanged = new NullarySignal();
 
+  // Chunks still awaiting a soft refetch, across all sources.
+  private softRefetchPending = 0;
+  // Stale frontend copies dropped mid soft refetch, expired once every soft
+  // refetch settled and a priority pass has not requested them again.
+  private deferredExpiries: { source: ChunkSource; key: string }[] = [];
+
   private numQueued = 0;
   private numFailed = 0;
   private gpuMemoryGeneration = 0;
@@ -891,7 +897,13 @@ export class ChunkQueueManager extends SharedObjectCounterpart {
     ) {
       // Delete this chunk.
       const { source } = chunk;
-      if (chunk.staleOnFrontend) {
+      if (chunk.staleOnFrontend && chunk.softRefetch) {
+        // A soft refetch elsewhere (e.g. a mesh manifest) may request it again.
+        this.deferredExpiries.push({
+          source: source as ChunkSource,
+          key: chunk.key!,
+        });
+      } else if (chunk.staleOnFrontend) {
         // Nothing will refetch it: drop the stale copy the frontend still holds.
         this.rpc!.invoke("Chunk.update", {
           id: chunk.key,
@@ -1204,6 +1216,7 @@ export class ChunkQueueManager extends SharedObjectCounterpart {
       if (chunk === undefined || chunk.softRefetch) continue;
       chunk.softRefetch = true;
       ++source.softRefetchPending;
+      ++this.softRefetchPending;
     }
     this.invalidateCachedChunks(source, requeued);
     if (source.softRefetchPending === 0) this.completeSoftRefetch(source);
@@ -1215,6 +1228,24 @@ export class ChunkQueueManager extends SharedObjectCounterpart {
     chunk.softRefetch = false;
     const source = chunk.source as ChunkSource;
     if (--source.softRefetchPending === 0) this.completeSoftRefetch(source);
+    if (--this.softRefetchPending === 0 && this.deferredExpiries.length > 0) {
+      source.chunkManager.scheduleUpdateChunkPriorities();
+    }
+  }
+
+  flushDeferredExpiries() {
+    if (this.softRefetchPending > 0 || this.deferredExpiries.length === 0) {
+      return;
+    }
+    for (const { source, key } of this.deferredExpiries) {
+      if (source.wasDisposed || source.chunks.has(key)) continue;
+      this.rpc!.invoke("Chunk.update", {
+        id: key,
+        state: ChunkState.EXPIRED,
+        source: source.rpcId,
+      });
+    }
+    this.deferredExpiries.length = 0;
   }
 
   private completeSoftRefetch(source: ChunkSource) {
@@ -1349,6 +1380,7 @@ export class ChunkManager extends SharedObjectCounterpart {
       ChunkPriorityTier.VISIBLE,
       ChunkPriorityTier.PREFETCH,
     ]);
+    this.queueManager.flushDeferredExpiries();
     this.sendLayerChunkStatistics();
   }
 
