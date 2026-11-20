@@ -28,6 +28,7 @@ import {
   displayToLayerCoordinates,
   layerToDisplayCoordinates,
 } from "#src/render_coordinate_transform.js";
+import { isDraggableGizmo } from "#src/renderlayer.js";
 import { AutomaticallyFocusedElement } from "#src/util/automatic_focus.js";
 import type { Borrowed } from "#src/util/disposable.js";
 import type {
@@ -653,6 +654,37 @@ export abstract class RenderedDataPanel extends RenderedPanel {
 
     registerActionListener(element, "snap", () =>
       this.navigationState.pose.snap(),
+    );
+
+    registerActionListener(
+      element,
+      "move-gizmo",
+      (e: ActionEvent<MouseEvent>) => {
+        const { mouseState } = this.viewer;
+        if (!mouseState.updateUnconditionally()) return;
+        const layer = mouseState.pickedRenderLayer;
+        const part = mouseState.pickedOffset;
+        if (!isDraggableGizmo(layer)) return;
+        const anchor = layer.dragAnchor(part);
+        if (anchor === undefined) return;
+        e.stopPropagation();
+        const total = vec2.create();
+        const dragged = vec3.create();
+        startRelativeMouseDrag(
+          e.detail,
+          (_event, deltaX, deltaY) => {
+            vec2.add(total, total, [deltaX, deltaY]);
+            this.translateDataPointByViewportPixels(
+              dragged,
+              anchor,
+              total[0],
+              total[1],
+            );
+            layer.drag(part, anchor, dragged);
+          },
+          () => layer.endDrag(part),
+        );
+      },
     );
 
     registerActionListener(

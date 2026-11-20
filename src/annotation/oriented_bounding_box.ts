@@ -276,12 +276,12 @@ const CUBE_EDGE = 0.16;
 
 // Gizmo handles are drawn at a constant on-screen size, independent of zoom.
 // Scale is from -1 to 1 for full viewport
-const GIZMO_SIZE = 0.18;
+export const GIZMO_SIZE = 0.18;
 // Tripod arrows start this fraction of their length out from the center, so they
 // begin just past the center ball instead of clipping through it.
 const GIZMO_ARROW_START_FRACTION = 0.15;
 // Center "free translate" ball diameter, in pixels (screen-space via emitCircle).
-const CENTER_BALL_DIAMETER = 13;
+export const CENTER_BALL_DIAMETER = 13;
 // Rotation rings: 3 segmented line loops (the great circles of the box's
 // bounding sphere), colored per local axis.
 const RING_SEGMENTS = 48;
@@ -292,7 +292,7 @@ const N_RING_LINES = 3 * RING_SEGMENTS;
 // segmentation layer's focus dim (the app sets `focusDim = 0.6` for instances).
 const NOT_SELECTED_ALPHA = 0.6;
 // Hover highlight strength: how far the hovered box's color is mixed toward white.
-const HOVER_HIGHLIGHT = 0.6;
+export const HOVER_HIGHLIGHT = 0.6;
 // Trackball sensitivity for free (edge-drag) rotation, in screen radii.
 const FREE_ROTATE_RADIUS = 0.9;
 

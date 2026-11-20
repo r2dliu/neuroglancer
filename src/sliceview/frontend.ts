@@ -42,6 +42,7 @@ import {
   getChunkTransformParameters,
   getLayerDisplayDimensionMapping,
 } from "#src/render_coordinate_transform.js";
+import type { RenderLayer } from "#src/renderlayer.js";
 import {
   DerivedProjectionParameters,
   SharedProjectionParameters,
@@ -186,6 +187,11 @@ export class SliceView extends Base {
 
   // Display-space box outside which the 3D panel discards this view's quad.
   clipBounds: { lower: vec3; upper: vec3 } | undefined = undefined;
+
+  // When set, the 3D panel makes this view's quad pickable as `part` of
+  // `renderLayer`.
+  pickTarget: { renderLayer: RenderLayer; part: number } | undefined =
+    undefined;
 
   visibleChunksStale = true;
 
@@ -779,6 +785,7 @@ export class SliceViewRenderHelper extends RefCounted {
     builder.addUniform("vec4", "uBackgroundColor");
     builder.addUniform("mat4", "uProjectionMatrix");
     builder.addUniform("vec4", "uTextureCoordinateAdjustment");
+    builder.addUniform("highp uint", "uPickID");
     if (isProjection) {
       builder.addUniform("mat4", "uSliceViewInvViewProj");
       builder.addUniform("vec3", "uClipLower");
@@ -811,7 +818,7 @@ if (sampledColor.a == 0.0) {`;
   discard;
 }
 else {
-  emit(sampledColor * uColorFactor, 0u);
+  emit(sampledColor * uColorFactor, uPickID);
 }
 `;
     } else if (isProjection && hasBrush) {
@@ -838,7 +845,7 @@ else {
       //     subsequent segmentation layers on the same cross-section.
       const missEmit = brushOverlayOnly
         ? "discard;"
-        : "emit(sampledColor * uColorFactor, 0u);";
+        : "emit(sampledColor * uColorFactor, uPickID);";
       // Under attributes the brush takes its class color, and draws nothing
       // where the attributes say the id doesn't draw, as in 2D.
       const brushColor = attributeShader
@@ -883,7 +890,7 @@ if (voxelPos.x >= 0 && voxelPos.y >= 0 && voxelPos.z >= 0) {
     if (brushValue.value[0] != 0u || brushValue.value[1] != 0u) {
       vec3 segmentColor;${brushColor}
       vec3 baseColor = mix(vec3(1.0, 1.0, 1.0), segmentColor, uSaturation);
-      emit(vec4(baseColor, 1.0), 0u);
+      emit(vec4(baseColor, 1.0), uPickID);
       return;
     }
   }
@@ -894,7 +901,7 @@ ${missEmit}
       glsl_fragmentMainEnd = `
   sampledColor = uBackgroundColor;
 }
-emit(sampledColor * uColorFactor, 0u);
+emit(sampledColor * uColorFactor, uPickID);
 `;
     }
     builder.setFragmentMain(`${glsl_fragmentMainStart}${glsl_fragmentMainEnd}`);
@@ -956,6 +963,7 @@ gl_Position = uProjectionMatrix * aVertexPosition;
     brushStrokeLayer?: BrushStrokeLayer,
     brushOverlayOnly = false,
     clipBounds?: { lower: vec3; upper: vec3 },
+    pickID = 0,
   ) {
     const { gl, textureCoordinateAdjustment } = this;
     textureCoordinateAdjustment[0] = xStart;
@@ -1001,6 +1009,7 @@ gl_Position = uProjectionMatrix * aVertexPosition;
       shader.uniform("uTextureCoordinateAdjustment"),
       textureCoordinateAdjustment,
     );
+    gl.uniform1ui(shader.uniform("uPickID"), pickID);
     if (this.isProjection && sliceViewInvViewProj !== undefined) {
       gl.uniformMatrix4fv(
         shader.uniform("uSliceViewInvViewProj"),

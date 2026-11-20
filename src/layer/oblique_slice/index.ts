@@ -1,6 +1,11 @@
 import type { ManagedUserLayer, VisibleLayerInfo } from "#src/layer/index.js";
 import { registerLayerType, UserLayer } from "#src/layer/index.js";
 import { ObliqueSliceProjection } from "#src/layer/oblique_slice/base.js";
+import { capPolygon, slicerFrame } from "#src/layer/oblique_slice/frame.js";
+import {
+  GizmoPart,
+  ObliqueSliceGizmoRenderLayer,
+} from "#src/layer/oblique_slice/gizmo.js";
 import {
   DisplayPose,
   NavigationState,
@@ -14,15 +19,15 @@ import { SliceView } from "#src/sliceview/frontend.js";
 import { WatchableValue } from "#src/trackable_value.js";
 import type { Borrowed } from "#src/util/disposable.js";
 import { quat, vec3 } from "#src/util/geom.js";
+import { NullarySignal } from "#src/util/signal.js";
 
 const MAX_SLICE_VIEW_PIXELS = 2048;
-const SPATIAL_NAMES = ["x", "y", "z"];
-const UNIT_X = vec3.fromValues(1, 0, 0);
-const UNIT_Y = vec3.fromValues(0, 1, 0);
-const UNIT_Z = vec3.fromValues(0, 0, 1);
 
 class ObliqueSliceRenderLayer extends PerspectiveViewRenderLayer {
-  constructor(public slicer: ObliqueSliceUserLayer) {
+  constructor(
+    public slicer: ObliqueSliceUserLayer,
+    private gizmo: ObliqueSliceGizmoRenderLayer,
+  ) {
     super();
   }
 
@@ -47,74 +52,52 @@ class ObliqueSliceRenderLayer extends PerspectiveViewRenderLayer {
     );
     const clipBounds = { lower: vec3.create(), upper: vec3.create() };
     sliceView.clipBounds = clipBounds;
+    const updatePickTarget = () => {
+      sliceView.pickTarget = slicer.selected.value
+        ? { renderLayer: this.gizmo, part: GizmoPart.PLANE }
+        : undefined;
+    };
+    updatePickTarget();
+    attachment.registerDisposer(slicer.selected.changed.add(updatePickTarget));
 
     const update = () => {
-      const space = parent.coordinateSpace.value;
-      if (!space.valid || space.bounds === undefined) return;
-      const { displayDimensionIndices } = displayInfo.value;
-      const global = Float32Array.from(parent.position.value);
-      SPATIAL_NAMES.forEach((name, i) => {
-        const dim = space.names.indexOf(name);
-        if (dim !== -1) global[dim] = slicer.position.value[i];
-      });
-      const { lower, upper } = clipBounds;
-      const p = vec3.create();
-      for (let i = 0; i < 3; ++i) {
-        const dim = displayDimensionIndices[i];
-        if (dim === -1) return;
-        p[i] = global[dim];
-        lower[i] = space.bounds.lowerBounds[dim];
-        upper[i] = space.bounds.upperBounds[dim];
-      }
-
-      const q = quat.normalize(
-        quat.create(),
-        slicer.orientation.value as unknown as quat,
+      const frame = slicerFrame(
+        {
+          position: slicer.position.value,
+          orientation: slicer.orientation.value,
+        },
+        parent,
       );
-      const u = vec3.transformQuat(vec3.create(), UNIT_X, q);
-      const v = vec3.transformQuat(vec3.create(), UNIT_Y, q);
-      const n = vec3.transformQuat(vec3.create(), UNIT_Z, q);
+      if (frame === undefined) return;
+      vec3.copy(clipBounds.lower, frame.lower);
+      vec3.copy(clipBounds.upper, frame.upper);
 
-      let uMin = Infinity;
-      let uMax = -Infinity;
-      let vMin = Infinity;
-      let vMax = -Infinity;
-      const a = vec3.create();
-      const b = vec3.create();
-      const hit = vec3.create();
+      let uMin = 0;
+      let uMax = 0;
+      let vMin = 0;
+      let vMax = 0;
       const offset = vec3.create();
-      for (let corner = 0; corner < 8; ++corner) {
-        for (let axis = 0; axis < 3; ++axis) {
-          if (corner & (1 << axis)) continue;
-          for (let i = 0; i < 3; ++i) {
-            const high = (corner >> i) & 1;
-            a[i] = high ? upper[i] : lower[i];
-            b[i] = i === axis ? upper[i] : a[i];
-          }
-          const da = vec3.dot(n, vec3.subtract(offset, a, p));
-          const db = vec3.dot(n, vec3.subtract(offset, b, p));
-          if (da * db > 0 || da === db) continue;
-          vec3.lerp(hit, a, b, da / (da - db));
-          vec3.subtract(offset, hit, p);
-          const su = vec3.dot(u, offset);
-          const sv = vec3.dot(v, offset);
-          uMin = Math.min(uMin, su);
-          uMax = Math.max(uMax, su);
-          vMin = Math.min(vMin, sv);
-          vMax = Math.max(vMax, sv);
-        }
-      }
-      if (uMin > uMax) {
-        uMin = uMax = vMin = vMax = 0;
-      }
+      capPolygon(frame, 0).forEach((p, i) => {
+        vec3.subtract(offset, p, frame.center);
+        const su = vec3.dot(frame.u, offset);
+        const sv = vec3.dot(frame.v, offset);
+        uMin = i === 0 ? su : Math.min(uMin, su);
+        uMax = i === 0 ? su : Math.max(uMax, su);
+        vMin = i === 0 ? sv : Math.min(vMin, sv);
+        vMax = i === 0 ? sv : Math.max(vMax, sv);
+      });
 
-      const center = vec3.scaleAndAdd(vec3.create(), p, u, (uMin + uMax) / 2);
-      vec3.scaleAndAdd(center, center, v, (vMin + vMax) / 2);
-      for (let i = 0; i < 3; ++i) {
-        global[displayDimensionIndices[i]] = center[i];
-      }
+      const center = vec3.scaleAndAdd(
+        vec3.create(),
+        frame.center,
+        frame.u,
+        (uMin + uMax) / 2,
+      );
+      vec3.scaleAndAdd(center, center, frame.v, (vMin + vMax) / 2);
+      const { global } = frame;
+      for (let i = 0; i < 3; ++i) global[frame.displayDims[i]] = center[i];
       position.value = global;
-      quat.copy(orientation.orientation, q);
+      quat.copy(orientation.orientation, frame.rotation);
       orientation.changed.dispatch();
 
       const width = uMax - uMin;
@@ -147,7 +130,6 @@ class ObliqueSliceRenderLayer extends PerspectiveViewRenderLayer {
     ]) {
       attachment.registerDisposer(signal.add(update));
     }
-
     panel.sliceViews.set(sliceView, true);
     attachment.registerDisposer(() => panel.sliceViews.delete(sliceView));
   }
@@ -160,10 +142,15 @@ export class ObliqueSliceUserLayer extends UserLayer {
   projection = new WatchableValue<ObliqueSliceProjection>(
     ObliqueSliceProjection.MAX,
   );
+  selected = new WatchableValue<boolean>(false);
+  // Fires when a gizmo drag ends, so the app can save the new pose.
+  committed = new NullarySignal();
 
   constructor(managedLayer: Borrowed<ManagedUserLayer>) {
     super(managedLayer);
-    this.addRenderLayer(new ObliqueSliceRenderLayer(this));
+    const gizmo = new ObliqueSliceGizmoRenderLayer(this);
+    this.addRenderLayer(new ObliqueSliceRenderLayer(this, gizmo));
+    this.addRenderLayer(gizmo);
   }
 
   static type = "oblique_slice";

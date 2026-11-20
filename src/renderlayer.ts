@@ -43,6 +43,7 @@ import type { WatchableValueChangeInterface } from "#src/trackable_value.js";
 import { WatchableSet } from "#src/trackable_value.js";
 import type { Borrowed } from "#src/util/disposable.js";
 import { RefCounted } from "#src/util/disposable.js";
+import type { vec3 } from "#src/util/geom.js";
 import { mat4 } from "#src/util/geom.js";
 import { MessageList, MessageSeverity } from "#src/util/message_list.js";
 import { NullarySignal, Signal } from "#src/util/signal.js";
@@ -113,6 +114,18 @@ export class VisibilityTrackedRenderLayer<
   attach(attachment: VisibleLayerInfo<View, AttachmentState>) {
     attachment;
   }
+}
+
+// A render layer whose picked parts can be dragged in the 3D view. Points are in
+// display coordinates; `dragged` is the anchor moved parallel to the screen.
+export interface DraggableGizmo {
+  dragAnchor(part: number): vec3 | undefined;
+  drag(part: number, anchor: vec3, dragged: vec3): void;
+  endDrag(part: number): void;
+}
+
+export function isDraggableGizmo(layer: unknown): layer is DraggableGizmo {
+  return typeof (layer as DraggableGizmo | null)?.dragAnchor === "function";
 }
 
 export interface ThreeDimensionalReadyRenderContext {

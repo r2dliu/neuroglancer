@@ -53,6 +53,7 @@ import {
   TrackableDataSelectionState,
   UserLayer,
 } from "#src/layer/index.js";
+import { registerObliqueSliceToolForViewer } from "#src/layer/oblique_slice/tool.js";
 import { LayerGroupViewer } from "#src/layer_group_viewer.js";
 import { RootLayoutContainer } from "#src/layer_groups_layout.js";
 import {
@@ -1235,3 +1236,4 @@ registerPaintToolsForViewer(Viewer);
 registerBoundingBoxToolForViewer(Viewer);
 registerPointToolForViewer(Viewer);
 registerOrientedBoundingBoxToolForViewer(Viewer);
+registerObliqueSliceToolForViewer(Viewer);

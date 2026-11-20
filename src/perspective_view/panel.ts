@@ -1075,7 +1075,7 @@ export class PerspectivePanel extends RenderedDataPanel {
           const annotationRenderLayer =
             renderLayer as PerspectiveViewAnnotationLayer;
           if (
-            annotationRenderLayer.base.state.displayState.disablePicking.value
+            annotationRenderLayer.base?.state.displayState.disablePicking.value
           ) {
             disablePicking();
             annotationRenderLayer.draw(renderContext, attachment);
@@ -1520,6 +1520,14 @@ export class PerspectivePanel extends RenderedDataPanel {
       backgroundColor[3] = 1;
       const invViewProj =
         sliceView.projectionParameters.value.invViewProjectionMat;
+      const { pickTarget } = sliceView;
+      const pickID =
+        pickTarget !== undefined && renderContext.emitPickID
+          ? renderContext.pickIDs.register(
+              pickTarget.renderLayer,
+              pickTarget.part + 1,
+            ) + pickTarget.part
+          : 0;
       // Inline draw: sampled slice-view framebuffer + first
       // segmentation layer's brush (if any).
       sliceViewRenderHelper.draw(
@@ -1535,6 +1543,7 @@ export class PerspectivePanel extends RenderedDataPanel {
         inlineBrushLayer,
         false,
         sliceView.clipBounds,
+        pickID,
       );
       // Overlay pass per additional segmentation layer — brush hits
       // emit, misses `discard`, so each layer's brush composites on
@@ -1562,6 +1571,7 @@ export class PerspectivePanel extends RenderedDataPanel {
             brushStrokeLayers[i],
             /*brushOverlayOnly=*/ true,
             sliceView.clipBounds,
+            pickID,
           );
         }
         this.gl.depthFunc(WebGL2RenderingContext.LESS);
